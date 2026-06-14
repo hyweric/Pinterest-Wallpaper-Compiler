@@ -4,42 +4,12 @@ import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shar
 import { getImageForLayer } from "./project";
 import { bundledSurfaceUrl } from "./surface-textures";
 
-const imageLoadTimeoutMs = 12_000;
-
-function renderLog(stage: string, details: Record<string, unknown>) {
-  console.error(`[render:${stage}]`, details);
-}
-
-function loadImage(src: string, context?: Record<string, unknown>): Promise<HTMLImageElement> {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
     const image = new Image();
-    let settled = false;
-    const finish = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      image.onload = null;
-      image.onerror = null;
-      callback();
-    };
-    const timeout = window.setTimeout(() => finish(() => reject(new Error(`Timed out loading image: ${src}`))), imageLoadTimeoutMs);
-    image.onload = () => finish(() => {
-      if (!image.naturalWidth || !image.naturalHeight) {
-        reject(new Error(`Image decoded with invalid dimensions: ${src}`));
-        return;
-      }
-      resolve(image);
-    });
-    image.onerror = () => finish(() => reject(new Error(`Unable to load image: ${src}`)));
-    if (/^https?:/i.test(src)) image.crossOrigin = "anonymous";
-    try {
-      image.src = src;
-    } catch (error) {
-      finish(() => reject(error instanceof Error ? error : new Error(`Unable to assign image source: ${src}`)));
-    }
-  }).catch((error) => {
-    renderLog("image-load", { src, ...context, error: error instanceof Error ? error.message : String(error) });
-    throw error;
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Unable to load ${src}`));
+    image.src = src;
   });
 }
 
@@ -160,22 +130,14 @@ async function drawPaperTexture(
   context.save();
   context.globalAlpha = Math.max(paper.opacity, amount / 100) * 0.42;
   context.globalCompositeOperation = paper.blendMode === "normal" ? "source-over" : paper.blendMode;
-  if (paper.type === "custom") {
-    try {
-      if (!custom) throw new Error("The selected custom texture is no longer available.");
-      const image = await loadImage(custom.url, { stage: "custom-texture", textureId: custom.id, texturePath: custom.path });
-      const pattern = context.createPattern(image, "repeat");
-      if (pattern) {
-        const scale = Math.max(0.05, paper.scale);
-        pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
-        context.fillStyle = pattern;
-        context.fillRect(0, 0, width, height);
-      }
-    } catch (error) {
-      renderLog("custom-texture-fallback", {
-        textureId: paper.customTextureId,
-        error: error instanceof Error ? error.message : String(error)
-      });
+  if (paper.type === "custom" && custom) {
+    const image = await loadImage(custom.url);
+    const pattern = context.createPattern(image, "repeat");
+    if (pattern) {
+      const scale = Math.max(0.05, paper.scale);
+      pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
+      context.fillStyle = pattern;
+      context.fillRect(0, 0, width, height);
     }
     context.restore();
     return;
@@ -253,33 +215,19 @@ async function drawBackground(context: CanvasRenderingContext2D, project: Wallpa
     context.fillRect(0, 0, canvas.width, canvas.height);
   }
   if (baseMode === "image" && canvas.backgroundImage) {
-    try {
-      const image = await loadImage(canvas.backgroundImage.url, {
-        stage: "background",
-        imageId: canvas.backgroundImage.id,
-        imagePath: canvas.backgroundImage.path
-      });
+    const image = await loadImage(canvas.backgroundImage.url);
+    context.save();
+    context.globalAlpha = canvas.backgroundOpacity;
+    context.filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur}px)`;
+    drawPlacedImage(context, image, canvas.width, canvas.height, canvas.backgroundMode, canvas.backgroundAlignment, { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale });
+    context.restore();
+    if (canvas.backgroundTemperature !== 0) {
       context.save();
-      context.globalAlpha = canvas.backgroundOpacity;
-      context.filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur}px)`;
-      drawPlacedImage(context, image, canvas.width, canvas.height, canvas.backgroundMode, canvas.backgroundAlignment, { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale });
+      context.globalCompositeOperation = "soft-light";
+      context.globalAlpha = Math.min(0.35, Math.abs(canvas.backgroundTemperature) / 280);
+      context.fillStyle = canvas.backgroundTemperature > 0 ? "#ff9b55" : "#5e8dff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
       context.restore();
-      if (canvas.backgroundTemperature !== 0) {
-        context.save();
-        context.globalCompositeOperation = "soft-light";
-        context.globalAlpha = Math.min(0.35, Math.abs(canvas.backgroundTemperature) / 280);
-        context.fillStyle = canvas.backgroundTemperature > 0 ? "#ff9b55" : "#5e8dff";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        context.restore();
-      }
-    } catch (error) {
-      renderLog("background-fallback", {
-        imageId: canvas.backgroundImage.id,
-        imagePath: canvas.backgroundImage.path,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      // The base color was already painted, so a stale background image should
-      // not prevent exporting or applying the rest of the composition.
     }
   }
   await drawPaperTexture(context, canvas.width, canvas.height, canvas.backgroundPaper, 0, customTexture(project, canvas.backgroundPaper));
@@ -336,30 +284,11 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   context.fillStyle = layer.effects.backgroundColor || "#ffffff";
   context.fillRect(0, 0, innerWidth, innerHeight);
   if (imageRef) {
-    try {
-      const image = await loadImage(imageRef.url, {
-        stage: "layer",
-        layerId: layer.id,
-        layerName: layer.name,
-        imageId: imageRef.id,
-        imagePath: imageRef.path,
-        mediaType: imageRef.mediaType
-      });
-      context.save();
-      context.filter = filterString(layer);
-      drawPlacedImage(context, image, innerWidth, innerHeight, layer.cropMode, layer.alignment, layer.crop);
-      context.restore();
-    } catch (error) {
-      renderLog("layer-fallback", {
-        layerId: layer.id,
-        layerName: layer.name,
-        imageId: imageRef.id,
-        imagePath: imageRef.path,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      context.fillStyle = layer.effects.backgroundColor || "#d9d7d0";
-      context.fillRect(0, 0, innerWidth, innerHeight);
-    }
+    const image = await loadImage(imageRef.url);
+    context.save();
+    context.filter = filterString(layer);
+    drawPlacedImage(context, image, innerWidth, innerHeight, layer.cropMode, layer.alignment, layer.crop);
+    context.restore();
   } else {
     context.fillStyle = "#d9d7d0";
     context.fillRect(0, 0, innerWidth, innerHeight);
@@ -392,7 +321,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   }
 }
 
-export async function renderProjectToDataUrl(project: WallpaperProject, format: "png" | "jpeg", quality = 0.92) {
+function validateCanvasDimensions(project: WallpaperProject) {
   const width = Math.round(Number(project.canvas.width));
   const height = Math.round(Number(project.canvas.height));
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
@@ -401,46 +330,51 @@ export async function renderProjectToDataUrl(project: WallpaperProject, format: 
   if (width > 16_384 || height > 16_384 || width * height > 100_000_000) {
     throw new Error(`Canvas dimensions are too large to render safely: ${width} × ${height}.`);
   }
+  return { width, height };
+}
 
-  console.info("[render:start]", { projectId: project.id, projectName: project.name, width, height, format, layers: project.layers.length });
+async function renderProjectToCanvas(project: WallpaperProject, format: "png" | "jpeg") {
+  const { width, height } = validateCanvasDimensions(project);
   const output = document.createElement("canvas");
   output.width = width;
   output.height = height;
   const context = output.getContext("2d");
   if (!context) throw new Error("Canvas rendering is unavailable.");
 
-  try {
-    await drawBackground(context, project, format);
-    for (const layer of project.layers) {
-      try {
-        await drawLayer(context, project, layer);
-      } catch (error) {
-        renderLog("layer-render", {
-          projectId: project.id,
-          layerId: layer.id,
-          layerName: layer.name,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        // An optional effect or malformed legacy layer should not make the
-        // entire wallpaper pipeline unusable. Continue with the other layers.
-      }
-    }
-    const dataUrl = output.toDataURL(format === "png" ? "image/png" : "image/jpeg", Math.max(0, Math.min(1, quality)));
-    if (!dataUrl.startsWith(`data:image/${format === "png" ? "png" : "jpeg"};base64,`) || dataUrl.length < 64) {
-      throw new Error("Canvas serialization returned invalid image data.");
-    }
-    console.info("[render:complete]", { projectId: project.id, bytesApprox: Math.floor((dataUrl.length - dataUrl.indexOf(",") - 1) * 0.75) });
-    return dataUrl;
-  } catch (error) {
-    renderLog("fatal", {
-      projectId: project.id,
-      projectName: project.name,
-      width,
-      height,
-      format,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
-    });
-    throw error;
-  }
+  await drawBackground(context, project, format);
+  for (const layer of project.layers) await drawLayer(context, project, layer);
+  return output;
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, format: "png" | "jpeg", quality = 0.92) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("Canvas serialization returned no image data.")),
+      format === "png" ? "image/png" : "image/jpeg",
+      Math.max(0, Math.min(1, quality))
+    );
+  });
+}
+
+export async function renderProjectToArrayBuffer(project: WallpaperProject, format: "png" | "jpeg", quality = 0.92) {
+  const output = await renderProjectToCanvas(project, format);
+  const blob = await canvasToBlob(output, format, quality);
+  const imageData = await blob.arrayBuffer();
+  if (imageData.byteLength < 16) throw new Error("Canvas serialization returned empty image data.");
+  return imageData;
+}
+
+export async function renderProjectToDataUrl(project: WallpaperProject, format: "png" | "jpeg", quality = 0.92) {
+  const output = await renderProjectToCanvas(project, format);
+  const blob = await canvasToBlob(output, format, quality);
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read rendered image data."));
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      if (!result.startsWith("data:image/")) reject(new Error("Canvas serialization returned invalid image data."));
+      else resolve(result);
+    };
+    reader.readAsDataURL(blob);
+  });
 }

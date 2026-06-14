@@ -62,6 +62,7 @@ import type {
 } from "../shared/types";
 import {
   activeTemplateSourceIds,
+  compactProjectForAutosave,
   createCombination,
   createDefaultEffects,
   createDefaultPaperFrame,
@@ -81,22 +82,23 @@ import {
   workspaceFromTemplate
 } from "./project";
 import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
-import { anchoredScrollForZoom, placeTooltip } from "../shared/ui";
+import { placeTooltip } from "../shared/ui";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
 import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { projectAfterExportSet } from "../shared/export-set";
 import {
   appendAppliedHistory,
+  formatWallpaperCountdown,
   generationStateAfterApplication,
   nextHistoryIndex,
   nextScheduledAt,
   planTemplateRotation,
   previousHistoryIndex,
-  targetsForWallpaperApply,
-  wallpaperFailureDecision,
   wallpaperIntervalToMs
 } from "../shared/wallpaper";
-import { renderProjectToDataUrl } from "./exporter";
+import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
+import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
+import { SingleRunScheduler } from "../shared/scheduler";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
 
@@ -225,19 +227,6 @@ function sourceKindLabel(source: ImageSource) {
 
 function sourceLocationLabel(source: ImageSource) {
   return source.path ?? source.url ?? source.cachePath ?? "Stored in project";
-}
-
-function formatCountdown(target?: string, now = Date.now()) {
-  if (!target) return "Not scheduled";
-  const remaining = Math.max(0, Date.parse(target) - now);
-  const seconds = Math.ceil(remaining / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const trailingSeconds = seconds % 60;
-  if (minutes < 60) return trailingSeconds ? `${minutes}m ${trailingSeconds}s` : `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const trailingMinutes = minutes % 60;
-  return trailingMinutes ? `${hours}h ${trailingMinutes}m` : `${hours}h`;
 }
 
 function getDroppedPaths(event: React.DragEvent) {
@@ -394,12 +383,41 @@ function GlobalTooltip() {
   );
 }
 
+class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error?: string }> {
+  state: { error?: string } = {};
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+    console.error("Renderer error", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main className="renderer-recovery">
+        <section>
+          <h1>The editor hit an error</h1>
+          <p>{this.state.error}</p>
+          <div>
+            <button className="button primary" onClick={() => window.location.reload()}>Reload Editor</button>
+            <button className="button secondary" onClick={() => { localStorage.removeItem(autosaveKey); window.location.reload(); }}>Reset Autosave and Reload</button>
+          </div>
+          <small>Reset Autosave removes only crash-recovery state, not explicitly saved project files.</small>
+        </section>
+      </main>
+    );
+  }
+}
+
 function App() {
   const [project, setProject] = useState<WallpaperProject>(() => {
     const autosaved = localStorage.getItem(autosaveKey);
     if (!autosaved) return createProject();
     try {
-      return normalizeProject(JSON.parse(autosaved) as WallpaperProject);
+      return compactProjectForAutosave(normalizeProject(JSON.parse(autosaved) as WallpaperProject));
     } catch {
       return createProject();
     }
@@ -470,12 +488,16 @@ function App() {
   const loginRotationTriggeredRef = useRef(false);
   const exportCancelRef = useRef(false);
   const sourceApplyTimerRef = useRef<number | undefined>(undefined);
+  const autosaveTimerRef = useRef<number | undefined>(undefined);
   const sourceApplyVersionRef = useRef(0);
-  const zoomRef = useRef(zoom);
-  const zoomFrameRef = useRef<number | undefined>(undefined);
-  const pendingZoomRef = useRef<{ zoom: number; clientX: number; clientY: number } | undefined>(undefined);
-  const gestureStartZoomRef = useRef(zoom);
-  const gestureAnchorRef = useRef<{ clientX: number; clientY: number } | undefined>(undefined);
+  const wallpaperSchedulerRef = useRef<SingleRunScheduler | undefined>(undefined);
+  if (!wallpaperSchedulerRef.current) {
+    wallpaperSchedulerRef.current = new SingleRunScheduler(
+      (callback, delayMs) => window.setTimeout(callback, delayMs),
+      (timer) => window.clearTimeout(timer as number),
+      () => Date.now()
+    );
+  }
   const selectedLayers = project.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId) ?? selectedLayers.at(-1);
   const linkedSourceIds = activeTemplateSourceIds(project);
@@ -518,23 +540,6 @@ function App() {
   }, [project]);
 
   useEffect(() => {
-    zoomRef.current = zoom;
-  }, [zoom]);
-
-  useEffect(() => () => {
-    if (zoomFrameRef.current !== undefined) cancelAnimationFrame(zoomFrameRef.current);
-  }, []);
-
-  useEffect(() => {
-    if (view !== "editor") return;
-    const stage = stageRef.current;
-    if (!stage) return;
-    const handler = (event: WheelEvent) => onCanvasWheel(event);
-    stage.addEventListener("wheel", handler, { passive: false });
-    return () => stage.removeEventListener("wheel", handler);
-  }, [view]);
-
-  useEffect(() => {
     setInspectorTab((current) => {
       if (selectedLayer) return current === "effects" ? "effects" : "image";
       return "settings";
@@ -543,6 +548,8 @@ function App() {
 
   useEffect(() => () => {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
+    if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
+    wallpaperSchedulerRef.current?.cancel();
   }, []);
 
   useEffect(() => {
@@ -634,7 +641,18 @@ function App() {
   }, [project.layers, selectedLayerIds]);
 
   useEffect(() => {
-    localStorage.setItem(autosaveKey, JSON.stringify(project));
+    if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = window.setTimeout(() => {
+      try {
+        localStorage.setItem(autosaveKey, JSON.stringify(compactProjectForAutosave(project)));
+      } catch (error) {
+        console.error("Autosave failed", error);
+        setMessage("Autosave could not be updated. Save the project file manually.");
+      }
+    }, 250);
+    return () => {
+      if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
+    };
   }, [project]);
 
   useEffect(() => {
@@ -648,8 +666,10 @@ function App() {
   );
 
   useEffect(() => {
+    const scheduler = wallpaperSchedulerRef.current!;
     const ms = wallpaperMs(project.wallpaper);
     if (!project.wallpaper.enabled || project.wallpaper.paused || !ms) {
+      scheduler.cancel();
       setWallpaperStatus(project.wallpaper.paused ? "paused" : "idle");
       setProject((current) => current.wallpaper.nextScheduledAt
         ? { ...current, wallpaper: { ...current.wallpaper, nextScheduledAt: undefined } }
@@ -657,8 +677,13 @@ function App() {
       return;
     }
 
-    setWallpaperStatus("scheduled");
-    const scheduled = project.wallpaper.nextScheduledAt || scheduleFor(project.wallpaper);
+    const parsedCurrent = project.wallpaper.nextScheduledAt
+      ? Date.parse(project.wallpaper.nextScheduledAt)
+      : Number.NaN;
+    const scheduled = Number.isFinite(parsedCurrent)
+      ? project.wallpaper.nextScheduledAt
+      : scheduleFor(project.wallpaper);
+
     if (scheduled && scheduled !== project.wallpaper.nextScheduledAt) {
       setProject((current) => ({
         ...current,
@@ -666,29 +691,26 @@ function App() {
       }));
       return;
     }
+    if (!scheduled) return;
 
-    let timer: number | undefined;
-    let cancelled = false;
-    const runWhenReady = (delay: number) => {
-      timer = window.setTimeout(() => {
-        if (cancelled) return;
-        if (applyInFlightRef.current) {
-          // Do not lose the schedule when a manual apply/source change overlaps
-          // the due time. The previous code simply returned here and never
-          // installed another timer, leaving rotation permanently stalled.
-          runWhenReady(500);
-          return;
-        }
-        void generateAndApply({ rotateTemplate: true, automatic: true });
-      }, Math.max(0, delay));
-    };
+    setWallpaperStatus((current) => applyInFlightRef.current ? current : "scheduled");
+    scheduler.schedule(Date.parse(scheduled), async () => {
+      const latest = projectRef.current;
+      const latestMs = wallpaperMs(latest.wallpaper);
+      if (!latest.wallpaper.enabled || latest.wallpaper.paused || !latestMs) return;
+      if (applyInFlightRef.current) {
+        const retryAt = new Date(Date.now() + 1_000).toISOString();
+        setProject((current) => {
+          const next = { ...current, wallpaper: { ...current.wallpaper, nextScheduledAt: retryAt } };
+          projectRef.current = next;
+          return next;
+        });
+        return;
+      }
+      await generateAndApply({ rotateTemplate: true, automatic: true });
+    });
 
-    const dueAt = scheduled ? Date.parse(scheduled) : Date.now() + ms;
-    runWhenReady(dueAt - Date.now());
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
+    return () => scheduler.cancel();
   }, [
     project.wallpaper.enabled,
     project.wallpaper.paused,
@@ -1339,71 +1361,26 @@ function App() {
     setPinterestDialog((current) => ({ ...current, busy: false, stage: "canceled", error: "Import canceled. Cached pins were preserved." }));
   }
 
-  function mergeSuccessfulGenerationState(latest: WallpaperProject, candidate: WallpaperProject) {
-    const candidateLayers = new Map(candidate.layers.map((layer) => [layer.id, layer]));
-    const layers = latest.layers.map((layer) => {
-      const generated = candidateLayers.get(layer.id);
-      if (!generated) return layer;
-      const latestSources = layer.sourceState.sourceIds.join("|");
-      const generatedSources = generated.sourceState.sourceIds.join("|");
-      if (latestSources !== generatedSources) return layer;
-      return {
-        ...layer,
-        generatedImageId: generated.generatedImageId,
-        sourceState: {
-          ...layer.sourceState,
-          currentIndex: generated.sourceState.currentIndex,
-          shuffleQueue: [...generated.sourceState.shuffleQueue],
-          usedImageIds: [...generated.sourceState.usedImageIds]
-        }
-      };
-    });
-    return {
-      ...latest,
-      layers,
-      templates: {
-        ...latest.templates,
-        currentIndex: candidate.templates.currentIndex,
-        shuffleQueue: [...candidate.templates.shuffleQueue]
-      }
-    };
-  }
-
-  function generate() {
-    const current = projectRef.current;
-    const prepared = prepareGeneratedProject(current);
-    const next = touchProject(updateActiveTemplateSnapshot(normalizeProject(prepared.project)));
-    projectRef.current = next;
-    setProject(next);
-    setWallpaperHistoryIndex(0);
-    setMessage("Generated a new wallpaper preview");
-  }
-
-  function recordWallpaperFailure(error: string, automatic: boolean, hardFailure = true) {
-    const decision = wallpaperFailureDecision(projectRef.current.wallpaper.consecutiveFailures ?? 0, {
-      automatic,
-      hardFailure
-    });
-    setWallpaperStatus(decision.shouldPause ? "paused" : "failed");
+  function recordWallpaperFailure(error: string, automatic: boolean) {
+    const failures = (projectRef.current.wallpaper.consecutiveFailures ?? 0) + 1;
+    setWallpaperStatus(automatic && failures >= 3 ? "paused" : "failed");
     setProject((current) => {
       const next = {
         ...current,
         wallpaper: {
           ...current.wallpaper,
           lastError: error,
-          consecutiveFailures: decision.consecutiveFailures,
-          paused: decision.shouldPause ? true : current.wallpaper.paused,
-          nextScheduledAt: decision.shouldPause
+          consecutiveFailures: failures,
+          paused: automatic && failures >= 3 ? true : current.wallpaper.paused,
+          nextScheduledAt: automatic && failures >= 3
             ? undefined
-            : automatic && current.wallpaper.enabled && !current.wallpaper.paused
-              ? scheduleFor(current.wallpaper)
-              : current.wallpaper.nextScheduledAt
+            : scheduleFor(current.wallpaper)
         }
       };
       projectRef.current = next;
       return next;
     });
-    setMessage(decision.shouldPause ? `${error} Rotation paused after three confirmed automatic failures.` : error);
+    setMessage(automatic && failures >= 3 ? `${error} Rotation paused after repeated failures.` : error);
   }
 
   async function applyCandidate(
@@ -1412,31 +1389,49 @@ function App() {
     options: { automatic?: boolean; label?: string } = {}
   ) {
     if (applyInFlightRef.current) {
-      setMessage("A wallpaper is already being applied.");
+      setMessage("A wallpaper operation is already running.");
       return false;
     }
     applyInFlightRef.current = true;
     setWallpaperBusy(true);
-    setWallpaperStatus("rendering");
     try {
-      const dataUrl = await renderProjectToDataUrl(candidate, "png");
-      setWallpaperStatus("applying");
-      const result = await window.wallpaperApi.applyWallpaper({
-        dataUrl,
-        suggestedName: `${candidate.name.replace(/[^\w.-]+/g, "-")}-${Date.now()}.png`,
-        monitorMode: candidate.wallpaper.monitorMode,
-        displayMode: candidate.wallpaper.displayMode,
-        scope: candidate.wallpaper.scope,
-        transitionEnabled: false,
-        transitionDurationMs: candidate.wallpaper.transitionDurationMs
+      const generated = await generateWallpaperFile<ArrayBuffer>({
+        render: () => renderProjectToArrayBuffer(candidate, "png"),
+        persist: (imageData) => window.wallpaperApi.generateWallpaper({
+          imageData,
+          mimeType: "image/png",
+          suggestedName: `${candidate.name.replace(/[^\w.-]+/g, "-")}-${Date.now()}.png`
+        }),
+        onStatus: setWallpaperStatus
       });
-      setWallpaperStatus("verifying");
+
+      const generatedProject = touchProject(updateActiveTemplateSnapshot({
+        ...candidate,
+        wallpaper: {
+          ...candidate.wallpaper,
+          lastGeneratedAt: generated.generatedAt ?? new Date().toISOString(),
+          lastGeneratedFilePath: generated.filePath,
+          lastError: undefined
+        }
+      }));
+      projectRef.current = generatedProject;
+      setProject(generatedProject);
+      setWallpaperHistoryIndex(0);
+      setMessage(`Generated successfully: ${generated.filePath}`);
+
+      const result = await applyGeneratedWallpaperFile({
+        filePath: generated.filePath,
+        apply: (filePath) => window.wallpaperApi.applyWallpaperFile({
+          filePath,
+          monitorMode: candidate.wallpaper.monitorMode,
+          displayMode: candidate.wallpaper.displayMode,
+          scope: candidate.wallpaper.scope,
+          transitionEnabled: candidate.wallpaper.transitionEnabled,
+          transitionDurationMs: candidate.wallpaper.transitionDurationMs
+        }),
+        onStatus: setWallpaperStatus
+      });
       setLastWallpaperDiagnostics(result.diagnostics);
-      if (!result.ok || !result.filePath) {
-        setWallpaperStatus("failed");
-        recordWallpaperFailure(result.error ?? "The operating system did not apply the wallpaper.", Boolean(options.automatic));
-        return false;
-      }
 
       const appliedAt = result.appliedAt ?? new Date().toISOString();
       const templateId = combination.templateId ?? candidate.templates.activeTemplateId;
@@ -1449,21 +1444,23 @@ function App() {
         templateName,
         monitorMode: candidate.wallpaper.monitorMode
       };
-      const committedCandidate = mergeSuccessfulGenerationState(projectRef.current, candidate);
+      const committedCandidate = generationStateAfterApplication(projectRef.current, generatedProject, true);
       const finalProject = touchProject(updateActiveTemplateSnapshot({
         ...committedCandidate,
         wallpaper: {
-          ...candidate.wallpaper,
+          ...generatedProject.wallpaper,
+          lastGeneratedAt: generated.generatedAt ?? appliedAt,
+          lastGeneratedFilePath: generated.filePath,
           lastUpdatedAt: appliedAt,
           lastAppliedFilePath: result.filePath,
           lastAppliedTemplateId: templateId,
           lastError: undefined,
           consecutiveFailures: 0,
-          nextScheduledAt: candidate.wallpaper.enabled && !candidate.wallpaper.paused
-            ? scheduleFor(candidate.wallpaper, new Date(appliedAt))
+          nextScheduledAt: generatedProject.wallpaper.enabled && !generatedProject.wallpaper.paused
+            ? scheduleFor(generatedProject.wallpaper, new Date(appliedAt))
             : undefined
         },
-        recentCombinations: appendAppliedHistory(candidate.recentCombinations, historyEntry)
+        recentCombinations: appendAppliedHistory(generatedProject.recentCombinations, historyEntry)
       }));
       projectRef.current = finalProject;
       setProject(finalProject);
@@ -1472,15 +1469,8 @@ function App() {
       setMessage(`${options.label ?? "Wallpaper applied"}: ${result.filePath}`);
       return true;
     } catch (error) {
-      console.error("[generate-and-apply] failed", {
-        projectId: candidate.id,
-        projectName: candidate.name,
-        templateId: combination.templateId,
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      });
       setWallpaperStatus("failed");
-      recordWallpaperFailure(error instanceof Error ? error.message : "Unable to render and apply wallpaper.", Boolean(options.automatic));
+      recordWallpaperFailure(error instanceof Error ? error.message : "Unable to generate and apply wallpaper.", Boolean(options.automatic));
       return false;
     } finally {
       applyInFlightRef.current = false;
@@ -1516,9 +1506,10 @@ function App() {
     setWallpaperBusy(true);
     setWallpaperStatus("generating");
     try {
-      const targets = await window.wallpaperApi.getWallpaperTargets();
+      const targets = wallpaperTargets.length ? wallpaperTargets : await window.wallpaperApi.getWallpaperTargets();
       setWallpaperTargets(targets);
-      const applyTargets = targetsForWallpaperApply(targets);
+      const supportedTargets = targets.filter((target) => target.reliable);
+      const applyTargets = supportedTargets.length ? supportedTargets : targets.slice(0, 1);
       if (applyTargets.length === 0) {
         recordWallpaperFailure("No wallpaper desktop targets are available.", Boolean(options.automatic));
         return false;
@@ -1526,43 +1517,46 @@ function App() {
 
       let working = normalizeProject(base);
       const used = new Set<string>();
-      const rendered: Array<{ target: WallpaperTarget; combination: GeneratedCombination; dataUrl: string; templateName: string }> = [];
+      const rendered: Array<{ target: WallpaperTarget; combination: GeneratedCombination; imageData: ArrayBuffer; templateName: string }> = [];
       for (const [index, target] of applyTargets.entries()) {
         const template = targetTemplateFor(working, target, index);
         const workspace = template ? normalizeProject(workspaceFromTemplate({ ...working, templates: { ...working.templates, activeTemplateId: template.id } }, template)) : working;
         const prepared = prepareGeneratedProjectWithUsed(workspace, template?.id ?? workspace.templates.activeTemplateId, used);
         working = normalizeProject(prepared.project);
         setWallpaperStatus("rendering");
-        const dataUrl = await renderProjectToDataUrl(working, "png");
+        const imageData = await withWallpaperTimeout(
+          renderProjectToArrayBuffer(working, "png"),
+          60_000,
+          `Rendering ${target.label} timed out.`
+        );
         rendered.push({
           target,
           combination: prepared.combination,
-          dataUrl,
+          imageData,
           templateName: template?.name ?? working.name
         });
       }
 
       setWallpaperStatus("applying");
-      const result = await window.wallpaperApi.applyWallpaperTargets({
+      const result = await withWallpaperTimeout(window.wallpaperApi.applyWallpaperTargets({
         scope: "different-per-desktop",
         displayMode: working.wallpaper.displayMode,
-        transitionEnabled: false,
+        transitionEnabled: working.wallpaper.transitionEnabled,
         transitionDurationMs: working.wallpaper.transitionDurationMs,
-        items: rendered.map(({ target, dataUrl, templateName }) => ({
+        items: rendered.map(({ target, imageData, templateName }) => ({
           targetId: target.id,
           targetLabel: target.label,
           displayId: target.displayId,
           current: target.current,
-          dataUrl,
+          imageData,
+          mimeType: "image/png",
           suggestedName: `${templateName.replace(/[^\w.-]+/g, "-")}-${target.id}-${Date.now()}.png`
         }))
-      });
+      }), 60_000, "Applying desktop wallpapers timed out.");
       setWallpaperStatus("verifying");
       setLastWallpaperDiagnostics(result.diagnostics);
       if (!result.ok || !result.targets?.length) {
-        const failedTargets = result.targets?.filter((item) => !item.ok).map((item) => `${item.targetLabel}: ${item.error ?? "not applied"}`) ?? [];
-        const detail = failedTargets.length ? failedTargets.join(" · ") : result.error ?? "One or more desktop wallpapers failed to apply.";
-        recordWallpaperFailure(detail, Boolean(options.automatic));
+        recordWallpaperFailure(result.error ?? "One or more desktop wallpapers failed to apply.", Boolean(options.automatic));
         setWallpaperStatus("failed");
         return false;
       }
@@ -1662,18 +1656,26 @@ function App() {
       setMessage("That wallpaper file is no longer available in history.");
       return;
     }
+    if (applyInFlightRef.current) {
+      setMessage("A wallpaper operation is already running.");
+      return;
+    }
+    applyInFlightRef.current = true;
     setWallpaperBusy(true);
     try {
-      const result = await window.wallpaperApi.applyWallpaperFile({
+      const result = await applyGeneratedWallpaperFile({
         filePath: entry.filePath,
-        monitorMode: current.wallpaper.monitorMode,
-        displayMode: current.wallpaper.displayMode
+        apply: (filePath) => window.wallpaperApi.applyWallpaperFile({
+          filePath,
+          monitorMode: current.wallpaper.monitorMode,
+          displayMode: current.wallpaper.displayMode,
+          scope: current.wallpaper.scope,
+          transitionEnabled: current.wallpaper.transitionEnabled,
+          transitionDurationMs: current.wallpaper.transitionDurationMs
+        }),
+        onStatus: setWallpaperStatus
       });
       setLastWallpaperDiagnostics(result.diagnostics);
-      if (!result.ok) {
-        recordWallpaperFailure(result.error ?? "Unable to apply wallpaper history item.", false);
-        return;
-      }
       const appliedAt = result.appliedAt ?? new Date().toISOString();
       setProject((state) => {
         const next = {
@@ -1691,10 +1693,12 @@ function App() {
         return next;
       });
       setWallpaperHistoryIndex(index);
+      setWallpaperStatus("applied");
       setMessage(`Applied history: ${entry.templateName ?? entry.name}`);
     } catch (error) {
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to apply wallpaper history item.", false);
     } finally {
+      applyInFlightRef.current = false;
       setWallpaperBusy(false);
     }
   }
@@ -1722,7 +1726,6 @@ function App() {
       setPreviewUrl(await renderProjectToDataUrl(project, "png"));
       setMessage("Preview rendered");
     } catch (error) {
-      console.error("[preview] render failed", error);
       setMessage(error instanceof Error ? error.message : "Unable to render preview.");
     }
   }
@@ -1737,7 +1740,6 @@ function App() {
       });
       if (!result.canceled) setMessage(`Exported ${result.filePath}`);
     } catch (error) {
-      console.error("[export] failed", error);
       setMessage(error instanceof Error ? error.message : "Export failed.");
     }
   }
@@ -1792,7 +1794,6 @@ function App() {
     let completed = 0;
     let skipped = 0;
     let failed = 0;
-    let firstFailureMessage: string | undefined;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const baseName = (options.includeTemplateName ? template.name : "Wallpaper")
       .replace(/[^a-zA-Z0-9_-]+/g, "-")
@@ -1823,17 +1824,8 @@ function App() {
         if (result.ok) completed += 1;
         else if (result.skipped) skipped += 1;
         else failed += 1;
-      } catch (error) {
+      } catch {
         failed += 1;
-        const message = error instanceof Error ? error.message : "Unknown export error.";
-        firstFailureMessage ??= message;
-        console.error("[export-set] variation failed", {
-          index,
-          templateId: template.id,
-          templateName: template.name,
-          error: message,
-          stack: error instanceof Error ? error.stack : undefined
-        });
       }
       setExportSet((current) => ({ ...current, completed, skipped, failed }));
       await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -1848,16 +1840,8 @@ function App() {
     const summary = exportCancelRef.current
       ? `Export stopped: ${completed} exported, ${skipped} skipped, ${failed} failed.`
       : `Export complete: ${completed} exported, ${skipped} skipped, ${failed} failed.`;
-    setMessage(firstFailureMessage ? `${summary} First error: ${firstFailureMessage}` : summary);
-    setExportSet((current) => ({
-      ...current,
-      busy: false,
-      cancelRequested: exportCancelRef.current,
-      completed,
-      skipped,
-      failed,
-      error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed.${firstFailureMessage ? ` ${firstFailureMessage}` : ""}` : undefined
-    }));
+    setMessage(summary);
+    setExportSet((current) => ({ ...current, busy: false, cancelRequested: exportCancelRef.current, completed, skipped, failed, error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed.` : undefined }));
   }
 
   async function saveProject() {
@@ -2113,62 +2097,31 @@ function App() {
   }
 
   function fitCanvas() {
-    const stage = stageRef.current;
-    if (!stage) {
-      setZoom(0.36);
-      return;
-    }
-    const padding = 72;
-    const next = clamp(Math.min(
-      Math.max(1, stage.clientWidth - padding) / projectRef.current.canvas.width,
-      Math.max(1, stage.clientHeight - padding) / projectRef.current.canvas.height
-    ), 0.12, 1.6);
-    const rect = stage.getBoundingClientRect();
-    queueZoomAtPoint(next, rect.left + rect.width / 2, rect.top + rect.height / 2);
-  }
-
-  function queueZoomAtPoint(nextZoom: number, clientX: number, clientY: number) {
-    pendingZoomRef.current = { zoom: clamp(nextZoom, 0.12, 1.6), clientX, clientY };
-    if (zoomFrameRef.current !== undefined) return;
-    zoomFrameRef.current = requestAnimationFrame(() => {
-      zoomFrameRef.current = undefined;
-      const pending = pendingZoomRef.current;
-      pendingZoomRef.current = undefined;
-      if (!pending) return;
-      const stage = stageRef.current;
-      const currentZoom = zoomRef.current;
-      const next = pending.zoom;
-      if (!stage || Math.abs(next - currentZoom) < 0.0001) return;
-      const rect = stage.getBoundingClientRect();
-      const pointerX = pending.clientX - rect.left;
-      const pointerY = pending.clientY - rect.top;
-      const anchored = anchoredScrollForZoom({
-        scrollLeft: stage.scrollLeft,
-        scrollTop: stage.scrollTop,
-        pointerX,
-        pointerY,
-        currentZoom,
-        nextZoom: next
-      });
-      zoomRef.current = next;
-      setZoom(next);
-      requestAnimationFrame(() => {
-        stage.scrollLeft = Math.max(0, anchored.scrollLeft);
-        stage.scrollTop = Math.max(0, anchored.scrollTop);
-      });
-    });
+    setZoom(0.36);
   }
 
   function zoomAtPoint(nextZoom: number, clientX: number, clientY: number) {
-    queueZoomAtPoint(nextZoom, clientX, clientY);
+    const stage = stageRef.current;
+    if (!stage) {
+      setZoom(nextZoom);
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const contentX = stage.scrollLeft + clientX - rect.left;
+    const contentY = stage.scrollTop + clientY - rect.top;
+    const ratio = nextZoom / zoom;
+    setZoom(nextZoom);
+    requestAnimationFrame(() => {
+      stage.scrollLeft = contentX * ratio - (clientX - rect.left);
+      stage.scrollTop = contentY * ratio - (clientY - rect.top);
+    });
   }
 
-  function onCanvasWheel(event: WheelEvent) {
+  function onCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (!event.metaKey && !event.ctrlKey) return;
     event.preventDefault();
-    const current = pendingZoomRef.current?.zoom ?? zoomRef.current;
-    const next = clamp(current * Math.exp(-event.deltaY * 0.0015), 0.12, 1.6);
-    queueZoomAtPoint(next, event.clientX, event.clientY);
+    const direction = event.deltaY > 0 ? -1 : 1;
+    zoomAtPoint(clamp(zoom + direction * 0.06, 0.12, 1.6), event.clientX, event.clientY);
   }
 
   async function handleSourceDrop(event: React.DragEvent) {
@@ -2551,51 +2504,37 @@ function App() {
   }
 
   useEffect(() => {
-    function gesturePoint(gesture: Event & { clientX?: number; clientY?: number }) {
-      if (Number.isFinite(gesture.clientX) && Number.isFinite(gesture.clientY)) {
-        return { clientX: gesture.clientX as number, clientY: gesture.clientY as number };
-      }
-      const stage = stageRef.current;
-      const rect = stage?.getBoundingClientRect();
-      return rect
-        ? { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }
-        : { clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 };
-    }
+    let lastGestureScale = 1;
     function onGestureStart(event: Event) {
       event.preventDefault();
-      const gesture = event as Event & { clientX?: number; clientY?: number };
-      gestureStartZoomRef.current = zoomRef.current;
-      gestureAnchorRef.current = gesturePoint(gesture);
+      lastGestureScale = 1;
     }
     function onGestureChange(event: Event) {
       const gesture = event as Event & { scale?: number; clientX?: number; clientY?: number };
       event.preventDefault();
-      const anchor = gestureAnchorRef.current ?? gesturePoint(gesture);
-      queueZoomAtPoint(
-        clamp(gestureStartZoomRef.current * Math.max(0.1, gesture.scale ?? 1), 0.12, 1.6),
-        anchor.clientX,
-        anchor.clientY
+      const scale = gesture.scale ?? 1;
+      const delta = scale - lastGestureScale;
+      lastGestureScale = scale;
+      zoomAtPoint(
+        clamp(zoom + delta * 0.25, 0.12, 1.6),
+        gesture.clientX ?? window.innerWidth / 2,
+        gesture.clientY ?? window.innerHeight / 2
       );
-    }
-    function onGestureEnd() {
-      gestureAnchorRef.current = undefined;
-      gestureStartZoomRef.current = zoomRef.current;
     }
     function onKeyDown(event: KeyboardEvent) {
       const command = event.metaKey || event.ctrlKey;
       if (isTypingTarget(event.target) && !(command && event.key.toLowerCase() === "s")) return;
       if (command && (event.key === "=" || event.key === "+")) {
         event.preventDefault();
-        zoomAtPoint(clamp(zoomRef.current + 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
+        zoomAtPoint(clamp(zoom + 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
       } else if (command && event.key === "-") {
         event.preventDefault();
-        zoomAtPoint(clamp(zoomRef.current - 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
+        zoomAtPoint(clamp(zoom - 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
       } else if (command && event.key === "0") {
         event.preventDefault();
         fitCanvas();
       } else if (command && event.key === "1") {
         event.preventDefault();
-        zoomRef.current = 1;
         setZoom(1);
       } else if (command && event.key.toLowerCase() === "z" && event.shiftKey) {
         event.preventDefault();
@@ -2653,12 +2592,10 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("gesturestart", onGestureStart);
     window.addEventListener("gesturechange", onGestureChange);
-    window.addEventListener("gestureend", onGestureEnd);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("gesturestart", onGestureStart);
       window.removeEventListener("gesturechange", onGestureChange);
-      window.removeEventListener("gestureend", onGestureEnd);
     };
   }, [selectedLayer, selectedLayers, clipboardLayers, cropModeLayerId, project, projectPath, selectedLayerIds]);
 
@@ -2968,7 +2905,7 @@ function App() {
             <span>{project.canvas.width} x {project.canvas.height}</span>
           </div>
           <div className="toolbar-cluster">
-            <button className="primary-action" onClick={() => void generateAndApply()}><Wallpaper size={17} /> Generate and Apply</button>
+            <button className="primary-action" disabled={wallpaperBusy} onClick={() => void generateAndApply()}><Wallpaper size={17} /> {wallpaperBusy ? "Working…" : "Generate and Apply"}</button>
             <div className="overflow-wrap">
               <button className="icon-button tooltip-anchor" data-tooltip="More actions" aria-label="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
               {toolbarMenuOpen && (
@@ -2998,6 +2935,7 @@ function App() {
           onDragOver={(event) => event.preventDefault()}
           onDragLeave={() => setDragActive(false)}
           onDrop={(event) => void handleCanvasDrop(event)}
+          onWheel={onCanvasWheel}
         >
           <div className={`floating-canvas-status ${cropModeLayerId ? "cropping" : ""}`}>
             <span>{Math.round(zoom * 100)}%</span>
@@ -3180,7 +3118,6 @@ function App() {
             <WallpaperPanel
               project={project}
               onPatch={patchWallpaper}
-              onGenerateApply={() => void generateAndApply()}
               onPrevious={() => void applyPreviousWallpaper()}
               onNext={() => void applyNextWallpaper()}
               busy={wallpaperBusy}
@@ -3188,7 +3125,7 @@ function App() {
               targets={wallpaperTargets}
               templates={project.templates.templates}
               runtimeStatus={wallpaperStatus}
-              countdownLabel={formatCountdown(project.wallpaper.nextScheduledAt, nowTick)}
+              countdownLabel={formatWallpaperCountdown(project.wallpaper.nextScheduledAt, nowTick)}
             />
           </>
         )}
@@ -3855,7 +3792,6 @@ function PinterestDialog({
 function WallpaperPanel({
   project,
   onPatch,
-  onGenerateApply,
   onPrevious,
   onNext,
   busy,
@@ -3867,7 +3803,6 @@ function WallpaperPanel({
 }: {
   project: WallpaperProject;
   onPatch: (patch: Partial<WallpaperProject["wallpaper"]>) => void;
-  onGenerateApply: () => void;
   onPrevious: () => void;
   onNext: () => void;
   busy: boolean;
@@ -3878,17 +3813,16 @@ function WallpaperPanel({
   countdownLabel: string;
 }) {
   const rotationActive = project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval !== "manual";
+  const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
 
   function toggleRotation() {
     if (rotationActive) {
-      onPatch({ enabled: true, paused: true });
+      onPatch({ paused: true });
       return;
     }
     onPatch({
       enabled: true,
       paused: false,
-      consecutiveFailures: 0,
-      lastError: undefined,
       interval: project.wallpaper.interval === "manual" ? "15m" : project.wallpaper.interval
     });
   }
@@ -3949,9 +3883,7 @@ function WallpaperPanel({
         </div>
         <label>Interval<select value={project.wallpaper.interval} onChange={(event) => {
           const interval = event.target.value as WallpaperProject["wallpaper"]["interval"];
-          onPatch(interval === "manual"
-            ? { interval, enabled: false, paused: false, consecutiveFailures: 0, lastError: undefined }
-            : { interval, enabled: true, paused: false, consecutiveFailures: 0, lastError: undefined });
+          onPatch(interval === "manual" ? { interval, enabled: false, paused: false } : { interval, enabled: true, paused: false });
         }}>
           <option value="manual">Manual</option><option value="5s">5 seconds</option><option value="10s">10 seconds</option><option value="30s">30 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="hourly">Hourly</option><option value="few-hours">Every few hours</option><option value="daily">Daily</option><option value="login">At login</option><option value="custom">Custom</option>
         </select></label>
@@ -3964,12 +3896,25 @@ function WallpaperPanel({
         {rotationActive && <p className="settings-hint">Next update {countdownLabel}</p>}
       </details>
 
-      <button className="button primary generate-apply-button" disabled={busy} onClick={onGenerateApply}><Wallpaper size={16} /> {busy ? "Applying…" : "Generate and Apply"}</button>
       <div className="compact-action-row">
         <button className="button ghost" disabled={busy} onClick={onPrevious}>Previous</button>
         <button className="button ghost" disabled={busy} onClick={onNext}>Next</button>
       </div>
 
+      <details>
+        <summary>Advanced <ChevronDown size={15} /></summary>
+        <label className="toggle-setting"><input type="checkbox" checked={project.wallpaper.transitionEnabled} onChange={(event) => onPatch({ transitionEnabled: event.target.checked })} /> Fade transition</label>
+        {project.wallpaper.transitionEnabled && <FilterSlider label="Fade duration" value={project.wallpaper.transitionDurationMs} min={200} max={1600} step={50} onChange={(value) => onPatch({ transitionDurationMs: value })} />}
+        <p className="settings-hint">Active monitors fade smoothly. Inactive Mission Control Spaces update without animation.</p>
+      </details>
+
+      <div className="wallpaper-status-card">
+        <div><span>Template</span><strong>{currentTemplate?.name ?? project.name}</strong></div>
+        <div><span>Status</span><strong>{runtimeStatus}</strong></div>
+        {project.wallpaper.lastUpdatedAt && <div><span>Last applied</span><strong>{new Date(project.wallpaper.lastUpdatedAt).toLocaleTimeString()}</strong></div>}
+        {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
+      </div>
+      {diagnostics && <details className="diagnostics"><summary>Diagnostics <ChevronDown size={14} /></summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
     </section>
   );
 }
@@ -4217,4 +4162,4 @@ function PresetButtons({ currentId, onPick }: { currentId: string; onPick: (filt
   })}</div>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<AppErrorBoundary><App /></AppErrorBoundary>);

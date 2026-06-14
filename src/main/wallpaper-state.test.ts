@@ -9,9 +9,7 @@ import {
   nextScheduledAt,
   planFadeOverlayAssignments,
   planTemplateRotation,
-  previousHistoryIndex,
-  targetsForWallpaperApply,
-  wallpaperFailureDecision
+  previousHistoryIndex
 } from "../shared/wallpaper.js";
 import type { GeneratedCombination, TemplateLibrary, WallpaperTemplate } from "../shared/types.js";
 
@@ -108,20 +106,4 @@ test("visibility classification consumes duplicate wallpaper paths only once per
   );
   assert.deepEqual(classified.map((item) => item.visible), [true, false, true]);
   assert.deepEqual(classified.map((item) => item.targetType), ["active-space", "inactive-space", "active-space"]);
-});
-
-
-test("manual and soft failures do not auto-pause rotation", () => {
-  assert.deepEqual(wallpaperFailureDecision(2, { automatic: false }), { consecutiveFailures: 2, shouldPause: false });
-  assert.deepEqual(wallpaperFailureDecision(2, { automatic: true, hardFailure: false }), { consecutiveFailures: 2, shouldPause: false });
-  assert.deepEqual(wallpaperFailureDecision(2, { automatic: true }), { consecutiveFailures: 3, shouldPause: true });
-});
-
-test("wallpaper target selection keeps inactive Spaces and removes only duplicate IDs", () => {
-  const targets = targetsForWallpaperApply([
-    { id: "picture-1", label: "Current", index: 1, current: true, reliable: true },
-    { id: "picture-2", label: "Inactive", index: 2, current: false, reliable: false },
-    { id: "picture-2", label: "Duplicate", index: 2, current: false, reliable: false }
-  ]);
-  assert.deepEqual(targets.map((target) => target.id), ["picture-1", "picture-2"]);
 });

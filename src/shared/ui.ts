@@ -35,25 +35,3 @@ export function placeTooltip(
     placement
   };
 }
-
-
-export interface AnchoredZoomInput {
-  scrollLeft: number;
-  scrollTop: number;
-  pointerX: number;
-  pointerY: number;
-  currentZoom: number;
-  nextZoom: number;
-}
-
-/** Keeps the same canvas-space point underneath the pointer while zooming. */
-export function anchoredScrollForZoom(input: AnchoredZoomInput) {
-  const currentZoom = Math.max(0.0001, input.currentZoom);
-  const nextZoom = Math.max(0.0001, input.nextZoom);
-  const canvasX = (input.scrollLeft + input.pointerX) / currentZoom;
-  const canvasY = (input.scrollTop + input.pointerY) / currentZoom;
-  return {
-    scrollLeft: canvasX * nextZoom - input.pointerX,
-    scrollTop: canvasY * nextZoom - input.pointerY
-  };
-}

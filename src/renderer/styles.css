@@ -3286,143 +3286,44 @@ textarea:focus-visible {
   overflow: visible;
 }
 
-/* Stabilization: strict control containment and predictable inspector layout */
-:root {
-  --pwc-control-height: 34px;
-  --pwc-control-radius: 8px;
-  --pwc-inspector-gap: 10px;
+.primary-action:disabled {
+  cursor: progress;
+  opacity: .68;
 }
 
-button,
-.button,
-.icon-button,
-.layer-icon-button,
-select,
-input,
-textarea,
-summary,
-label,
-.panel-tabs button,
-.segmented-control button {
-  min-width: 0;
-  max-width: 100%;
+.runtime-chip.generating,
+.runtime-chip.rendering,
+.runtime-chip.saving,
+.runtime-chip.applying,
+.runtime-chip.verifying {
+  color: #7b6222;
+  background: #fbf1d5;
 }
 
-button,
-.button,
-.panel-tabs button,
-.segmented-control button {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.runtime-chip.generated {
+  color: #35617a;
+  background: #e5f1f7;
 }
 
-button > span,
-.button > span,
-.panel-tabs button > span,
-.segmented-control button > span,
-label > span,
-.target-row > span,
-.source-row-main,
-.layer-row-main {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.renderer-recovery {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: #f5f5f2;
+  color: #252932;
 }
 
-button > svg,
-.button > svg,
-.icon-button > svg,
-.layer-icon-button > svg {
-  flex: 0 0 auto;
+.renderer-recovery section {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(25, 30, 40, .12);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(24, 29, 38, .12);
 }
 
-select,
-input[type="text"],
-input[type="number"],
-input[type="url"] {
-  width: 100%;
-  height: var(--pwc-control-height);
-  min-height: var(--pwc-control-height);
-  padding-block: 0;
-  line-height: normal;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-select {
-  padding-left: 10px;
-  padding-right: 30px;
-}
-
-.sidebar.right,
-.sidebar.right .inspector-scroll-region,
-.sidebar.right .settings-section,
-.sidebar.right .properties {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.sidebar.right .inspector-scroll-region {
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
-}
-
-.settings-section,
-.properties,
-.settings-section > details,
-.properties > details,
-.settings-section > details > *,
-.properties > details > * {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.settings-section > details > summary,
-.properties > details > summary {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.two-col,
-.custom-interval-row,
-.compact-action-row,
-.rotation-control-row,
-.target-row,
-.preset-grid {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.two-col > *,
-.custom-interval-row > *,
-.compact-action-row > *,
-.rotation-control-row > *,
-.target-row > * {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.generate-apply-button {
-  width: 100%;
-  min-width: 0;
-}
-
-.runtime-chip {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-/* Transition overlays are intentionally disabled during stabilization. */
-.wallpaper-panel .toggle-setting:has(input[checked]) {
-  max-width: 100%;
-}
+.renderer-recovery h1 { margin: 0 0 10px; }
+.renderer-recovery p { color: #6f7680; }
+.renderer-recovery div { display: flex; gap: 10px; margin: 20px 0 12px; }
+.renderer-recovery small { color: #8b929d; }

@@ -13,9 +13,7 @@ if (!jsFile || !cssFile) {
 }
 
 const css = readFileSync(path.join(assetsDir, cssFile), "utf8").replaceAll("</style", "<\\/style");
-const js = readFileSync(path.join(assetsDir, jsFile), "utf8")
-  .replace(/new URL\(([`'"])(?!\.{0,2}\/|\/|[a-zA-Z][a-zA-Z\d+.-]*:)([^`'"]+\.(?:webp|png|jpe?g|gif|svg|avif|woff2?))\1,\s*import\.meta\.url\)/g, "new URL($1assets/$2$1,import.meta.url)")
-  .replaceAll("</script", "<\\/script");
+const js = readFileSync(path.join(assetsDir, jsFile), "utf8").replaceAll("</script", "<\\/script");
 const html = `<!doctype html>
 <html lang="en">
   <head>

@@ -33,6 +33,8 @@ export type WallpaperRuntimeStatus =
   | "scheduled"
   | "generating"
   | "rendering"
+  | "saving"
+  | "generated"
   | "applying"
   | "verifying"
   | "applied"
@@ -259,6 +261,8 @@ export interface WallpaperSettings {
   displayMode: WallpaperDisplayMode;
   monitorId?: string;
   lastUpdatedAt?: string;
+  lastGeneratedAt?: string;
+  lastGeneratedFilePath?: string;
   nextScheduledAt?: string;
   lastAppliedFilePath?: string;
   lastAppliedTemplateId?: string;
@@ -388,9 +392,21 @@ export interface CustomTextureResult {
   error?: string;
 }
 
-export interface WallpaperApplyPayload {
-  dataUrl: string;
+export interface WallpaperGeneratePayload {
+  imageData: ArrayBuffer;
   suggestedName: string;
+  mimeType?: "image/png" | "image/jpeg";
+}
+
+export interface WallpaperGenerateResult {
+  ok: boolean;
+  filePath?: string;
+  fileSize?: number;
+  generatedAt?: string;
+  error?: string;
+}
+
+export interface WallpaperApplyPayload extends WallpaperGeneratePayload {
   monitorMode?: WallpaperSettings["monitorMode"];
   transitionEnabled?: boolean;
   transitionDurationMs?: number;
@@ -403,6 +419,10 @@ export interface WallpaperApplyFilePayload {
   filePath: string;
   monitorMode?: WallpaperSettings["monitorMode"];
   displayMode?: WallpaperDisplayMode;
+  scope?: WallpaperScope;
+  targetId?: string;
+  transitionEnabled?: boolean;
+  transitionDurationMs?: number;
 }
 
 export interface WallpaperTargetApplyItem {
@@ -410,8 +430,9 @@ export interface WallpaperTargetApplyItem {
   targetLabel: string;
   displayId?: string;
   current?: boolean;
-  dataUrl: string;
+  imageData: ArrayBuffer;
   suggestedName: string;
+  mimeType?: "image/png" | "image/jpeg";
 }
 
 export interface WallpaperApplyTargetsPayload {

@@ -16,6 +16,8 @@ import type {
   WallpaperApplyPayload,
   WallpaperApplyTargetsPayload,
   WallpaperApplyResult,
+  WallpaperGeneratePayload,
+  WallpaperGenerateResult,
   WallpaperTarget,
   WallpaperProject,
   TrayRuntimeState
@@ -51,6 +53,8 @@ const api = {
   importCustomTexture: (): Promise<CustomTextureResult> => ipcRenderer.invoke("texture:import"),
   removeCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:remove", path),
   revealCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:reveal", path),
+  generateWallpaper: (payload: WallpaperGeneratePayload): Promise<WallpaperGenerateResult> =>
+    ipcRenderer.invoke("wallpaper:generate", payload),
   applyWallpaper: (payload: WallpaperApplyPayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply", payload),
   applyWallpaperFile: (payload: WallpaperApplyFilePayload): Promise<WallpaperApplyResult> =>

@@ -8,33 +8,6 @@ import type {
 
 export const appliedHistoryLimit = 40;
 
-export interface WallpaperFailureDecision {
-  consecutiveFailures: number;
-  shouldPause: boolean;
-}
-
-export function wallpaperFailureDecision(
-  currentFailures: number,
-  options: { automatic: boolean; hardFailure?: boolean; threshold?: number }
-): WallpaperFailureDecision {
-  if (!options.automatic || options.hardFailure === false) {
-    return { consecutiveFailures: currentFailures, shouldPause: false };
-  }
-  const consecutiveFailures = currentFailures + 1;
-  return {
-    consecutiveFailures,
-    shouldPause: consecutiveFailures >= (options.threshold ?? 3)
-  };
-}
-
-export function targetsForWallpaperApply(targets: WallpaperTarget[]) {
-  const unique = new Map<string, WallpaperTarget>();
-  for (const target of targets) {
-    if (!unique.has(target.id)) unique.set(target.id, target);
-  }
-  return [...unique.values()];
-}
-
 export function wallpaperIntervalToMs(
   interval: WallpaperInterval,
   customMinutes: number,
@@ -258,4 +231,17 @@ export function planFadeOverlayAssignments(
         ?? visibleItems[index]
         ?? visibleItems[0]
   }));
+}
+
+export function formatWallpaperCountdown(target?: string, now = Date.now()) {
+  if (!target) return "Not scheduled";
+  const remaining = Math.max(0, Date.parse(target) - now);
+  const seconds = Math.ceil(remaining / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const trailingSeconds = seconds % 60;
+  if (minutes < 60) return trailingSeconds ? `${minutes}m ${trailingSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const trailingMinutes = minutes % 60;
+  return trailingMinutes ? `${hours}h ${trailingMinutes}m` : `${hours}h`;
 }

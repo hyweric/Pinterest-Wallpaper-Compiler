@@ -269,8 +269,7 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
     : legacyPaperType === "torn-paper" ? "torn"
       : legacyPaperType === "deckle-edge" ? "deckle"
         : legacyPaperType === "newspaper-cutout" ? "newsprint"
-          : legacyPaperType === "clean" || legacyPaperType === "polaroid" || legacyPaperType === "torn" || legacyPaperType === "deckle" || legacyPaperType === "newsprint"
-            ? legacyPaperType
+          : legacyPaperType === "polaroid" ? "polaroid"
             : "none";
   return {
     ...layer,
@@ -416,18 +415,12 @@ export function createWallpaperTemplate(
 }
 
 export function workspaceFromTemplate(project: WallpaperProject, template: WallpaperTemplate): WallpaperProject {
-  // Wallpaper rotation and target settings are runtime-wide, not template-local.
-  // Older snapshots stored a copy on every template, which meant switching to a
-  // template could silently restore `enabled: false`, `paused: true`, or an old
-  // interval and stop the scheduler after the first rotation. Preserve the
-  // current runtime settings whenever the editable workspace changes templates.
-  const runtimeWallpaper = structuredClone(project.wallpaper);
   return {
     ...project,
     name: template.name,
     canvas: structuredClone(template.project.canvas),
     layers: structuredClone(template.project.layers),
-    wallpaper: { ...createDefaultWallpaperSettings(), ...structuredClone(template.project.wallpaper), ...runtimeWallpaper },
+    wallpaper: { ...createDefaultWallpaperSettings(), ...structuredClone(template.project.wallpaper) },
     templates: {
       ...project.templates,
       activeTemplateId: template.id,
@@ -457,6 +450,27 @@ export function updateActiveTemplateSnapshot(project: WallpaperProject, thumbnai
             }
           : template
       )
+    }
+  };
+}
+
+function stripCombinationPreview(combination: GeneratedCombination): GeneratedCombination {
+  const { previewDataUrl: _previewDataUrl, ...rest } = combination;
+  return rest;
+}
+
+/**
+ * Crash recovery should store project structure, not multi-megabyte rendered
+ * previews. Explicit project saves still keep the full project data.
+ */
+export function compactProjectForAutosave(project: WallpaperProject): WallpaperProject {
+  return {
+    ...project,
+    savedCombinations: project.savedCombinations.map(stripCombinationPreview),
+    recentCombinations: project.recentCombinations.map(stripCombinationPreview),
+    templates: {
+      ...project.templates,
+      templates: project.templates.templates.map(({ thumbnailDataUrl: _thumbnailDataUrl, ...template }) => template)
     }
   };
 }
