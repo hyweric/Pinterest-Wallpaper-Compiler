@@ -29,6 +29,8 @@ export async function collectPinterestPages<T extends { id: string }>(
     signal?: AbortSignal;
     onProgress?: (progress: PinterestPaginationProgress) => void;
     maxPages?: number;
+    maxRetries?: number;
+    retryDelayMs?: number;
   } = {}
 ): Promise<{ items: T[]; pageCount: number; finalBookmark?: string }> {
   const seen = new Map<string, T>();
@@ -36,6 +38,8 @@ export async function collectPinterestPages<T extends { id: string }>(
   let bookmark = options.initialBookmark;
   let page = 0;
   const maxPages = options.maxPages ?? 10_000;
+  const maxRetries = options.maxRetries ?? 2;
+  const retryDelayMs = options.retryDelayMs ?? 350;
 
   while (page < maxPages) {
     if (options.signal?.aborted) throw new DOMException("Pinterest import canceled.", "AbortError");
@@ -49,17 +53,22 @@ export async function collectPinterestPages<T extends { id: string }>(
     }
     if (bookmark) seenBookmarks.add(bookmark);
 
-    let response: PinterestPage<T>;
-    try {
-      response = await fetchPage(bookmark);
-    } catch (error) {
-      if (options.signal?.aborted) throw new DOMException("Pinterest import canceled.", "AbortError");
+    let response: PinterestPage<T> | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        response = await fetchPage(bookmark);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (options.signal?.aborted) throw new DOMException("Pinterest import canceled.", "AbortError");
+        if (attempt < maxRetries) await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      }
+    }
+    if (!response) {
       throw new PinterestPaginationError(
-        `Pinterest pagination stopped before page ${page + 1}${bookmark ? ` at bookmark ${bookmark}` : ""}: ${error instanceof Error ? error.message : "request failed"}`,
-        [...seen.values()],
-        page,
-        bookmark,
-        error
+        `Pinterest pagination stopped before page ${page + 1}${bookmark ? ` at bookmark ${bookmark}` : ""}: ${lastError instanceof Error ? lastError.message : "request failed"}`,
+        [...seen.values()], page, bookmark, lastError
       );
     }
 

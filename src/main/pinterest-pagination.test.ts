@@ -21,3 +21,23 @@ test("collects and deduplicates a mocked 700-pin Pinterest board across bookmark
   assert.equal(result.pageCount, 3);
   assert.deepEqual(calls, [undefined, "250", "500"]);
 });
+
+
+test("retries a transient failed page without losing collected items", async () => {
+  let attempts = 0;
+  const result = await collectPinterestPages(async (bookmark) => {
+    if (!bookmark) return { items: [{ id: "a" }], bookmark: "next" };
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary network error");
+    return { items: [{ id: "b" }] };
+  }, { retryDelayMs: 1 });
+  assert.deepEqual(result.items.map((item) => item.id), ["a", "b"]);
+  assert.equal(attempts, 2);
+});
+
+test("stops on a repeated bookmark instead of looping forever", async () => {
+  await assert.rejects(
+    collectPinterestPages(async () => ({ items: [{ id: "a" }], bookmark: "same" }), { retryDelayMs: 1 }),
+    /repeated bookmark/
+  );
+});

@@ -167,6 +167,12 @@ export interface LocalImageRef {
   videoThumbnail?: boolean;
 }
 
+export interface SourceShuffleState {
+  shuffleQueue: string[];
+  cycle: number;
+  lastImageByLayer: Record<string, string>;
+}
+
 export interface ImageSource {
   id: string;
   name: string;
@@ -188,6 +194,7 @@ export interface ImageSource {
   mediaPolicy: SourceMediaPolicy;
   mediaCounts?: { total: number; images: number; videos: number };
   updatedAt: string;
+  selectionState?: SourceShuffleState;
 }
 
 export interface PlaceholderSourceState {

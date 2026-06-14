@@ -99,6 +99,7 @@ import {
 import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleRunScheduler } from "../shared/scheduler";
+import { selectImagesForGeneration } from "../shared/source-selection";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
 
@@ -276,23 +277,13 @@ function mergeReusableSources(existing: ImageSource[], incoming: ImageSource[]) 
 }
 
 function prepareGeneratedProject(current: WallpaperProject, templateId = current.templates.activeTemplateId) {
-  const used = new Set<string>();
-  return prepareGeneratedProjectWithUsed(current, templateId, used);
+  const selected = selectImagesForGeneration(current);
+  const combination = createCombination(selected.assignments, templateId);
+  return { project: selected.project, combination };
 }
 
-function prepareGeneratedProjectWithUsed(current: WallpaperProject, templateId: string | undefined, used: Set<string>) {
-  const assignments: Record<string, string> = {};
-  const layers = current.layers.map((layer) => {
-    if (layer.hidden) return layer;
-    const selection = selectImageForLayer(current, layer, used);
-    if (selection.imageId) assignments[layer.id] = selection.imageId;
-    return selection.layer;
-  });
-  const combination = createCombination(assignments, templateId);
-  return {
-    project: { ...current, layers },
-    combination
-  };
+function prepareGeneratedProjectWithUsed(current: WallpaperProject, templateId: string | undefined, _used: Set<string>) {
+  return prepareGeneratedProject(current, templateId);
 }
 
 function applyCombinationToProject(current: WallpaperProject, combination: GeneratedCombination) {

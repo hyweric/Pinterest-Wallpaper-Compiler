@@ -35,7 +35,7 @@ export type PublicPinterestBoardLoader = (
   options: {
     signal?: AbortSignal;
     expectedTotal?: number;
-    onProgress?: (current: number, total?: number, message?: string) => void;
+    onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ) => Promise<PublicPinterestBoardResult>;
 
@@ -376,8 +376,8 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       const browserResult = await this.publicBoardLoader(url, {
         signal,
         expectedTotal: expectedCount,
-        onProgress: (current, total, message) =>
-          report("paginating", current, total ?? expectedCount, 8 + Math.min(30, Math.round((current / Math.max(total ?? expectedCount ?? current, 1)) * 30)), message ?? `Discovered ${current} pins...`)
+        onProgress: (current, total, message, page) =>
+          report("paginating", current, total ?? expectedCount, 8 + Math.min(30, Math.round((current / Math.max(total ?? expectedCount ?? current, 1)) * 30)), message ?? `Importing page ${page ?? 1}: ${current} pins found`, page)
       });
       return {
         pins: dedupePins([...initialPins, ...browserResult.pins]),
@@ -587,9 +587,16 @@ function failureResult(error: string, log: string[]): PinterestImportResult {
 }
 
 function dedupePins(pins: PinterestBoardPin[]) {
-  const unique = new Map<string, PinterestBoardPin>();
-  for (const pin of pins) if (pin.id && pin.imageUrl) unique.set(pin.id, pin);
-  return [...unique.values()];
+  const byId = new Map<string, PinterestBoardPin>();
+  const seenUrls = new Set<string>();
+  for (const pin of pins) {
+    if (!pin.id || !pin.imageUrl) continue;
+    const canonicalUrl = pin.imageUrl.replace(/([?&])(width|height|quality|crop)=[^&]*/gi, "$1").replace(/[?&]+$/, "");
+    if (byId.has(pin.id) || seenUrls.has(canonicalUrl)) continue;
+    byId.set(pin.id, pin);
+    seenUrls.add(canonicalUrl);
+  }
+  return [...byId.values()];
 }
 
 function numberFromUnknown(value: unknown) {

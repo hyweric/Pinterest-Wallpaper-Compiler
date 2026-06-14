@@ -146,7 +146,7 @@ async function loadPublicPinterestBoard(
   options: {
     signal?: AbortSignal;
     expectedTotal?: number;
-    onProgress?: (current: number, total?: number, message?: string) => void;
+    onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ): Promise<PublicPinterestBoardResult> {
   const scraper = new BrowserWindow({
@@ -167,18 +167,30 @@ async function loadPublicPinterestBoard(
 
   try {
     if (options.signal?.aborted) throw new DOMException("Pinterest import canceled.", "AbortError");
-    await scraper.loadURL(boardUrl, { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36" });
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    let loaded = false;
+    let loadError: unknown;
+    for (let attempt = 0; attempt < 3 && !loaded; attempt += 1) {
+      try {
+        await scraper.loadURL(boardUrl, { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36" });
+        loaded = true;
+      } catch (error) {
+        loadError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 900 * (attempt + 1)));
+      }
+    }
+    if (!loaded) throw loadError instanceof Error ? loadError : new Error("Pinterest board failed to load.");
+    await new Promise((resolve) => setTimeout(resolve, 1800));
 
     let stableRounds = 0;
     let previousCount = 0;
+    let previousHeight = 0;
     let latest: { pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>; atBottom: boolean; bodyText: string } = {
       pins: [],
       atBottom: false,
       bodyText: ""
     };
 
-    for (let iteration = 0; iteration < 500; iteration += 1) {
+    for (let iteration = 0; iteration < 360; iteration += 1) {
       if (options.signal?.aborted) throw new DOMException("Pinterest import canceled.", "AbortError");
       const scanResult = await scraper.webContents.executeJavaScript(String.raw`(() => {
         try {
@@ -211,6 +223,7 @@ async function loadPublicPinterestBoard(
             pins: Object.values(root.__pwcPins),
             atBottom,
             bodyText: document.body?.innerText?.slice(0, 6000) || "",
+            scrollHeight: scrollRoot.scrollHeight,
             pageUrl: location.href
           };
         } catch (error) {
@@ -229,6 +242,7 @@ async function loadPublicPinterestBoard(
         atBottom: boolean;
         bodyText: string;
         pageUrl?: string;
+        scrollHeight?: number;
         error?: string;
       };
       if (!scanResult.ok) {
@@ -237,14 +251,19 @@ async function loadPublicPinterestBoard(
       latest = scanResult;
 
       const count = latest.pins.length;
-      stableRounds = count === previousCount ? stableRounds + 1 : 0;
+      const height = scanResult.scrollHeight ?? 0;
+      stableRounds = count === previousCount && height === previousHeight ? stableRounds + 1 : 0;
       previousCount = count;
-      options.onProgress?.(count, options.expectedTotal, `Discovered ${count}${options.expectedTotal ? ` / ${options.expectedTotal}` : ""} public pins...`);
+      previousHeight = height;
+      const page = Math.max(1, Math.ceil(count / 50));
+      options.onProgress?.(count, options.expectedTotal, `Importing page ${page}: ${count}${options.expectedTotal ? ` / ${options.expectedTotal}` : ""} pins found`, page);
 
       if (options.expectedTotal && count >= options.expectedTotal) break;
-      if (latest.atBottom && stableRounds >= 10) break;
-      if (stableRounds >= 18) break;
-      await new Promise((resolve) => setTimeout(resolve, 550));
+      if (latest.atBottom && stableRounds >= 24) break;
+      if (latest.atBottom && stableRounds > 0 && stableRounds % 6 === 0) {
+        await scraper.webContents.executeJavaScript(`window.scrollBy(0, -700); setTimeout(() => window.scrollTo(0, document.scrollingElement?.scrollHeight || document.body.scrollHeight), 120);`, true);
+      }
+      await new Promise((resolve) => setTimeout(resolve, latest.atBottom ? 850 : 500));
     }
 
     const blocked = /log in|sign up|access denied|something went wrong/i.test(latest.bodyText) && latest.pins.length === 0;

@@ -239,7 +239,12 @@ function normalizeSource(source: ImageSource): ImageSource {
     importStatus: source.importStatus ?? "ready",
     includeSubfolders: source.includeSubfolders ?? false,
     lastScannedAt: source.lastScannedAt ?? source.updatedAt,
-    importLog: source.importLog ?? []
+    importLog: source.importLog ?? [],
+    selectionState: {
+      shuffleQueue: source.selectionState?.shuffleQueue ?? [],
+      cycle: source.selectionState?.cycle ?? 0,
+      lastImageByLayer: source.selectionState?.lastImageByLayer ?? {}
+    }
   };
 }
 
