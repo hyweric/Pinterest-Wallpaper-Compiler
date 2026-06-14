@@ -20,14 +20,20 @@ button {
   background: rgba(255, 255, 255, 0.86);
   color: #252932;
   min-height: 34px;
-  border-radius: 999px;
-  padding: 0 12px;
+  border-radius: 8px;
+  padding: 0 11px;
   display: inline-flex;
   gap: 7px;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+button svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.9;
 }
 
 button:hover {
@@ -110,6 +116,9 @@ h2,
 
 .sidebar.left {
   border-right: 1px solid rgba(43, 48, 58, 0.08);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
 }
 
 .sidebar.right {
@@ -168,6 +177,7 @@ h2,
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+  width: 100%;
   padding: 4px;
   margin: 0 0 12px;
   border: 1px solid rgba(43, 48, 58, 0.08);
@@ -176,13 +186,19 @@ h2,
 }
 
 .panel-tabs button {
+  width: 100%;
+  min-width: 0;
   min-height: 30px;
+  height: 30px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   box-shadow: none;
   font-size: 12px;
   font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-tabs button:hover {
@@ -456,9 +472,26 @@ h2,
 
 .primary-action {
   color: #2c3a41;
-  background: #dcebf0;
-  border-color: #c7dde5;
+  background: #dfeef0;
+  border-color: #c1dbe2;
   font-weight: 800;
+}
+
+.secondary-action {
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.ghost-action,
+.popover-menu button {
+  background: transparent;
+}
+
+.selected-action,
+.context-toolbar .active,
+.toggle.active {
+  color: #2c3a41;
+  background: #dfeef0;
+  border-color: #c1dbe2;
 }
 
 .toolbar button {
@@ -492,7 +525,7 @@ h2,
   gap: 7px;
   padding: 7px;
   border: 1px solid rgba(58, 49, 42, 0.12);
-  border-radius: 999px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(18px);
   box-shadow: 0 18px 50px rgba(80, 82, 86, 0.1);
@@ -525,11 +558,6 @@ h2,
   background: #e8f2f3;
 }
 
-.context-toolbar .active {
-  color: #2c3a41;
-  background: #dcebf0;
-}
-
 .mini-slider {
   width: 150px;
   display: grid;
@@ -547,6 +575,15 @@ h2,
   box-shadow: 0 34px 100px rgba(47, 52, 60, 0.18);
 }
 
+.canvas.crop-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(44, 49, 55, 0.16);
+}
+
 .placeholder {
   position: absolute;
   border: 0 solid #fff;
@@ -557,6 +594,7 @@ h2,
   color: #655b52;
   user-select: none;
   touch-action: none;
+  cursor: move;
 }
 
 .placeholder::after {
@@ -593,10 +631,38 @@ h2,
 .placeholder.cropping {
   outline: 2px dashed #bda7dc;
   cursor: grab;
+  z-index: 3;
 }
 
 .placeholder.cropping::after {
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78), inset 0 0 0 9999px rgba(189, 167, 220, 0.08);
+}
+
+.crop-mode-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  min-height: 24px;
+  padding: 0 8px !important;
+  border: 1px solid rgba(120, 94, 156, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #665184 !important;
+  font-size: 11px !important;
+  font-weight: 900;
+  box-shadow: 0 10px 26px rgba(80, 72, 96, 0.14);
+}
+
+.crop-toolbar {
+  border-color: rgba(120, 94, 156, 0.16);
+}
+
+.crop-toolbar strong {
+  padding: 0 4px;
+  color: #665184;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .placeholder img {
@@ -795,12 +861,6 @@ h2,
   flex: 1;
 }
 
-.toggle.active {
-  color: #2c3a41;
-  background: #dcebf0;
-  border-color: #c7dde5;
-}
-
 .wallpaper-panel {
   border-radius: 24px;
   padding: 14px;
@@ -814,6 +874,71 @@ h2,
   gap: 5px;
   color: #82786f;
   font-size: 12px;
+}
+
+.target-config {
+  gap: 9px;
+}
+
+.target-list {
+  display: grid;
+  gap: 7px;
+}
+
+.target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(108px, 0.75fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 46px;
+  padding: 8px;
+  border: 1px solid rgba(43, 48, 58, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.target-row span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.target-row strong,
+.target-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-row small,
+.target-playlist-note {
+  color: #8a8f98;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  color: #6b7079;
+  font-size: 12px;
+}
+
+.diagnostic-grid code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: rgba(246, 247, 247, 0.88);
+  color: #2f333a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.diagnostic-command {
+  grid-column: 1 / -1;
+  white-space: pre-wrap;
 }
 
 details {
@@ -1104,12 +1229,23 @@ summary {
 }
 
 .source-library {
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 12px;
   padding: 16px 0 10px;
   border-top: 1px solid rgba(43, 48, 58, 0.07);
+  overflow: hidden;
+}
+
+.layers-panel {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 0 10px;
   overflow: hidden;
 }
 
@@ -1176,7 +1312,8 @@ summary {
   overflow-y: auto;
   overflow-x: hidden;
   align-content: start;
-  padding-right: 3px;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(55, 62, 73, 0.15) transparent;
 }
@@ -1195,11 +1332,26 @@ summary {
   align-items: center;
   gap: 10px;
   min-height: 56px;
+  height: 56px;
   padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 15px;
   background: transparent;
   box-shadow: none;
+}
+
+.layer-row {
+  min-height: 56px;
+  height: 56px;
+}
+
+.layers-list {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-content: start;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
 }
 
 .source-row:hover {
@@ -1262,6 +1414,8 @@ summary {
 }
 
 .empty-source-card {
+  min-height: 156px;
+  height: 156px;
   min-height: 128px;
   display: grid;
   place-items: center;

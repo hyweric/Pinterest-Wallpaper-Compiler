@@ -35,6 +35,10 @@ export function createDefaultWallpaperSettings(): WallpaperSettings {
     launchAtLogin: false,
     startMinimized: false,
     monitorMode: "all",
+    scope: "same-all-desktops",
+    targetTemplateMode: "single-template",
+    targetTemplateIds: {},
+    targetPlaylistIds: {},
     displayMode: "fill",
     consecutiveFailures: 0
   };
@@ -403,6 +407,10 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
     project?: Partial<WallpaperProjectSnapshot> & { sources?: ImageSource[] };
   };
   const wallpaper = { ...createDefaultWallpaperSettings(), ...(raw.wallpaper ?? {}) };
+  wallpaper.scope = wallpaper.scope ?? "same-all-desktops";
+  wallpaper.targetTemplateMode = wallpaper.targetTemplateMode ?? "single-template";
+  wallpaper.targetTemplateIds = wallpaper.targetTemplateIds ?? {};
+  wallpaper.targetPlaylistIds = wallpaper.targetPlaylistIds ?? {};
   const layers = (raw.layers ?? []).map(normalizeLayer);
   let sources = (raw.sources ?? []).map(normalizeSource);
   const defaultLibrary = createDefaultTemplateLibrary();

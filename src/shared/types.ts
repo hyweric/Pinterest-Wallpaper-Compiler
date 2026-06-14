@@ -23,6 +23,18 @@ export type WallpaperInterval =
 export type TemplateRotationMode = "sequential" | "random" | "shuffle";
 
 export type WallpaperDisplayMode = "fill" | "fit" | "stretch" | "tile" | "center" | "span";
+export type WallpaperScope = "same-all-desktops" | "different-per-desktop" | "current-desktop";
+export type WallpaperTargetTemplateMode = "single-template" | "different-template" | "playlist";
+export type WallpaperRuntimeStatus =
+  | "idle"
+  | "scheduled"
+  | "generating"
+  | "rendering"
+  | "applying"
+  | "verifying"
+  | "applied"
+  | "paused"
+  | "failed";
 
 export type ImageAlignment =
   | "center"
@@ -206,6 +218,10 @@ export interface WallpaperSettings {
   launchAtLogin: boolean;
   startMinimized: boolean;
   monitorMode: "primary" | "all" | "span";
+  scope: WallpaperScope;
+  targetTemplateMode: WallpaperTargetTemplateMode;
+  targetTemplateIds: Record<string, string | undefined>;
+  targetPlaylistIds: Record<string, string[]>;
   displayMode: WallpaperDisplayMode;
   monitorId?: string;
   lastUpdatedAt?: string;
@@ -312,12 +328,76 @@ export interface WallpaperApplyPayload {
   suggestedName: string;
   monitorMode?: WallpaperSettings["monitorMode"];
   displayMode?: WallpaperDisplayMode;
+  scope?: WallpaperScope;
+  targetId?: string;
 }
 
 export interface WallpaperApplyFilePayload {
   filePath: string;
   monitorMode?: WallpaperSettings["monitorMode"];
   displayMode?: WallpaperDisplayMode;
+}
+
+export interface WallpaperTargetApplyItem {
+  targetId: string;
+  targetLabel: string;
+  dataUrl: string;
+  suggestedName: string;
+}
+
+export interface WallpaperApplyTargetsPayload {
+  items: WallpaperTargetApplyItem[];
+  displayMode?: WallpaperDisplayMode;
+  scope?: WallpaperScope;
+}
+
+export interface NativeCommandResult {
+  method: string;
+  command: string;
+  args: string[];
+  stdout: string;
+  stderr: string;
+  exitCode?: number;
+  signal?: string;
+  timedOut: boolean;
+  error?: string;
+}
+
+export interface WallpaperTarget {
+  id: string;
+  label: string;
+  index: number;
+  displayId?: string;
+  spaceId?: string;
+  current: boolean;
+  reliable: boolean;
+  limitation?: string;
+  currentPath?: string;
+}
+
+export interface WallpaperTargetResult {
+  targetId: string;
+  targetLabel: string;
+  filePath?: string;
+  fileSize?: number;
+  diagnostics: WallpaperApplyDiagnostics;
+  ok: boolean;
+  error?: string;
+}
+
+export interface WallpaperApplyDiagnostics {
+  renderedPath?: string;
+  fileSize?: number;
+  validImage?: boolean;
+  permissionStatus?: "not-checked" | "verified" | "automation-timeout" | "automation-denied" | "verification-failed";
+  nativeResults: NativeCommandResult[];
+  verifiedPaths: string[];
+  verificationMethod?: string;
+  changed: boolean;
+  lastError?: string;
+  targetId?: string;
+  targetLabel?: string;
+  targetResults?: WallpaperTargetResult[];
 }
 
 export interface WallpaperApplyResult {
@@ -327,11 +407,18 @@ export interface WallpaperApplyResult {
   fileSize?: number;
   platform?: "darwin" | "win32" | "linux" | string;
   error?: string;
+  diagnostics?: WallpaperApplyDiagnostics;
+  targets?: WallpaperTargetResult[];
 }
 
 export interface TrayRuntimeState {
   enabled: boolean;
   paused: boolean;
+  interval?: WallpaperInterval;
+  customIntervalMinutes?: number;
+  nextScheduledAt?: string;
+  status?: WallpaperRuntimeStatus;
+  lastError?: string;
 }
 
 export interface PinterestImportRequest {

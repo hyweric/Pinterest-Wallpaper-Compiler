@@ -11,7 +11,9 @@ import type {
   SaveDialogResult,
   WallpaperApplyFilePayload,
   WallpaperApplyPayload,
+  WallpaperApplyTargetsPayload,
   WallpaperApplyResult,
+  WallpaperTarget,
   WallpaperProject,
   TrayRuntimeState
 } from "../shared/types.js";
@@ -45,6 +47,9 @@ const api = {
     ipcRenderer.invoke("wallpaper:apply", payload),
   applyWallpaperFile: (payload: WallpaperApplyFilePayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply-file", payload),
+  getWallpaperTargets: (): Promise<WallpaperTarget[]> => ipcRenderer.invoke("wallpaper:targets"),
+  applyWallpaperTargets: (payload: WallpaperApplyTargetsPayload): Promise<WallpaperApplyResult> =>
+    ipcRenderer.invoke("wallpaper:apply-targets", payload),
   setTrayState: (state: TrayRuntimeState): Promise<TrayRuntimeState> => ipcRenderer.invoke("tray:set-state", state),
   setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke("app:set-login-item", enabled),
   applyStartupBehavior: (startMinimized: boolean) => ipcRenderer.invoke("app:apply-startup-behavior", startMinimized),

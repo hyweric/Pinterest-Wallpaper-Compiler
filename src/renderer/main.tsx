@@ -51,6 +51,9 @@ import type {
   PaperTextureEffect,
   PinterestImportProgress,
   PlaceholderLayer,
+  WallpaperApplyResult,
+  WallpaperRuntimeStatus,
+  WallpaperTarget,
   WallpaperTemplate,
   WallpaperProject
 } from "../shared/types";
@@ -88,6 +91,7 @@ import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
+const backgroundAdvancedKey = "pwc.backgroundAdvanced.v1";
 const historyLimit = 80;
 const snapDistance = 8;
 
@@ -227,6 +231,10 @@ function mergeReusableSources(existing: ImageSource[], incoming: ImageSource[]) 
 
 function prepareGeneratedProject(current: WallpaperProject, templateId = current.templates.activeTemplateId) {
   const used = new Set<string>();
+  return prepareGeneratedProjectWithUsed(current, templateId, used);
+}
+
+function prepareGeneratedProjectWithUsed(current: WallpaperProject, templateId: string | undefined, used: Set<string>) {
   const assignments: Record<string, string> = {};
   const layers = current.layers.map((layer) => {
     if (layer.hidden) return layer;
@@ -286,6 +294,10 @@ function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [lastWallpaperDiagnostics, setLastWallpaperDiagnostics] = useState<WallpaperApplyResult["diagnostics"]>();
+  const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
+  const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
+  const [backgroundAdvancedOpen, setBackgroundAdvancedOpen] = useState(() => localStorage.getItem(backgroundAdvancedKey) === "true");
   const [history, setHistory] = useState<{ past: WallpaperProject[]; future: WallpaperProject[] }>({ past: [], future: [] });
   const [pinterestDialog, setPinterestDialog] = useState<PinterestDialogState>({
     open: false,
@@ -333,8 +345,34 @@ function App() {
   }, [selectedLayer?.id]);
 
   useEffect(() => {
-    void window.wallpaperApi.setTrayState({ enabled: project.wallpaper.enabled, paused: project.wallpaper.paused });
-  }, [project.wallpaper.enabled, project.wallpaper.paused]);
+    void window.wallpaperApi.setTrayState({
+      enabled: project.wallpaper.enabled,
+      paused: project.wallpaper.paused,
+      interval: project.wallpaper.interval,
+      customIntervalMinutes: project.wallpaper.customIntervalMinutes,
+      nextScheduledAt: project.wallpaper.nextScheduledAt,
+      status: wallpaperStatus,
+      lastError: project.wallpaper.lastError
+    });
+  }, [
+    project.wallpaper.enabled,
+    project.wallpaper.paused,
+    project.wallpaper.interval,
+    project.wallpaper.customIntervalMinutes,
+    project.wallpaper.nextScheduledAt,
+    project.wallpaper.lastError,
+    wallpaperStatus
+  ]);
+
+  useEffect(() => {
+    window.wallpaperApi.getWallpaperTargets()
+      .then(setWallpaperTargets)
+      .catch(() => setWallpaperTargets([]));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(backgroundAdvancedKey, String(backgroundAdvancedOpen));
+  }, [backgroundAdvancedOpen]);
 
   useEffect(() => {
     return window.wallpaperApi.onTrayCommand((command) => {
@@ -402,23 +440,39 @@ function App() {
   useEffect(() => {
     const ms = wallpaperIntervalToMs(project.wallpaper.interval, project.wallpaper.customIntervalMinutes);
     if (!project.wallpaper.enabled || project.wallpaper.paused || !ms) {
+      setWallpaperStatus(project.wallpaper.paused ? "paused" : "idle");
       setProject((current) => current.wallpaper.nextScheduledAt
         ? { ...current, wallpaper: { ...current.wallpaper, nextScheduledAt: undefined } }
         : current);
       return;
     }
-    setProject((current) => ({
-      ...current,
-      wallpaper: {
-        ...current.wallpaper,
-        nextScheduledAt: nextScheduledAt(current.wallpaper.interval, current.wallpaper.customIntervalMinutes)
-      }
-    }));
-    const timer = window.setInterval(() => {
-      void generateAndApply({ rotateTemplate: true, automatic: true });
-    }, ms);
-    return () => window.clearInterval(timer);
-  }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval, project.wallpaper.customIntervalMinutes]);
+    setWallpaperStatus("scheduled");
+    if (project.wallpaper.nextScheduledAt && Date.parse(project.wallpaper.nextScheduledAt) <= Date.now()) {
+      const timer = window.setTimeout(() => {
+        if (!applyInFlightRef.current) void generateAndApply({ rotateTemplate: true, automatic: true });
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    const scheduled = project.wallpaper.nextScheduledAt || nextScheduledAt(project.wallpaper.interval, project.wallpaper.customIntervalMinutes);
+    if (scheduled && scheduled !== project.wallpaper.nextScheduledAt) {
+      setProject((current) => ({
+        ...current,
+        wallpaper: { ...current.wallpaper, nextScheduledAt: scheduled }
+      }));
+      return;
+    }
+    const delay = Math.max(0, (scheduled ? Date.parse(scheduled) : Date.now() + ms) - Date.now());
+    const timer = window.setTimeout(() => {
+      if (!applyInFlightRef.current) void generateAndApply({ rotateTemplate: true, automatic: true });
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [
+    project.wallpaper.enabled,
+    project.wallpaper.paused,
+    project.wallpaper.interval,
+    project.wallpaper.customIntervalMinutes,
+    project.wallpaper.nextScheduledAt
+  ]);
 
   const commitProject = useCallback((
     updater: (current: WallpaperProject) => WallpaperProject,
@@ -513,7 +567,25 @@ function App() {
   }
 
   function patchWallpaper(patch: Partial<WallpaperProject["wallpaper"]>) {
-    commitProject((current) => ({ ...current, wallpaper: { ...current.wallpaper, ...patch } }));
+    commitProject((current) => {
+      const wallpaper = { ...current.wallpaper, ...patch };
+      const scheduleChanged =
+        "enabled" in patch ||
+        "paused" in patch ||
+        "interval" in patch ||
+        "customIntervalMinutes" in patch;
+      return {
+        ...current,
+        wallpaper: {
+          ...wallpaper,
+          nextScheduledAt: scheduleChanged && wallpaper.enabled && !wallpaper.paused
+            ? nextScheduledAt(wallpaper.interval, wallpaper.customIntervalMinutes)
+            : scheduleChanged
+              ? undefined
+              : wallpaper.nextScheduledAt
+        }
+      };
+    });
   }
 
   function patchCanvas(patch: Partial<CanvasSettings>) {
@@ -923,6 +995,7 @@ function App() {
 
   function recordWallpaperFailure(error: string, automatic: boolean) {
     const failures = (projectRef.current.wallpaper.consecutiveFailures ?? 0) + 1;
+    setWallpaperStatus(automatic && failures >= 3 ? "paused" : "failed");
     setProject((current) => {
       const next = {
         ...current,
@@ -953,15 +1026,21 @@ function App() {
     }
     applyInFlightRef.current = true;
     setWallpaperBusy(true);
+    setWallpaperStatus("rendering");
     try {
       const dataUrl = await renderProjectToDataUrl(candidate, "png");
+      setWallpaperStatus("applying");
       const result = await window.wallpaperApi.applyWallpaper({
         dataUrl,
         suggestedName: `${candidate.name.replace(/[^\w.-]+/g, "-")}-${Date.now()}.png`,
         monitorMode: candidate.wallpaper.monitorMode,
-        displayMode: candidate.wallpaper.displayMode
+        displayMode: candidate.wallpaper.displayMode,
+        scope: candidate.wallpaper.scope
       });
+      setWallpaperStatus("verifying");
+      setLastWallpaperDiagnostics(result.diagnostics);
       if (!result.ok || !result.filePath) {
+        setWallpaperStatus("failed");
         recordWallpaperFailure(result.error ?? "The operating system did not apply the wallpaper.", Boolean(options.automatic));
         return false;
       }
@@ -996,10 +1075,127 @@ function App() {
       projectRef.current = finalProject;
       setProject(finalProject);
       setWallpaperHistoryIndex(0);
+      setWallpaperStatus("applied");
       setMessage(`${options.label ?? "Wallpaper applied"}: ${result.filePath}`);
       return true;
     } catch (error) {
+      setWallpaperStatus("failed");
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to render and apply wallpaper.", Boolean(options.automatic));
+      return false;
+    } finally {
+      applyInFlightRef.current = false;
+      setWallpaperBusy(false);
+    }
+  }
+
+  function targetTemplateFor(base: WallpaperProject, target: WallpaperTarget, index: number) {
+    const enabled = base.templates.templates.filter((template) => template.enabledForRotation);
+    if (base.wallpaper.targetTemplateMode === "different-template") {
+      const templateId = base.wallpaper.targetTemplateIds[target.id];
+      return base.templates.templates.find((template) => template.id === templateId)
+        ?? enabled[index % Math.max(1, enabled.length)]
+        ?? base.templates.templates[index % base.templates.templates.length];
+    }
+    if (base.wallpaper.targetTemplateMode === "playlist") {
+      const ids = base.wallpaper.targetPlaylistIds[target.id]?.length
+        ? base.wallpaper.targetPlaylistIds[target.id]
+        : base.templates.rotationTemplateIds;
+      const templateId = ids[index % Math.max(1, ids.length)];
+      return base.templates.templates.find((template) => template.id === templateId) ?? enabled[index % Math.max(1, enabled.length)];
+    }
+    const templateId = base.wallpaper.targetTemplateIds.all ?? base.templates.activeTemplateId;
+    return base.templates.templates.find((template) => template.id === templateId);
+  }
+
+  async function applyDifferentWallpapers(base: WallpaperProject, options: { automatic?: boolean; label?: string } = {}) {
+    if (applyInFlightRef.current) {
+      setMessage("A wallpaper is already being applied.");
+      return false;
+    }
+    applyInFlightRef.current = true;
+    setWallpaperBusy(true);
+    setWallpaperStatus("generating");
+    try {
+      const targets = wallpaperTargets.length ? wallpaperTargets : await window.wallpaperApi.getWallpaperTargets();
+      setWallpaperTargets(targets);
+      const supportedTargets = targets.filter((target) => target.reliable);
+      const applyTargets = supportedTargets.length ? supportedTargets : targets.slice(0, 1);
+      if (applyTargets.length === 0) {
+        recordWallpaperFailure("No wallpaper desktop targets are available.", Boolean(options.automatic));
+        return false;
+      }
+
+      let working = normalizeProject(base);
+      const used = new Set<string>();
+      const rendered: Array<{ target: WallpaperTarget; combination: GeneratedCombination; dataUrl: string; templateName: string }> = [];
+      for (const [index, target] of applyTargets.entries()) {
+        const template = targetTemplateFor(working, target, index);
+        const workspace = template ? normalizeProject(workspaceFromTemplate({ ...working, templates: { ...working.templates, activeTemplateId: template.id } }, template)) : working;
+        const prepared = prepareGeneratedProjectWithUsed(workspace, template?.id ?? workspace.templates.activeTemplateId, used);
+        working = normalizeProject(prepared.project);
+        setWallpaperStatus("rendering");
+        const dataUrl = await renderProjectToDataUrl(working, "png");
+        rendered.push({
+          target,
+          combination: prepared.combination,
+          dataUrl,
+          templateName: template?.name ?? working.name
+        });
+      }
+
+      setWallpaperStatus("applying");
+      const result = await window.wallpaperApi.applyWallpaperTargets({
+        scope: "different-per-desktop",
+        displayMode: working.wallpaper.displayMode,
+        items: rendered.map(({ target, dataUrl, templateName }) => ({
+          targetId: target.id,
+          targetLabel: target.label,
+          dataUrl,
+          suggestedName: `${templateName.replace(/[^\w.-]+/g, "-")}-${target.id}-${Date.now()}.png`
+        }))
+      });
+      setWallpaperStatus("verifying");
+      setLastWallpaperDiagnostics(result.diagnostics);
+      if (!result.ok || !result.targets?.length) {
+        recordWallpaperFailure(result.error ?? "One or more desktop wallpapers failed to apply.", Boolean(options.automatic));
+        setWallpaperStatus("failed");
+        return false;
+      }
+
+      const appliedAt = result.appliedAt ?? new Date().toISOString();
+      const entries = rendered.map((item) => {
+        const targetResult = result.targets?.find((targetResultItem) => targetResultItem.targetId === item.target.id);
+        return {
+          ...item.combination,
+          filePath: targetResult?.filePath,
+          appliedAt,
+          templateName: `${item.templateName} · ${item.target.label}`,
+          templateId: item.combination.templateId,
+          monitorMode: working.wallpaper.monitorMode
+        } satisfies GeneratedCombination;
+      });
+      const finalProject = touchProject(updateActiveTemplateSnapshot({
+        ...generationStateAfterApplication(projectRef.current, working, true),
+        wallpaper: {
+          ...working.wallpaper,
+          lastUpdatedAt: appliedAt,
+          lastError: undefined,
+          consecutiveFailures: 0,
+          nextScheduledAt: working.wallpaper.enabled && !working.wallpaper.paused
+            ? nextScheduledAt(working.wallpaper.interval, working.wallpaper.customIntervalMinutes, new Date(appliedAt))
+            : undefined
+        },
+        recentCombinations: entries.reduce((history, entry) => appendAppliedHistory(history, entry), working.recentCombinations)
+      }));
+      projectRef.current = finalProject;
+      setProject(finalProject);
+      setWallpaperHistoryIndex(0);
+      setWallpaperStatus("applied");
+      setMessage(`${options.label ?? "Wallpapers applied"}: ${result.targets.length} desktop target${result.targets.length === 1 ? "" : "s"}.`);
+      return true;
+    } catch (error) {
+      setWallpaperStatus("failed");
+      recordWallpaperFailure(error instanceof Error ? error.message : "Unable to render and apply wallpapers.", Boolean(options.automatic));
       return false;
     } finally {
       applyInFlightRef.current = false;
@@ -1027,6 +1223,14 @@ function App() {
     }
     const target = targetTemplateId ? base.templates.templates.find((item) => item.id === targetTemplateId) : undefined;
     if (target) base = normalizeProject(workspaceFromTemplate(base, target));
+
+    if (base.wallpaper.scope === "different-per-desktop" && !options.templateId) {
+      await applyDifferentWallpapers(base, {
+        automatic: options.automatic,
+        label: options.automatic ? "Wallpaper targets rotated" : "Desktop wallpapers applied"
+      });
+      return;
+    }
 
     const prepared = prepareGeneratedProject(base, targetTemplateId);
     await applyCandidate(normalizeProject(prepared.project), prepared.combination, {
@@ -1060,6 +1264,7 @@ function App() {
         monitorMode: current.wallpaper.monitorMode,
         displayMode: current.wallpaper.displayMode
       });
+      setLastWallpaperDiagnostics(result.diagnostics);
       if (!result.ok) {
         recordWallpaperFailure(result.error ?? "Unable to apply wallpaper history item.", false);
         return;
@@ -1944,7 +2149,7 @@ function App() {
                 : `${source.images.length}`;
               return (
                 <div
-                  className={`${selectedSourceId === source.id ? "source-row active" : "source-row"} ${assigned ? "assigned" : ""}`}
+                  className={`${selectedLayer && selectedSourceId === source.id ? "source-row active" : "source-row"} ${selectedLayer && assigned ? "assigned" : ""}`}
                   key={source.id}
                   draggable
                   onDragStart={(event) => {
@@ -2101,7 +2306,6 @@ function App() {
             <span>{project.canvas.width} x {project.canvas.height}</span>
           </div>
           <div className="toolbar-cluster">
-            <button onClick={refreshPreview}><Eye size={16} /> Preview</button>
             <button className="primary-action" onClick={() => void generateAndApply()}><Wallpaper size={17} /> Generate and Apply</button>
             <div className="overflow-wrap">
               <button className="icon-button" title="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
@@ -2139,19 +2343,24 @@ function App() {
             <span>{Math.round(zoom * 100)}%</span>
             {cropModeLayerId && <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>}
           </div>
-          {selectedLayer && !selectedLayer.locked && (
+          {selectedLayer && !selectedLayer.locked && cropModeLayerId === selectedLayer.id ? (
+            <CropToolbar
+              layer={selectedLayer}
+              onPatch={(patch) => patchSelectedLayer(patch)}
+              onDone={() => setCropModeLayerId(undefined)}
+            />
+          ) : selectedLayer && !selectedLayer.locked ? (
             <ContextToolbar
               layer={selectedLayer}
-              cropMode={cropModeLayerId === selectedLayer.id}
               onPatch={(patch) => patchSelectedLayer(patch)}
-              onCrop={() => setCropModeLayerId(cropModeLayerId === selectedLayer.id ? undefined : selectedLayer.id)}
+              onCrop={() => setCropModeLayerId(selectedLayer.id)}
               onDuplicate={duplicateSelectedLayer}
               onDelete={deleteSelectedLayer}
               onOrder={reorderSelectedLayer}
             />
-          )}
+          ) : null}
           <div
-            className="canvas"
+            className={`canvas ${cropModeLayerId ? "crop-active" : ""}`}
             style={{
               width: scaled.width,
               height: scaled.height,
@@ -2226,7 +2435,8 @@ function App() {
                     <span><ImagePlus size={22} /> Assign source</span>
                   )}
                   <span className="texture-overlay" style={textureStyle(layer)} />
-                  {selectedLayerId === layer.id && !layer.locked && <SelectionHandles layer={layer} onBeginDrag={beginDrag} />}
+                  {cropping && <span className="crop-mode-badge">CROP MODE</span>}
+                  {selectedLayerId === layer.id && !layer.locked && !cropping && <SelectionHandles layer={layer} onBeginDrag={beginDrag} />}
                 </div>
               );
             })}
@@ -2256,6 +2466,8 @@ function App() {
           <CanvasDesignPanel
             canvas={project.canvas}
             activeTab={inspectorTab}
+            advancedOpen={backgroundAdvancedOpen}
+            onAdvancedOpenChange={setBackgroundAdvancedOpen}
             onPatch={patchCanvas}
             onChooseBackground={() => void chooseBackground()}
             onClearBackground={clearBackgroundImage}
@@ -2269,11 +2481,15 @@ function App() {
             onPatch={patchWallpaper}
             onGenerateApply={() => void generateAndApply()}
             onApplyCurrent={() => void applyCurrentDesignAsWallpaper()}
-            onPrevious={() => void applyPreviousWallpaper()}
-            onNext={() => void applyNextWallpaper()}
-            onGenerate={() => generate()}
-            busy={wallpaperBusy}
-          />
+          onPrevious={() => void applyPreviousWallpaper()}
+          onNext={() => void applyNextWallpaper()}
+          onGenerate={() => generate()}
+          busy={wallpaperBusy}
+          diagnostics={lastWallpaperDiagnostics}
+          targets={wallpaperTargets}
+          templates={project.templates.templates}
+          runtimeStatus={wallpaperStatus}
+        />
         )}
         <Properties
           layer={selectedLayer}
@@ -2662,7 +2878,6 @@ function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onB
 
 function ContextToolbar({
   layer,
-  cropMode,
   onPatch,
   onCrop,
   onDuplicate,
@@ -2670,7 +2885,6 @@ function ContextToolbar({
   onOrder
 }: {
   layer: PlaceholderLayer;
-  cropMode: boolean;
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
   onCrop: () => void;
   onDuplicate: () => void;
@@ -2682,7 +2896,7 @@ function ContextToolbar({
       <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
       <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
       <button disabled={layer.locked} onClick={() => onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, cropMode: "original", alignment: "center" })}>Original</button>
-      <button disabled={layer.locked} className={cropMode ? "active" : ""} onClick={onCrop}>{cropMode ? "Done" : "Crop"}</button>
+      <button disabled={layer.locked} onClick={onCrop}>Crop</button>
       <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
       <button onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
       <button onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
@@ -2690,6 +2904,27 @@ function ContextToolbar({
       <button disabled={layer.locked} onClick={() => onOrder("front")}><BringToFront size={16} /></button>
       <button disabled={layer.locked} onClick={() => onOrder("back")}><SendToBack size={16} /></button>
       <button disabled={layer.locked} className="danger" onClick={onDelete}><Trash2 size={16} /></button>
+    </div>
+  );
+}
+
+function CropToolbar({
+  layer,
+  onPatch,
+  onDone
+}: {
+  layer: PlaceholderLayer;
+  onPatch: (patch: Partial<PlaceholderLayer>) => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="context-toolbar crop-toolbar">
+      <strong>CROP MODE</strong>
+      <button className="primary-action" onClick={onDone}>Done</button>
+      <button onClick={() => onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" })}>Reset</button>
+      <button onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
+      <button onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
+      <label className="mini-slider">Zoom<input type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
     </div>
   );
 }
@@ -2869,7 +3104,11 @@ function WallpaperPanel({
   onPrevious,
   onNext,
   onGenerate,
-  busy
+  busy,
+  diagnostics,
+  targets,
+  templates,
+  runtimeStatus
 }: {
   project: WallpaperProject;
   onPatch: (patch: Partial<WallpaperProject["wallpaper"]>) => void;
@@ -2879,6 +3118,10 @@ function WallpaperPanel({
   onNext: () => void;
   onGenerate: () => void;
   busy: boolean;
+  diagnostics?: WallpaperApplyResult["diagnostics"];
+  targets: WallpaperTarget[];
+  templates: WallpaperTemplate[];
+  runtimeStatus: WallpaperRuntimeStatus;
 }) {
   async function setLaunchAtLogin(enabled: boolean) {
     await window.wallpaperApi.setLaunchAtLogin(enabled);
@@ -2898,6 +3141,53 @@ function WallpaperPanel({
           {project.wallpaper.paused ? <Play size={16} /> : <Pause size={16} />} {project.wallpaper.paused ? "Resume" : "Pause"}
         </button>
       </div>
+      <label>
+        Wallpaper scope
+        <select value={project.wallpaper.scope} onChange={(event) => onPatch({ scope: event.target.value as WallpaperProject["wallpaper"]["scope"] })}>
+          <option value="same-all-desktops">Same wallpaper on all desktops</option>
+          <option value="different-per-desktop">Different wallpaper on each desktop</option>
+          <option value="current-desktop">Current desktop only</option>
+        </select>
+      </label>
+      {project.wallpaper.scope === "different-per-desktop" && (
+        <details className="target-config" open>
+          <summary>Desktop targets <ChevronDown size={15} /></summary>
+          <label>
+            Template assignment
+            <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
+              <option value="single-template">All desktops use one template</option>
+              <option value="different-template">Each desktop uses a different enabled template</option>
+              <option value="playlist">Template rotation playlist per desktop</option>
+            </select>
+          </label>
+          {project.wallpaper.targetTemplateMode === "single-template" && (
+            <label>
+              Shared template
+              <select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
+                <option value="">Active template</option>
+                {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="target-list">
+            {(targets.length ? targets : [{ id: "desktop-1", label: "Current desktop", index: 1, current: true, reliable: false, limitation: "Targets have not been detected yet." }]).map((target) => (
+              <div className="target-row" key={target.id}>
+                <span>
+                  <strong>{target.label}</strong>
+                  <small>{target.reliable ? "Detected" : target.limitation ?? "Limited macOS target support"}</small>
+                </span>
+                {project.wallpaper.targetTemplateMode === "different-template" && (
+                  <select value={project.wallpaper.targetTemplateIds[target.id] ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, [target.id]: event.target.value || undefined } })}>
+                    <option value="">Auto enabled template</option>
+                    {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                )}
+                {project.wallpaper.targetTemplateMode === "playlist" && <small className="target-playlist-note">Uses this template rotation playlist</small>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
       <button className="pill-button primary" disabled={busy} onClick={onGenerateApply}><Wallpaper size={17} /> {busy ? "Applying…" : "Generate and Apply"}</button>
       <button className="pill-button" disabled={busy} onClick={onApplyCurrent}>Apply Current Preview</button>
       <button className="pill-button" disabled={busy} onClick={onGenerate}><Shuffle size={16} /> Generate New Combination</button>
@@ -2948,7 +3238,7 @@ function WallpaperPanel({
       </label>
       <div className="wallpaper-status">
         <span>Template: {currentTemplate?.name ?? project.name}</span>
-        <span>Status: {!project.wallpaper.enabled ? "Manual" : project.wallpaper.paused ? "Paused" : "Active"}</span>
+        <span>Status: {runtimeStatus}</span>
         <span>Last applied: {project.wallpaper.lastUpdatedAt ? new Date(project.wallpaper.lastUpdatedAt).toLocaleString() : "Never"}</span>
         <span>Next update: {project.wallpaper.nextScheduledAt ? new Date(project.wallpaper.nextScheduledAt).toLocaleString() : "Not scheduled"}</span>
         {project.wallpaper.lastError && (
@@ -2957,6 +3247,40 @@ function WallpaperPanel({
             <p>{project.wallpaper.lastError}</p>
           </details>
         )}
+        <details className="diagnostics">
+          <summary>Wallpaper diagnostics <ChevronDown size={15} /></summary>
+          {diagnostics ? (
+            <div className="diagnostic-grid">
+              <span>Rendered path</span><code>{diagnostics.renderedPath ?? "Unavailable"}</code>
+              <span>File size</span><code>{diagnostics.fileSize ?? 0} bytes</code>
+              <span>Valid image</span><code>{diagnostics.validImage ? "Yes" : "Not confirmed"}</code>
+              <span>Permission status</span><code>{diagnostics.permissionStatus ?? "Unknown"}</code>
+              <span>Verification</span><code>{diagnostics.changed ? `Changed via ${diagnostics.verificationMethod ?? "native check"}` : "Not confirmed"}</code>
+              <span>Last apply error</span><code>{diagnostics.lastError ?? project.wallpaper.lastError ?? "None"}</code>
+              {diagnostics.nativeResults.map((result, index) => (
+                <code className="diagnostic-command" key={`${result.method}-${index}`}>
+                  {result.method}
+                  {"\n"}exit={result.exitCode ?? "n/a"} timeout={String(result.timedOut)}
+                  {"\n"}stdout: {result.stdout.trim() || "(empty)"}
+                  {"\n"}stderr: {result.stderr.trim() || "(empty)"}
+                  {result.error ? `\nerror: ${result.error}` : ""}
+                </code>
+              ))}
+              {diagnostics.targetResults?.map((target) => (
+                <code className="diagnostic-command" key={target.targetId}>
+                  target: {target.targetLabel} ({target.targetId})
+                  {"\n"}ok: {String(target.ok)}
+                  {"\n"}file: {target.filePath ?? "none"}
+                  {"\n"}size: {target.fileSize ?? 0}
+                  {"\n"}verified: {target.diagnostics.verifiedPaths.join(", ") || "none"}
+                  {target.error ? `\nerror: ${target.error}` : ""}
+                </code>
+              ))}
+            </div>
+          ) : (
+            <p>No wallpaper apply attempt has been recorded in this session.</p>
+          )}
+        </details>
       </div>
     </section>
   );
@@ -2965,6 +3289,8 @@ function WallpaperPanel({
 function CanvasDesignPanel({
   canvas,
   activeTab,
+  advancedOpen,
+  onAdvancedOpenChange,
   onPatch,
   onChooseBackground,
   onClearBackground,
@@ -2973,6 +3299,8 @@ function CanvasDesignPanel({
 }: {
   canvas: CanvasSettings;
   activeTab: InspectorTab;
+  advancedOpen: boolean;
+  onAdvancedOpenChange: (open: boolean) => void;
   onPatch: (patch: Partial<CanvasSettings>) => void;
   onChooseBackground: () => void;
   onClearBackground: () => void;
@@ -3030,7 +3358,7 @@ function CanvasDesignPanel({
       </details>}
 
       {activeTab === "background" && <details open>
-        <summary>Background <ChevronDown size={15} /></summary>
+        <summary>Basic Background <ChevronDown size={15} /></summary>
         <div className="two-col">
           <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>
           <label>Mode<select value={canvas.backgroundMode} onChange={(event) => onPatch({ backgroundMode: event.target.value as CanvasSettings["backgroundMode"] })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original size</option><option value="center">Center</option><option value="tile">Tile</option></select></label>
@@ -3040,6 +3368,13 @@ function CanvasDesignPanel({
           <button className="pill-button" disabled={!canvas.backgroundImage} onClick={onClearBackground}>Reset to color</button>
           <button className={canvas.backgroundTransparent ? "toggle active" : "toggle"} onClick={() => onPatch({ backgroundTransparent: !canvas.backgroundTransparent })}>Transparent</button>
         </div>
+        <button className={canvas.backgroundPaper.type !== "none" ? "toggle active" : "toggle"} onClick={() => patchPaper(canvas.backgroundPaper.type === "none" ? { type: "fine-grain", intensity: Math.max(20, canvas.backgroundPaper.intensity), opacity: Math.max(0.25, canvas.backgroundPaper.opacity) } : { type: "none", intensity: 0, opacity: 0 })}>
+          Texture {canvas.backgroundPaper.type === "none" ? "Off" : "On"}
+        </button>
+      </details>}
+
+      {activeTab === "background" && <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
+        <summary>Advanced Background <ChevronDown size={15} /></summary>
         <label>Alignment<select value={canvas.backgroundAlignment} onChange={(event) => onPatch({ backgroundAlignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <div className="two-col">
           <label>Offset X<input type="number" value={canvas.backgroundOffsetX} onChange={(event) => onPatch({ backgroundOffsetX: Number(event.target.value) })} /></label>
@@ -3049,10 +3384,6 @@ function CanvasDesignPanel({
         <FilterSlider label="Opacity" value={canvas.backgroundOpacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ backgroundOpacity: value })} />
         <FilterSlider label="Brightness" value={canvas.backgroundBrightness} min={0} max={200} onChange={(value) => onPatch({ backgroundBrightness: value })} />
         <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={0.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
-      </details>}
-
-      {activeTab === "background" && <details open>
-        <summary>Background Paper <ChevronDown size={15} /></summary>
         <label>Texture<select value={canvas.backgroundPaper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="dust-scratches">Grain</option><option value="fold-marks">Folded paper</option></select></label>
         <FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
         <FilterSlider label="Opacity" value={canvas.backgroundPaper.opacity} min={0} max={1} step={0.05} onChange={(value) => patchPaper({ opacity: value })} />

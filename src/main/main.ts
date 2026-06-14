@@ -6,12 +6,15 @@ import type {
   ExportPayload,
   ImageSource,
   LocalImageRef,
+  WallpaperApplyDiagnostics,
   PathImportResult,
   PinterestImportProgress,
   PinterestImportRequest,
   WallpaperApplyFilePayload,
   WallpaperApplyPayload,
+  WallpaperApplyTargetsPayload,
   WallpaperProject,
+  WallpaperTargetResult,
   TrayRuntimeState
 } from "../shared/types.js";
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
@@ -71,16 +74,25 @@ function showWindow() {
 function updateTrayMenu() {
   if (!tray) return;
   const pauseLabel = trayRuntimeState.paused ? "Resume Rotation" : "Pause Rotation";
+  const intervalLabel = trayRuntimeState.interval === "custom"
+    ? `Every ${trayRuntimeState.customIntervalMinutes ?? 1} min`
+    : trayRuntimeState.interval ?? "manual";
+  const nextLabel = trayRuntimeState.nextScheduledAt ? new Date(trayRuntimeState.nextScheduledAt).toLocaleString() : "Not scheduled";
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "Generate New Wallpaper", click: () => mainWindow?.webContents.send("tray:command", "generate-apply") },
+      { label: "Open Editor", click: showWindow },
+      { label: "Generate Now", click: () => mainWindow?.webContents.send("tray:command", "generate-apply") },
       { label: "Previous Wallpaper", click: () => mainWindow?.webContents.send("tray:command", "previous") },
       {
         label: pauseLabel,
         enabled: trayRuntimeState.enabled,
         click: () => mainWindow?.webContents.send("tray:command", trayRuntimeState.paused ? "resume" : "pause")
       },
-      { label: "Open App", click: showWindow },
+      { type: "separator" },
+      { label: `Current interval: ${intervalLabel}`, enabled: false },
+      { label: `Next update: ${nextLabel}`, enabled: false },
+      { label: `Status: ${trayRuntimeState.status ?? "idle"}`, enabled: false },
+      ...(trayRuntimeState.lastError ? [{ label: `Last error: ${trayRuntimeState.lastError}`, enabled: false } as const] : []),
       { type: "separator" },
       {
         label: "Quit",
@@ -285,6 +297,28 @@ function dataUrlToBuffer(dataUrl: string): Buffer {
   return Buffer.from(dataUrl.slice(comma + 1), "base64");
 }
 
+async function validateRenderedWallpaperImage(filePath: string) {
+  const file = await validateWallpaperFile(filePath);
+  const image = nativeImage.createFromPath(filePath);
+  if (image.isEmpty()) throw new Error("Rendered wallpaper file is not a valid readable image.");
+  return file;
+}
+
+function diagnosticsFromError(error: unknown): WallpaperApplyDiagnostics | undefined {
+  return error && typeof error === "object" && "diagnostics" in error
+    ? error.diagnostics as WallpaperApplyDiagnostics
+    : undefined;
+}
+
+async function writeRenderedWallpaper(dataUrl: string, suggestedName: string) {
+  const cacheDir = path.join(app.getPath("userData"), "Generated Wallpapers");
+  await mkdir(cacheDir, { recursive: true });
+  const filePath = path.join(cacheDir, safeWallpaperFileName(suggestedName));
+  await writeFile(filePath, dataUrlToBuffer(dataUrl));
+  const file = await validateRenderedWallpaperImage(filePath);
+  return { cacheDir, filePath, file };
+}
+
 ipcMain.handle("dialog:choose-folder", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory"],
@@ -465,44 +499,146 @@ ipcMain.handle("image:export", async (_event, payload: ExportPayload) => {
 
 ipcMain.handle("wallpaper:apply", async (_event, payload: WallpaperApplyPayload) => {
   try {
-    const cacheDir = path.join(app.getPath("userData"), "Generated Wallpapers");
-    await mkdir(cacheDir, { recursive: true });
-    const filePath = path.join(cacheDir, safeWallpaperFileName(payload.suggestedName));
-    await writeFile(filePath, dataUrlToBuffer(payload.dataUrl));
-    const generatedFile = await validateWallpaperFile(filePath);
-    await createWallpaperController().setWallpaper(filePath, {
+    const { cacheDir, filePath, file: generatedFile } = await writeRenderedWallpaper(payload.dataUrl, payload.suggestedName);
+    const diagnostics = await createWallpaperController().setWallpaper(filePath, {
       monitorMode: payload.monitorMode,
-      displayMode: payload.displayMode
+      displayMode: payload.displayMode,
+      scope: payload.scope,
+      targetId: payload.targetId
     });
+    diagnostics.renderedPath = filePath;
+    diagnostics.fileSize = generatedFile.size;
+    diagnostics.validImage = true;
+    if (!diagnostics.changed) {
+      throw Object.assign(new Error(diagnostics.lastError ?? "macOS did not confirm the desktop wallpaper changed."), { diagnostics });
+    }
     await cleanupGeneratedWallpapers(cacheDir, 40);
     return {
       ok: true,
       filePath,
       fileSize: generatedFile.size,
       appliedAt: new Date().toISOString(),
-      platform: process.platform
+      platform: process.platform,
+      diagnostics
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Unable to set wallpaper.", platform: process.platform };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to set wallpaper.",
+      platform: process.platform,
+      diagnostics: diagnosticsFromError(error)
+    };
   }
+});
+
+ipcMain.handle("wallpaper:targets", async () => {
+  const controller = createWallpaperController();
+  if (!controller.getTargets) {
+    return [{
+      id: "desktop-1",
+      label: process.platform === "win32" ? "Primary desktop" : "Desktop 1",
+      index: 1,
+      current: true,
+      reliable: false,
+      limitation: "This platform does not expose individual desktop targets."
+    }];
+  }
+  return controller.getTargets();
+});
+
+ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApplyTargetsPayload) => {
+  const cacheDir = path.join(app.getPath("userData"), "Generated Wallpapers");
+  const targetResults: WallpaperTargetResult[] = [];
+  let lastError: string | undefined;
+  for (const item of payload.items) {
+    try {
+      const written = await writeRenderedWallpaper(item.dataUrl, item.suggestedName);
+      const diagnostics = await createWallpaperController().setWallpaper(written.filePath, {
+        displayMode: payload.displayMode,
+        scope: payload.scope ?? "different-per-desktop",
+        targetId: item.targetId
+      });
+      diagnostics.renderedPath = written.filePath;
+      diagnostics.fileSize = written.file.size;
+      diagnostics.validImage = true;
+      diagnostics.targetId = item.targetId;
+      diagnostics.targetLabel = item.targetLabel;
+      const ok = diagnostics.changed;
+      if (!ok) lastError = diagnostics.lastError ?? `Wallpaper target ${item.targetLabel} did not verify.`;
+      targetResults.push({
+        targetId: item.targetId,
+        targetLabel: item.targetLabel,
+        filePath: written.filePath,
+        fileSize: written.file.size,
+        diagnostics,
+        ok,
+        error: ok ? undefined : lastError
+      });
+    } catch (error) {
+      const diagnostics = diagnosticsFromError(error) ?? {
+        nativeResults: [],
+        verifiedPaths: [],
+        changed: false,
+        targetId: item.targetId,
+        targetLabel: item.targetLabel,
+        lastError: error instanceof Error ? error.message : "Unable to set wallpaper target."
+      };
+      lastError = diagnostics.lastError;
+      targetResults.push({
+        targetId: item.targetId,
+        targetLabel: item.targetLabel,
+        diagnostics,
+        ok: false,
+        error: diagnostics.lastError
+      });
+    }
+  }
+  await cleanupGeneratedWallpapers(cacheDir, 40);
+  const ok = targetResults.length > 0 && targetResults.every((result) => result.ok);
+  return {
+    ok,
+    appliedAt: ok ? new Date().toISOString() : undefined,
+    platform: process.platform,
+    error: ok ? undefined : lastError ?? "One or more wallpaper targets failed.",
+    diagnostics: {
+      nativeResults: targetResults.flatMap((result) => result.diagnostics.nativeResults),
+      verifiedPaths: targetResults.flatMap((result) => result.diagnostics.verifiedPaths),
+      changed: ok,
+      targetResults,
+      lastError
+    },
+    targets: targetResults
+  };
 });
 
 ipcMain.handle("wallpaper:apply-file", async (_event, payload: WallpaperApplyFilePayload) => {
   try {
-    const file = await validateWallpaperFile(payload.filePath);
-    await createWallpaperController().setWallpaper(payload.filePath, {
+    const file = await validateRenderedWallpaperImage(payload.filePath);
+    const diagnostics = await createWallpaperController().setWallpaper(payload.filePath, {
       monitorMode: payload.monitorMode,
       displayMode: payload.displayMode
     });
+    diagnostics.renderedPath = payload.filePath;
+    diagnostics.fileSize = file.size;
+    diagnostics.validImage = true;
+    if (!diagnostics.changed) {
+      throw Object.assign(new Error(diagnostics.lastError ?? "macOS did not confirm the desktop wallpaper changed."), { diagnostics });
+    }
     return {
       ok: true,
       filePath: payload.filePath,
       fileSize: file.size,
       appliedAt: new Date().toISOString(),
-      platform: process.platform
+      platform: process.platform,
+      diagnostics
     };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Unable to set wallpaper.", platform: process.platform };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unable to set wallpaper.",
+      platform: process.platform,
+      diagnostics: diagnosticsFromError(error)
+    };
   }
 });
 
