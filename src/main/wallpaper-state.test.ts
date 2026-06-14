@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import {
   appendAppliedHistory,
   buildMacOSWallpaperTargets,
+  classifyMacOSDockRows,
   generationStateAfterApplication,
   nextHistoryIndex,
   nextScheduledAt,
+  planFadeOverlayAssignments,
   planTemplateRotation,
   previousHistoryIndex
 } from "../shared/wallpaper.js";
@@ -73,4 +75,35 @@ test("macOS target discovery preserves inactive Spaces even when wallpapers matc
   assert.deepEqual(targets.map((target) => target.id), ["picture-11", "picture-12", "picture-13"]);
   assert.equal(targets.filter((target) => target.current).length, 1);
   assert.equal(targets[1].current, false);
+  assert.equal(targets[0].targetType, "active-space");
+  assert.equal(targets[1].targetType, "inactive-space");
+});
+
+test("fade planning creates exactly one overlay assignment per visible display", () => {
+  const plan = planFadeOverlayAssignments(
+    ["101", "202"],
+    [
+      { displayId: "101", filePath: "/new-a.png", oldFilePath: "/old-a.png", current: true },
+      { displayId: "202", filePath: "/new-b.png", oldFilePath: "/old-b.png", current: true }
+    ]
+  );
+  assert.equal(plan.length, 2);
+  assert.deepEqual(plan.map((item) => item.item.filePath), ["/new-a.png", "/new-b.png"]);
+});
+
+
+test("visibility classification consumes duplicate wallpaper paths only once per visible desktop", () => {
+  const classified = classifyMacOSDockRows(
+    [
+      { pictureId: 1, currentPath: "/wall/shared.jpg" },
+      { pictureId: 2, currentPath: "/wall/shared.jpg" },
+      { pictureId: 3, currentPath: "/wall/other.jpg" }
+    ],
+    [
+      { index: 1, currentPath: "/wall/shared.jpg" },
+      { index: 2, currentPath: "/wall/other.jpg" }
+    ]
+  );
+  assert.deepEqual(classified.map((item) => item.visible), [true, false, true]);
+  assert.deepEqual(classified.map((item) => item.targetType), ["active-space", "inactive-space", "active-space"]);
 });

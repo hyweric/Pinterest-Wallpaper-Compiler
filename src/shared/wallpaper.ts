@@ -129,25 +129,50 @@ export interface MacOSVisibleDesktopRow {
   currentPath?: string;
 }
 
+export interface ClassifiedMacOSTarget {
+  pictureId: number;
+  targetType: "active-space" | "inactive-space";
+  visible: boolean;
+  visibleIndex?: number;
+}
+
+export function classifyMacOSDockRows(
+  dockRows: MacOSDockTargetRow[],
+  visibleRows: MacOSVisibleDesktopRow[]
+): ClassifiedMacOSTarget[] {
+  const unmatchedVisible = [...visibleRows];
+  return dockRows.map((row) => {
+    let matchedIndex = -1;
+    if (row.currentPath) matchedIndex = unmatchedVisible.findIndex((item) => item.currentPath === row.currentPath);
+    const matched = matchedIndex >= 0 ? unmatchedVisible.splice(matchedIndex, 1)[0] : undefined;
+    return {
+      pictureId: row.pictureId,
+      targetType: matched ? "active-space" : "inactive-space",
+      visible: Boolean(matched),
+      visibleIndex: matched?.index
+    };
+  });
+}
+
 export function buildMacOSWallpaperTargets(
   dockRows: MacOSDockTargetRow[],
   visibleRows: MacOSVisibleDesktopRow[],
   fallbackLimitation?: string
 ): WallpaperTarget[] {
   if (dockRows.length) {
-    const unmatchedVisible = [...visibleRows];
+    const classified = classifyMacOSDockRows(dockRows, visibleRows);
     return dockRows.map((row, index) => {
-      let visibleIndex = -1;
-      if (row.currentPath) visibleIndex = unmatchedVisible.findIndex((item) => item.currentPath === row.currentPath);
-      const current = visibleIndex >= 0;
-      if (visibleIndex >= 0) unmatchedVisible.splice(visibleIndex, 1);
+      const classification = classified[index];
+      const current = classification.visible;
       return {
         id: `picture-${row.pictureId}`,
-        label: current ? `Current desktop${visibleRows.length > 1 ? ` ${visibleIndex + 1}` : ""}` : `Desktop / Space ${index + 1}`,
+        label: current ? `Current desktop${visibleRows.length > 1 ? ` ${classification.visibleIndex ?? index + 1}` : ""}` : `Desktop / Space ${index + 1}`,
         index: index + 1,
         displayId: row.displayId,
         spaceId: row.spaceId,
         current,
+        visible: current,
+        targetType: classification.targetType,
         reliable: true,
         limitation: "Inactive Mission Control Spaces are identified by stable Dock picture records; macOS does not expose friendly Space names.",
         currentPath: row.currentPath
@@ -161,6 +186,8 @@ export function buildMacOSWallpaperTargets(
       label: `Current desktop ${row.index}`,
       index: row.index,
       current: true,
+      visible: true,
+      targetType: "active-space",
       reliable: true,
       limitation: "Only currently visible desktops were exposed because the Dock wallpaper database was unavailable.",
       currentPath: row.currentPath
@@ -172,7 +199,36 @@ export function buildMacOSWallpaperTargets(
     label: "Current desktop",
     index: 1,
     current: true,
+    visible: true,
+    targetType: "active-space",
     reliable: false,
     limitation: fallbackLimitation ?? "macOS did not expose desktop targets."
   }];
+}
+
+export interface FadeOverlayPlanItem {
+  displayId?: string;
+  filePath: string;
+  current?: boolean;
+  oldFilePath?: string;
+}
+
+export function planFadeOverlayAssignments(
+  displayIds: string[],
+  items: FadeOverlayPlanItem[],
+  allDisplays = false
+) {
+  if (!displayIds.length || !items.length) return [] as Array<{ displayId: string; item: FadeOverlayPlanItem }>;
+  const currentItems = items.filter((item) => item.current);
+  const visibleItems = currentItems.length
+    ? currentItems
+    : [...new Map(items.map((item) => [item.displayId ?? item.filePath, item])).values()];
+  return displayIds.map((displayId, index) => ({
+    displayId,
+    item: allDisplays || visibleItems.length === 1
+      ? visibleItems[Math.min(index, visibleItems.length - 1)] ?? visibleItems[0]
+      : visibleItems.find((item) => item.displayId && String(item.displayId) === String(displayId))
+        ?? visibleItems[index]
+        ?? visibleItems[0]
+  }));
 }

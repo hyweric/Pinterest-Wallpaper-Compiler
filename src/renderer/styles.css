@@ -3088,3 +3088,200 @@ summary {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+
+/* Phase 11: shared control system, portal tooltips, selection marquee, curated surfaces */
+:root {
+  --control-height: 32px;
+  --control-radius: 8px;
+  --control-border: rgba(43, 48, 58, 0.12);
+  --control-focus: rgba(118, 164, 181, 0.42);
+  --section-gap: 10px;
+  --ui-font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--ui-font);
+}
+
+label,
+.two-col,
+.compact-action-row,
+.settings-section,
+.properties,
+.settings-section details,
+.properties details {
+  min-width: 0;
+}
+
+select,
+input[type="text"],
+input[type="number"],
+input[type="url"] {
+  max-width: 100%;
+  min-width: 0;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  border-radius: var(--control-radius);
+  border-color: var(--control-border);
+  color: #343a44;
+  background-color: rgba(255,255,255,.94);
+  line-height: 1;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 30px 0 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23676e78' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px;
+}
+
+select:focus,
+input:focus-visible,
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--control-focus);
+  outline-offset: 1px;
+}
+
+.sidebar.right {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
+.sidebar.right > .panel-tabs + * {
+  min-height: 0;
+}
+
+.sidebar.right .settings-section,
+.sidebar.right .properties {
+  align-content: start;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding-right: 12px;
+}
+
+.settings-section > details,
+.properties > details {
+  overflow: visible;
+}
+
+.settings-section > details > summary,
+.properties > details > summary {
+  white-space: nowrap;
+}
+
+.tooltip-anchor::after,
+.icon-button[title]::after,
+.layer-icon-button[title]::after,
+.compact-actions button[title]::after {
+  display: none !important;
+  content: none !important;
+}
+
+.global-tooltip {
+  position: fixed;
+  z-index: 100000;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(28, 31, 37, .96);
+  box-shadow: 0 9px 26px rgba(13, 17, 24, .22);
+  font: 560 11px/1.15 var(--ui-font);
+  white-space: nowrap;
+  transform: translateX(-50%);
+  animation: pwc-tooltip-in 90ms ease-out;
+}
+
+.global-tooltip.top { transform: translate(-50%, -100%); }
+.global-tooltip.bottom { transform: translate(-50%, 0); }
+.global-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+.global-tooltip.top::after { bottom: -3px; }
+.global-tooltip.bottom::after { top: -3px; }
+.global-tooltip kbd {
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: rgba(255,255,255,.72);
+  background: rgba(255,255,255,.1);
+  font: inherit;
+  font-size: 9px;
+}
+@keyframes pwc-tooltip-in {
+  from { opacity: 0; filter: blur(1px); }
+  to { opacity: 1; filter: blur(0); }
+}
+
+.selection-marquee {
+  position: absolute;
+  z-index: 80;
+  pointer-events: none;
+  border: 1px solid rgba(77, 132, 154, .78);
+  background: rgba(123, 180, 201, .13);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.55) inset;
+}
+
+.home-hero h2 span {
+  display: inline-block;
+  max-width: 620px;
+  margin-top: 9px;
+  color: #777d87;
+  font-family: var(--ui-font);
+  font-size: clamp(16px, 1.7vw, 22px);
+  font-weight: 520;
+  letter-spacing: -.015em;
+  line-height: 1.35;
+}
+
+.texture-choice {
+  min-height: 82px;
+}
+.texture-swatch {
+  background-size: cover;
+  background-position: center;
+  background-repeat: repeat;
+}
+.canvas-background-texture,
+.texture-overlay,
+.paper-frame-texture {
+  background-repeat: repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-tooltip { animation: none; }
+}
+
+.inspector-scroll-region {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 0 2px 16px 0;
+}
+.sidebar.right .inspector-scroll-region > .settings-section,
+.sidebar.right .inspector-scroll-region > .properties {
+  overflow: visible;
+}

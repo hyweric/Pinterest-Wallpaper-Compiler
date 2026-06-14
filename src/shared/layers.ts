@@ -70,3 +70,20 @@ export function layerSelectionRange(layers: PlaceholderLayer[], anchorId: string
   const end = Math.max(anchorIndex, targetIndex);
   return panelOrder.slice(start, end + 1).map((layer) => layer.id);
 }
+
+export interface SelectionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function layersIntersectingRect(layers: PlaceholderLayer[], rect: SelectionRect) {
+  return layers
+    .filter((layer) => !layer.hidden && !layer.locked)
+    .filter((layer) => layer.x < rect.x + rect.width
+      && layer.x + layer.width > rect.x
+      && layer.y < rect.y + rect.height
+      && layer.y + layer.height > rect.y)
+    .map((layer) => layer.id);
+}

@@ -2,6 +2,7 @@ import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTexture
 import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { getImageForLayer } from "./project";
+import { bundledSurfaceUrl } from "./surface-textures";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -137,6 +138,24 @@ async function drawPaperTexture(
       pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
       context.fillStyle = pattern;
       context.fillRect(0, 0, width, height);
+    }
+    context.restore();
+    return;
+  }
+
+  const bundledUrl = bundledSurfaceUrl(paper.type);
+  if (bundledUrl) {
+    try {
+      const image = await loadImage(bundledUrl);
+      const pattern = context.createPattern(image, "repeat");
+      if (pattern) {
+        const scale = Math.max(0.08, paper.scale * 0.45);
+        pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
+        context.fillStyle = pattern;
+        context.fillRect(0, 0, width, height);
+      }
+    } catch (error) {
+      console.warn(`Bundled surface texture could not be loaded: ${paper.type}`, error);
     }
     context.restore();
     return;

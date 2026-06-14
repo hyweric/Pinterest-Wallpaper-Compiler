@@ -38,6 +38,7 @@ export type WallpaperRuntimeStatus =
   | "applied"
   | "paused"
   | "failed";
+export type WallpaperTargetType = "physical-display" | "active-space" | "inactive-space";
 
 export type ImageAlignment =
   | "center"
@@ -82,6 +83,7 @@ export interface PaperTextureEffect {
     | "recycled"
     | "matte-photo"
     | "canvas"
+    | "handmade"
     | "newspaper"
     | "fold-marks"
     | "dust-scratches"
@@ -439,9 +441,31 @@ export interface WallpaperTarget {
   displayId?: string;
   spaceId?: string;
   current: boolean;
+  targetType?: WallpaperTargetType;
+  visible?: boolean;
   reliable: boolean;
   limitation?: string;
   currentPath?: string;
+}
+
+export interface WallpaperTransitionDiagnostic {
+  targetType?: "physical-display";
+  displayId: string;
+  oldImagePath?: string;
+  newImagePath: string;
+  overlayCreated: boolean;
+  oldImageDecoded: boolean;
+  newImageDecoded: boolean;
+  animationStarted: boolean;
+  animationCompleted: boolean;
+  animationFrames?: number;
+  startedAt?: string;
+  completedAt?: string;
+  removedAt?: string;
+  durationMs: number;
+  actualDurationMs?: number;
+  removedAfterVerification: boolean;
+  error?: string;
 }
 
 export interface WallpaperTargetResult {
@@ -472,6 +496,9 @@ export interface WallpaperApplyDiagnostics {
   requestedPath?: string;
   reportedPath?: string;
   verificationResult?: "matched" | "mismatched" | "unavailable";
+  targetType?: WallpaperTargetType;
+  visible?: boolean;
+  transitionDiagnostics?: WallpaperTransitionDiagnostic[];
   targetResults?: WallpaperTargetResult[];
 }
 

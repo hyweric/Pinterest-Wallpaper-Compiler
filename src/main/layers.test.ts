@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { PlaceholderLayer } from "../shared/types";
-import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock } from "../shared/layers";
+import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock } from "../shared/layers";
 
 function layer(id: string): PlaceholderLayer {
   return {
@@ -68,4 +68,14 @@ test("reordered layers preserve IDs and order through persistence", () => {
   const restored = JSON.parse(JSON.stringify({ layers: reordered })) as { layers: PlaceholderLayer[] };
   assert.deepEqual(restored.layers.map((item) => item.id), ["middle", "front", "back"]);
   assert.equal(new Set(restored.layers.map((item) => item.id)).size, restored.layers.length);
+});
+
+test("selection marquee includes visible unlocked intersecting layers", () => {
+  const layers = [
+    layer("a"),
+    { ...layer("b"), x: 300, y: 300 },
+    { ...layer("c"), x: 10, y: 10, locked: true },
+    { ...layer("d"), x: 20, y: 20, hidden: true }
+  ];
+  assert.deepEqual(layersIntersectingRect(layers, { x: 0, y: 0, width: 160, height: 160 }), ["a"]);
 });

@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { NativeCommandResult, WallpaperApplyDiagnostics, WallpaperDisplayMode, WallpaperScope, WallpaperTarget, WallpaperTargetResult } from "../shared/types.js";
-import { buildMacOSWallpaperTargets } from "../shared/wallpaper.js";
+import { buildMacOSWallpaperTargets, classifyMacOSDockRows } from "../shared/wallpaper.js";
 
 export interface WallpaperControllerOptions {
   displayMode?: WallpaperDisplayMode;
@@ -397,7 +397,13 @@ export class MacOSWallpaperController implements WallpaperController {
     const results: WallpaperTargetResult[] = [];
     const previousRows = dockItems.length ? await readDockPictureRows(nativeResults) : [];
     const previousById = new Map(previousRows.map((row) => [row.pictureId, row.currentPath]));
+    const rowById = new Map(previousRows.map((row) => [row.pictureId, row]));
     const visibleBeforeApply = dockItems.length ? await readVisibleDesktopPaths(nativeResults) : [];
+    const classifications = classifyMacOSDockRows(
+      previousRows,
+      visibleBeforeApply.map((currentPath, index) => ({ index: index + 1, currentPath }))
+    );
+    const classificationById = new Map(classifications.map((item) => [item.pictureId, item]));
 
     if (dockItems.length) {
       const apply = await applyDockAssignments(
@@ -407,15 +413,8 @@ export class MacOSWallpaperController implements WallpaperController {
       // Refresh the currently visible screen(s) through AppKit so the active
       // desktop changes without restarting Dock or showing a black frame.
       const visibleDockItems = dockItems
-        .filter(({ pictureId }) => {
-          const previousPath = previousById.get(pictureId);
-          return Boolean(previousPath && visibleBeforeApply.includes(normalizeWallpaperPath(previousPath)));
-        })
-        .sort((a, b) => {
-          const aPath = normalizeWallpaperPath(previousById.get(a.pictureId) ?? "");
-          const bPath = normalizeWallpaperPath(previousById.get(b.pictureId) ?? "");
-          return visibleBeforeApply.indexOf(aPath) - visibleBeforeApply.indexOf(bPath);
-        });
+        .filter(({ pictureId }) => classificationById.get(pictureId)?.visible)
+        .sort((a, b) => (classificationById.get(a.pictureId)?.visibleIndex ?? 999) - (classificationById.get(b.pictureId)?.visibleIndex ?? 999));
       if (visibleDockItems.length) {
         await applyVisibleScreensBatchWithAppKit(visibleDockItems.map(({ item }) => item.filePath), nativeResults);
       }
@@ -424,22 +423,35 @@ export class MacOSWallpaperController implements WallpaperController {
         const verification = commandSucceeded(apply ?? { method: "", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false })
           ? await verifyMacOSWallpaper(item.filePath, itemResults, { dockPictureId: pictureId })
           : { verifiedPaths: [] as string[], verificationMethod: undefined, permissionStatus: "not-checked" as const, changed: false };
+        const row = rowById.get(pictureId);
+        const classification = classificationById.get(pictureId);
+        const visuallyVerifiable = Boolean(classification?.visible);
         const diagnostics: WallpaperApplyDiagnostics = {
           renderedPath: item.filePath,
           fileSize: item.fileSize,
           validImage: true,
           nativeResults: itemResults,
           verifiedPaths: verification.verifiedPaths,
-          verificationMethod: verification.verificationMethod,
-          permissionStatus: verification.changed ? "verified" : verification.permissionStatus === "not-checked" ? "verification-failed" : verification.permissionStatus,
+          verificationMethod: visuallyVerifiable
+            ? verification.verificationMethod
+            : verification.changed ? "Dock assignment recorded; inactive Space cannot be visually verified until activated" : verification.verificationMethod,
+          permissionStatus: visuallyVerifiable && verification.changed
+            ? "verified"
+            : verification.permissionStatus === "not-checked" && visuallyVerifiable ? "verification-failed" : verification.permissionStatus,
           changed: verification.changed,
           lastError: verification.changed ? undefined : apply?.error || apply?.stderr || "macOS Dock database did not report the requested wallpaper for this Space.",
           targetId: item.targetId,
           targetLabel: item.targetLabel,
           targetIndex: pictureId,
+          displayId: row?.displayId,
+          spaceId: row?.spaceId,
+          targetType: classification?.targetType ?? "inactive-space",
+          visible: classification?.visible ?? false,
           requestedPath: item.filePath,
           reportedPath: verification.reportedPath,
-          verificationResult: verification.changed ? "matched" : verification.reportedPath ? "mismatched" : "unavailable"
+          verificationResult: visuallyVerifiable
+            ? verification.changed ? "matched" : verification.reportedPath ? "mismatched" : "unavailable"
+            : "unavailable"
         };
         results.push({
           targetId: item.targetId,
@@ -453,12 +465,31 @@ export class MacOSWallpaperController implements WallpaperController {
       }
     }
 
-    const failedDockItems = results.filter((result) => !result.ok).map((result) => ({
-      pictureId: dockPictureIdFromTargetId(result.targetId),
-      filePath: previousById.get(dockPictureIdFromTargetId(result.targetId) ?? -1)
-    })).filter((item): item is { pictureId: number; filePath: string } => Boolean(item.pictureId && item.filePath));
-    if (failedDockItems.length) {
-      await applyDockAssignments(failedDockItems, nativeResults, "macos-dock-database-rollback");
+    const dockResults = results.filter((result) => Boolean(dockPictureIdFromTargetId(result.targetId)));
+    const dockBatchFailed = dockResults.some((result) => !result.ok);
+    if (dockBatchFailed) {
+      const rollbackItems = dockItems.map(({ pictureId }) => ({
+        pictureId,
+        filePath: previousById.get(pictureId)
+      })).filter((item): item is { pictureId: number; filePath: string } => Boolean(item.filePath));
+      if (rollbackItems.length) {
+        await applyDockAssignments(rollbackItems, nativeResults, "macos-dock-database-rollback");
+        const visibleRollbackItems = rollbackItems
+          .filter(({ pictureId }) => classificationById.get(pictureId)?.visible)
+          .sort((a, b) => (classificationById.get(a.pictureId)?.visibleIndex ?? 999) - (classificationById.get(b.pictureId)?.visibleIndex ?? 999));
+        if (visibleRollbackItems.length) {
+          await applyVisibleScreensBatchWithAppKit(visibleRollbackItems.map((item) => item.filePath), nativeResults);
+        }
+      }
+      for (const result of dockResults) {
+        if (result.ok) {
+          result.ok = false;
+          result.error = "Wallpaper batch was rolled back because another desktop target failed.";
+          result.diagnostics.changed = false;
+          result.diagnostics.lastError = result.error;
+          result.diagnostics.verificationResult = "unavailable";
+        }
+      }
     }
 
     for (const item of fallbackItems) {

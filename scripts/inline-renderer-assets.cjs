@@ -24,7 +24,7 @@ const html = `<!doctype html>
   </head>
   <body>
     <div id="root"></div>
-    <script>${js}</script>
+    <script type="module">${js}</script>
   </body>
 </html>
 `;

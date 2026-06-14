@@ -1,5 +1,6 @@
 import React, { PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import {
   BringToFront,
   ChevronDown,
@@ -79,7 +80,8 @@ import {
   updateActiveTemplateSnapshot,
   workspaceFromTemplate
 } from "./project";
-import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
+import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
+import { placeTooltip } from "../shared/ui";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
 import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { projectAfterExportSet } from "../shared/export-set";
@@ -93,6 +95,7 @@ import {
   wallpaperIntervalToMs
 } from "../shared/wallpaper";
 import { renderProjectToDataUrl } from "./exporter";
+import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
@@ -122,6 +125,16 @@ type DragState = {
   layer: PlaceholderLayer;
   groupLayers: PlaceholderLayer[];
   historyProject: WallpaperProject;
+};
+
+type SelectionMarquee = {
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  baseIds: string[];
 };
 
 type PinterestDialogState = {
@@ -301,6 +314,84 @@ function applyCombinationToProject(current: WallpaperProject, combination: Gener
   };
 }
 
+function GlobalTooltip() {
+  const [tooltip, setTooltip] = useState<{ text: string; shortcut?: string; left: number; top: number; placement: "top" | "bottom" }>();
+  const timerRef = useRef<number | undefined>(undefined);
+  const anchorRef = useRef<HTMLElement | undefined>(undefined);
+
+  useEffect(() => {
+    const clear = () => {
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+      anchorRef.current = undefined;
+      setTooltip(undefined);
+    };
+    const resolveAnchor = (target: EventTarget | null) => target instanceof Element
+      ? target.closest<HTMLElement>("[data-tooltip], [title]") ?? undefined
+      : undefined;
+    const show = (anchor: HTMLElement) => {
+      const nativeTitle = anchor.getAttribute("title");
+      if (nativeTitle && !anchor.dataset.tooltip) {
+        anchor.dataset.tooltip = nativeTitle;
+        anchor.dataset.nativeTitle = nativeTitle;
+        anchor.removeAttribute("title");
+      }
+      const text = anchor.dataset.tooltip?.trim();
+      if (!text) return;
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+      anchorRef.current = anchor;
+      timerRef.current = window.setTimeout(() => {
+        if (anchorRef.current !== anchor || !document.body.contains(anchor)) return;
+        const rect = anchor.getBoundingClientRect();
+        const position = placeTooltip(rect, { width: window.innerWidth, height: window.innerHeight }, Math.min(280, Math.max(100, text.length * 7.2)));
+        setTooltip({
+          text,
+          shortcut: anchor.dataset.shortcut,
+          ...position
+        });
+      }, 125);
+    };
+    const over = (event: Event) => {
+      const anchor = resolveAnchor(event.target);
+      if (anchor && anchor !== anchorRef.current) show(anchor);
+    };
+    const out = (event: MouseEvent) => {
+      const anchor = resolveAnchor(event.target);
+      const related = resolveAnchor(event.relatedTarget);
+      if (!anchor || anchor !== related) clear();
+    };
+    const focusIn = (event: FocusEvent) => {
+      const anchor = resolveAnchor(event.target);
+      if (anchor) show(anchor);
+    };
+    document.addEventListener("pointerover", over, true);
+    document.addEventListener("pointerout", out, true);
+    document.addEventListener("focusin", focusIn, true);
+    document.addEventListener("focusout", clear, true);
+    document.addEventListener("pointerdown", clear, true);
+    return () => {
+      clear();
+      document.removeEventListener("pointerover", over, true);
+      document.removeEventListener("pointerout", out, true);
+      document.removeEventListener("focusin", focusIn, true);
+      document.removeEventListener("focusout", clear, true);
+      document.removeEventListener("pointerdown", clear, true);
+    };
+  }, []);
+
+  if (!tooltip) return null;
+  return createPortal(
+    <div
+      className={`global-tooltip ${tooltip.placement}`}
+      role="tooltip"
+      style={{ left: tooltip.left, top: tooltip.top }}
+    >
+      <span>{tooltip.text}</span>{tooltip.shortcut && <kbd>{tooltip.shortcut}</kbd>}
+    </div>,
+    document.body
+  );
+}
+
 function App() {
   const [project, setProject] = useState<WallpaperProject>(() => {
     const autosaved = localStorage.getItem(autosaveKey);
@@ -324,6 +415,7 @@ function App() {
   const [cropModeLayerId, setCropModeLayerId] = useState<string | undefined>();
   const [clipboardLayers, setClipboardLayers] = useState<PlaceholderLayer[]>([]);
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
+  const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarquee | undefined>();
   const [dragActive, setDragActive] = useState(false);
   const [wallpaperHistoryIndex, setWallpaperHistoryIndex] = useState(0);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
@@ -368,6 +460,7 @@ function App() {
     failed: 0
   });
   const dragRef = useRef<DragState | undefined>(undefined);
+  const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
@@ -810,13 +903,31 @@ function App() {
   }
 
   function toggleLayerVisibility(layerId: string) {
-    const layer = project.layers.find((item) => item.id === layerId);
-    if (layer) patchLayer(layerId, { hidden: !layer.hidden });
+    const anchor = project.layers.find((item) => item.id === layerId);
+    if (!anchor) return;
+    const ids = selectedLayerIds.includes(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    const nextHidden = !anchor.hidden;
+    commitProject((current) => ({
+      ...current,
+      layers: current.layers.map((layer) => ids.includes(layer.id) ? { ...layer, hidden: nextHidden } : layer)
+    }));
+    if (nextHidden) {
+      const remaining = selectedLayerIds.filter((id) => !ids.includes(id));
+      setSelectedLayerIds(remaining);
+      setSelectedLayerId(remaining.at(-1));
+      setSelectionAnchorId(remaining.at(-1));
+    }
   }
 
   function toggleLayerLock(layerId: string) {
-    const layer = project.layers.find((item) => item.id === layerId);
-    if (layer) patchLayer(layerId, { locked: !layer.locked }, true, true);
+    const anchor = project.layers.find((item) => item.id === layerId);
+    if (!anchor) return;
+    const ids = selectedLayerIds.includes(layerId) && selectedLayerIds.length > 1 ? selectedLayerIds : [layerId];
+    const nextLocked = !anchor.locked;
+    commitProject((current) => ({
+      ...current,
+      layers: current.layers.map((layer) => ids.includes(layer.id) ? { ...layer, locked: nextLocked } : layer)
+    }));
   }
 
   async function chooseBackground() {
@@ -1684,7 +1795,17 @@ function App() {
     event.stopPropagation();
     if (layer.locked) return;
 
-    const additive = event.metaKey || event.ctrlKey;
+    if (event.shiftKey && mode === "move") {
+      const next = selectedLayerIds.includes(layer.id)
+        ? selectedLayerIds.filter((id) => id !== layer.id)
+        : [...selectedLayerIds, layer.id];
+      setSelectedLayerIds(next);
+      setSelectedLayerId(next.includes(layer.id) ? layer.id : next.at(-1));
+      setSelectionAnchorId(layer.id);
+      return;
+    }
+
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
     let nextSelection = selectedLayerIds;
     if (!selectedLayerIds.includes(layer.id)) {
       nextSelection = additive ? [...selectedLayerIds, layer.id] : [layer.id];
@@ -1747,6 +1868,27 @@ function App() {
   }
 
   function onCanvasPointerMove(event: PointerEvent) {
+    const marquee = marqueeRef.current;
+    if (marquee) {
+      const canvas = event.currentTarget as HTMLElement;
+      const rect = canvas.getBoundingClientRect();
+      const currentX = clamp((event.clientX - rect.left) / zoom, 0, project.canvas.width);
+      const currentY = clamp((event.clientY - rect.top) / zoom, 0, project.canvas.height);
+      const next: SelectionMarquee = {
+        ...marquee,
+        x: Math.min(marquee.startX, currentX),
+        y: Math.min(marquee.startY, currentY),
+        width: Math.abs(currentX - marquee.startX),
+        height: Math.abs(currentY - marquee.startY)
+      };
+      marqueeRef.current = next;
+      setSelectionMarquee(next);
+      const hits = layersIntersectingRect(project.layers, next);
+      const ids = [...new Set([...next.baseIds, ...hits])];
+      setSelectedLayerIds(ids);
+      setSelectedLayerId(ids.at(-1));
+      return;
+    }
     const drag = dragRef.current;
     if (!drag) return;
     const dx = (event.clientX - drag.startX) / zoom;
@@ -1848,6 +1990,11 @@ function App() {
   }
 
   function endDrag() {
+    if (marqueeRef.current) {
+      marqueeRef.current = undefined;
+      setSelectionMarquee(undefined);
+      return;
+    }
     const drag = dragRef.current;
     if (drag) {
       setHistory((stack) => ({ past: [...stack.past, drag.historyProject].slice(-historyLimit), future: [] }));
@@ -2398,6 +2545,7 @@ function App() {
           onCancel={cancelExportSet}
           onClose={() => setExportSet((current) => ({ ...current, open: false }))}
         />
+        <GlobalTooltip />
       </>
     );
   }
@@ -2741,12 +2889,24 @@ function App() {
             onPointerUp={endDrag}
             onPointerLeave={endDrag}
             onPointerDown={(event) => {
-              if (event.target === event.currentTarget) clearLayerSelection();
+              if (event.target !== event.currentTarget) return;
+              if (event.shiftKey) {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const startX = clamp((event.clientX - rect.left) / zoom, 0, project.canvas.width);
+                const startY = clamp((event.clientY - rect.top) / zoom, 0, project.canvas.height);
+                const marquee: SelectionMarquee = { startX, startY, x: startX, y: startY, width: 0, height: 0, baseIds: selectedLayerIds };
+                marqueeRef.current = marquee;
+                setSelectionMarquee(marquee);
+                event.currentTarget.setPointerCapture(event.pointerId);
+              } else {
+                clearLayerSelection();
+              }
             }}
           >
             <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} zoom={zoom} />
             {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x * zoom }} />}
             {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y * zoom }} />}
+            {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x * zoom, top: selectionMarquee.y * zoom, width: selectionMarquee.width * zoom, height: selectionMarquee.height * zoom }} />}
             {project.layers.map((layer) => {
               const image = getImageForLayer(project, layer);
               if (layer.hidden) return null;
@@ -2854,6 +3014,7 @@ function App() {
               <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
             ))}
         </div>
+        <div className="inspector-scroll-region">
         {!selectedLayer && inspectorTab === "settings" && (
           <>
             <CanvasDesignPanel
@@ -2901,6 +3062,7 @@ function App() {
             patchLayer(layer.id, selection.layer);
           }}
         />
+        </div>
       </aside>
 
       {pinterestDialog.open && (
@@ -2922,6 +3084,7 @@ function App() {
         onCancel={cancelExportSet}
         onClose={() => setExportSet((current) => ({ ...current, open: false }))}
       />
+      <GlobalTooltip />
     </main>
   );
 }
@@ -2989,7 +3152,7 @@ function TemplateHome({
       <section className="home-hero">
         <div>
           <p className="home-eyebrow">A quiet space for changing walls</p>
-          <h2>Choose a composition.<br />Let the images evolve.</h2>
+          <h2>Wallpaper, made personal.<br /><span>Turn the images you love into an evolving visual space.</span></h2>
         </div>
         <div className="home-summary">
           <strong>{project.templates.templates.length}</strong>
@@ -3217,7 +3380,7 @@ function backgroundTextureStyle(canvas: CanvasSettings, customTextures: Wallpape
     opacity: Math.max(paper.opacity, paper.intensity / 100) * 0.55,
     mixBlendMode: paper.blendMode,
     backgroundImage: paperTextureBackground(paper, customTextures),
-    backgroundSize: paper.type === "custom" ? `${Math.max(18, 140 * paper.scale)}px auto` : `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
+    backgroundSize: paper.type === "custom" ? `${Math.max(48, 220 * paper.scale)}px auto` : `${Math.max(96, 320 * paper.scale)}px ${Math.max(96, 320 * paper.scale)}px`,
     transform: `rotate(${paper.rotation}deg) scale(1.05)`
   };
 }
@@ -3228,15 +3391,8 @@ function paperTextureBackground(paper: PaperTextureEffect, customTextures: Wallp
     const texture = customTextures.find((item) => item.id === paper.customTextureId);
     return texture ? `url(${texture.url})` : undefined;
   }
-  if (paper.type === "canvas") {
-    return "linear-gradient(90deg, rgba(36,31,25,.22) 1px, transparent 1px), linear-gradient(0deg, rgba(255,255,255,.38) 1px, transparent 1px)";
-  }
-  if (paper.type === "recycled") {
-    return "linear-gradient(12deg, rgba(86,74,56,.22) 0 2px, transparent 2px 12px), radial-gradient(circle, rgba(255,255,255,.42) 0 1px, transparent 1px)";
-  }
-  if (paper.type === "matte-photo") {
-    return "linear-gradient(90deg, rgba(255,255,255,.4), rgba(36,31,25,.1), rgba(255,255,255,.28))";
-  }
+  const bundled = bundledSurfaceUrl(paper.type);
+  if (bundled) return `url(${bundled})`;
   if (paper.type === "dust-scratches") {
     return "radial-gradient(circle at 20% 35%, rgba(30,25,20,.28) 0 .7px, transparent 1px), radial-gradient(circle at 72% 66%, rgba(255,255,255,.65) 0 .8px, transparent 1.2px)";
   }
@@ -3261,7 +3417,7 @@ function textureStyle(layer: PlaceholderLayer, customTextures: WallpaperProject[
     opacity: Math.max(paper.opacity, layer.effects.filters.grain / 100) * 0.55,
     mixBlendMode: paper.blendMode,
     backgroundImage: paperTextureBackground(paper, customTextures),
-    backgroundSize: paper.type === "custom" ? `${Math.max(18, 140 * paper.scale)}px auto` : `${26 / Math.max(0.4, paper.scale)}px ${26 / Math.max(0.4, paper.scale)}px`,
+    backgroundSize: paper.type === "custom" ? `${Math.max(48, 220 * paper.scale)}px auto` : `${Math.max(96, 300 * paper.scale)}px ${Math.max(96, 300 * paper.scale)}px`,
     transform: `rotate(${paper.rotation}deg) scale(1.1)`
   };
 }
@@ -3592,7 +3748,7 @@ function WallpaperPanel({
 
   return (
     <section className="panel wallpaper-panel settings-section">
-      <details open>
+      <details>
         <summary>Wallpaper Targets <ChevronDown size={15} /></summary>
         <label>
           Apply to
@@ -3721,10 +3877,7 @@ function CanvasDesignPanel({
   function changeHeight(value: number) { const height = Math.max(64, value); setDraftHeight(height); if (lockAspect) setDraftWidth(Math.max(64, Math.round(height * aspect))); }
   function patchPaper(patch: Partial<PaperTextureEffect>) { onPatch({ backgroundPaper: { ...canvas.backgroundPaper, ...patch } }); }
 
-  const surfaces: Array<{ type: PaperTextureEffect["type"]; label: string }> = [
-    { type: "none", label: "None" }, { type: "fine-grain", label: "Paper" }, { type: "matte-photo", label: "Matte" },
-    { type: "canvas", label: "Canvas" }, { type: "recycled", label: "Recycled" }, { type: "dust-scratches", label: "Grain" }
-  ];
+  const surfaces = bundledSurfaceChoices;
 
   return (
     <section className="panel canvas-design-panel settings-section">
@@ -3761,7 +3914,7 @@ function CanvasDesignPanel({
       <details>
         <summary>Surface <ChevronDown size={15} /></summary>
         <div className="texture-picker-grid compact-texture-grid">
-          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(30, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: paperTextureBackground({ ...canvas.backgroundPaper, type: surface.type }, customTextures) }} /><span>{surface.label}</span></button>)}
+          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(24, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.22, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: surface.thumbnailUrl ? `url(${surface.thumbnailUrl})` : undefined }} /><span>{surface.label}</span></button>)}
           {customTextures.map((texture) => <div className={canvas.backgroundPaper.type === "custom" && canvas.backgroundPaper.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}><button onClick={() => patchPaper({ type: "custom", customTextureId: texture.id, intensity: Math.max(30, canvas.backgroundPaper.intensity), opacity: Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: `url(${texture.url})` }} /><span>{texture.name}</span></button><div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div></div>)}
         </div>
         <button className="button ghost compact" onClick={onImportTexture}>Import Custom Surface</button>

@@ -17,12 +17,14 @@ import type {
   WallpaperApplyPayload,
   WallpaperApplyTargetsPayload,
   WallpaperProject,
+  WallpaperTransitionDiagnostic,
   WallpaperTargetResult,
   TrayRuntimeState
 } from "../shared/types.js";
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
 import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
+import { planFadeOverlayAssignments } from "../shared/wallpaper.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
 const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -338,10 +340,12 @@ async function writeRenderedWallpaper(dataUrl: string, suggestedName: string) {
 }
 
 
-type FadeOverlayItem = { filePath: string; displayId?: string; current?: boolean };
+type FadeOverlayItem = { filePath: string; displayId?: string; current?: boolean; oldFilePath?: string };
 
 type FadeOverlaySession = {
+  begin: () => Promise<void>;
   complete: (ok: boolean) => Promise<void>;
+  diagnostics: WallpaperTransitionDiagnostic[];
 };
 
 function reduceMotionEnabled() {
@@ -353,8 +357,22 @@ function reduceMotionEnabled() {
   }
 }
 
-function fileUrlForHtml(filePath: string) {
-  return pathToFileURL(filePath).toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+function wallpaperMime(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".gif") return "image/gif";
+  return "image/png";
+}
+
+async function imageDataUrl(filePath?: string) {
+  if (!filePath) return undefined;
+  try {
+    const bytes = await readFile(filePath);
+    return `data:${wallpaperMime(filePath)};base64,${bytes.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
 }
 
 async function startFadeTransition(
@@ -365,25 +383,38 @@ async function startFadeTransition(
   const displays = screen.getAllDisplays();
   if (!displays.length) return undefined;
   const duration = Math.max(200, Math.min(1600, options.durationMs ?? 650));
-  const currentItems = items.filter((item) => item.current);
-  const visibleItems = currentItems.length ? currentItems : [...new Map(items.map((item) => [item.displayId ?? item.filePath, item])).values()];
-  const targets = options.allDisplays || visibleItems.length === 1
-    ? displays.map((display, index) => ({ display, item: visibleItems[Math.min(index, visibleItems.length - 1)] ?? visibleItems[0] }))
-    : displays.map((display, index) => ({
-        display,
-        item: visibleItems.find((item) => item.displayId && String(item.displayId) === String(display.id)) ?? visibleItems[index] ?? visibleItems[0]
-      }));
-  const windows: BrowserWindow[] = [];
+  const targetPlan = planFadeOverlayAssignments(displays.map((display) => String(display.id)), items, options.allDisplays);
+  const targets = targetPlan.map((entry) => ({
+    display: displays.find((display) => String(display.id) === entry.displayId)!,
+    item: entry.item
+  })).filter((entry) => Boolean(entry.display));
+  const windows: Array<{ window: BrowserWindow; diagnostic: WallpaperTransitionDiagnostic }> = [];
   try {
     for (const { display, item } of targets) {
+      const newDataUrl = await imageDataUrl(item.filePath);
+      if (!newDataUrl) continue;
+      const oldDataUrl = await imageDataUrl(item.oldFilePath) ?? newDataUrl;
+      const diagnostic: WallpaperTransitionDiagnostic = {
+        targetType: "physical-display",
+        displayId: String(display.id),
+        oldImagePath: item.oldFilePath,
+        newImagePath: item.filePath,
+        overlayCreated: false,
+        oldImageDecoded: false,
+        newImageDecoded: false,
+        animationStarted: false,
+        animationCompleted: false,
+        durationMs: duration,
+        removedAfterVerification: false
+      };
       const overlay = new BrowserWindow({
         x: display.bounds.x,
         y: display.bounds.y,
         width: display.bounds.width,
         height: display.bounds.height,
         frame: false,
-        transparent: true,
-        backgroundColor: "#00000000",
+        transparent: false,
+        backgroundColor: "#000000",
         show: false,
         focusable: false,
         skipTaskbar: true,
@@ -397,26 +428,58 @@ async function startFadeTransition(
       overlay.setIgnoreMouseEvents(true);
       overlay.setAlwaysOnTop(true, "screen-saver", 1);
       overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      const imageUrl = fileUrlForHtml(item.filePath);
-      const html = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}img{width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity ${duration}ms cubic-bezier(.22,.8,.2,1);will-change:opacity}</style><img id="wall" src="${imageUrl}"><script>const img=document.getElementById('wall');Promise.resolve(img.decode?.()).catch(()=>{}).then(()=>{document.body.dataset.ready='1'});window.startFade=()=>requestAnimationFrame(()=>img.style.opacity='1');window.reverseFade=()=>{img.style.opacity='0'};</script>`;
+      const html = `<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+.wall{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;will-change:opacity}
+#old{opacity:1}#next{opacity:0;transition:opacity ${duration}ms cubic-bezier(.22,.8,.2,1)}
+</style><img id="old" class="wall"><img id="next" class="wall"><script>
+const oldImage=document.getElementById('old');const nextImage=document.getElementById('next');
+oldImage.src=${JSON.stringify(oldDataUrl)};nextImage.src=${JSON.stringify(newDataUrl)};
+const decode=(img)=>img.decode?img.decode():new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject});
+window.pwcReady=Promise.all([decode(oldImage),decode(nextImage)]).then(()=>({old:true,next:true}));
+window.pwcStart=()=>new Promise(resolve=>{let frames=0;const tick=()=>{frames++;if(frames<2)requestAnimationFrame(tick)};requestAnimationFrame(tick);nextImage.style.opacity='1';setTimeout(()=>resolve({frames,duration:${duration}}),${duration}+60)});
+window.pwcRollback=()=>new Promise(resolve=>{nextImage.style.opacity='0';setTimeout(resolve,${duration}+60)});
+</script>`;
       await overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-      await overlay.webContents.executeJavaScript(`new Promise(resolve=>{const done=()=>document.body.dataset.ready==='1'?resolve(true):setTimeout(done,16);done()})`, true);
+      const decoded = await overlay.webContents.executeJavaScript("window.pwcReady", true) as { old: boolean; next: boolean };
+      diagnostic.oldImageDecoded = Boolean(decoded?.old);
+      diagnostic.newImageDecoded = Boolean(decoded?.next);
       overlay.showInactive();
-      await overlay.webContents.executeJavaScript("window.startFade()", true);
-      windows.push(overlay);
+      diagnostic.overlayCreated = true;
+      windows.push({ window: overlay, diagnostic });
     }
-    await new Promise((resolve) => setTimeout(resolve, duration + 40));
+    if (!windows.length) return undefined;
     return {
+      diagnostics: windows.map((entry) => entry.diagnostic),
+      begin: async () => {
+        await Promise.all(windows.map(async ({ window, diagnostic }) => {
+          if (window.isDestroyed()) return;
+          diagnostic.animationStarted = true;
+          diagnostic.startedAt = new Date().toISOString();
+          const started = Date.now();
+          const result = await window.webContents.executeJavaScript("window.pwcStart()", true) as { frames?: number };
+          diagnostic.animationFrames = result?.frames ?? 0;
+          diagnostic.actualDurationMs = Date.now() - started;
+          diagnostic.animationCompleted = Boolean(result && (result.frames ?? 0) >= 1);
+          diagnostic.completedAt = new Date().toISOString();
+        }));
+      },
       complete: async (ok: boolean) => {
         if (!ok) {
-          await Promise.all(windows.filter((window) => !window.isDestroyed()).map((window) => window.webContents.executeJavaScript("window.reverseFade()", true).catch(() => undefined)));
-          await new Promise((resolve) => setTimeout(resolve, duration + 40));
+          await Promise.all(windows.filter(({ window }) => !window.isDestroyed()).map(({ window }) => window.webContents.executeJavaScript("window.pwcRollback()", true).catch(() => undefined)));
         }
-        for (const window of windows) if (!window.isDestroyed()) window.destroy();
+        for (const { window, diagnostic } of windows) {
+          diagnostic.removedAfterVerification = true;
+          diagnostic.removedAt = new Date().toISOString();
+          if (!window.isDestroyed()) window.destroy();
+        }
       }
     };
-  } catch {
-    for (const window of windows) if (!window.isDestroyed()) window.destroy();
+  } catch (error) {
+    for (const { window, diagnostic } of windows) {
+      diagnostic.error = error instanceof Error ? error.message : String(error);
+      if (!window.isDestroyed()) window.destroy();
+    }
     return undefined;
   }
 }
@@ -669,21 +732,35 @@ ipcMain.handle("texture:reveal", async (_event, texturePath: string) => {
 ipcMain.handle("wallpaper:apply", async (_event, payload: WallpaperApplyPayload) => {
   try {
     const { cacheDir, filePath, file: generatedFile } = await writeRenderedWallpaper(payload.dataUrl, payload.suggestedName);
-    const transition = await startFadeTransition([{ filePath }], {
+    const controller = createWallpaperController();
+    const knownTargets = await controller.getTargets?.().catch(() => []) ?? [];
+    const requestedTargets = payload.targetId
+      ? knownTargets.filter((target) => target.id === payload.targetId)
+      : payload.monitorMode === "primary" || payload.scope === "current-desktop"
+        ? knownTargets.filter((target) => target.current).slice(0, 1)
+        : knownTargets.filter((target) => target.current);
+    const fadeItems = requestedTargets.length
+      ? requestedTargets.map((target) => ({ filePath, displayId: target.displayId, current: target.current, oldFilePath: target.currentPath }))
+      : [{ filePath }];
+    const transition = await startFadeTransition(fadeItems, {
       enabled: payload.transitionEnabled,
       durationMs: payload.transitionDurationMs,
       allDisplays: payload.monitorMode !== "primary"
     });
+    const transitionAnimation = transition?.begin();
     let diagnostics: WallpaperApplyDiagnostics;
     try {
-      diagnostics = await createWallpaperController().setWallpaper(filePath, {
+      diagnostics = await controller.setWallpaper(filePath, {
         monitorMode: payload.monitorMode,
         displayMode: payload.displayMode,
         scope: payload.scope,
         targetId: payload.targetId
       });
+      await transitionAnimation;
+      diagnostics.transitionDiagnostics = transition?.diagnostics;
       await transition?.complete(diagnostics.changed);
     } catch (error) {
+      await transitionAnimation;
       await transition?.complete(false);
       throw error;
     }
@@ -762,15 +839,22 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
     }
   }
 
+  const controller = createWallpaperController();
+  const knownTargets = await controller.getTargets?.().catch(() => []) ?? [];
   const transition = await startFadeTransition(
-    writtenItems.map((item) => ({ filePath: item.filePath, displayId: item.displayId, current: item.current })),
+    writtenItems.map((item) => ({
+      filePath: item.filePath,
+      displayId: item.displayId,
+      current: item.current,
+      oldFilePath: knownTargets.find((target) => target.id === item.targetId)?.currentPath
+    })),
     {
       enabled: payload.transitionEnabled,
       durationMs: payload.transitionDurationMs,
       allDisplays: payload.scope === "same-all-desktops"
     }
   );
-  const controller = createWallpaperController();
+  const transitionAnimation = transition?.begin();
   let appliedResults: WallpaperTargetResult[] = [];
   if (writtenItems.length && controller.setWallpapers) {
     appliedResults = await controller.setWallpapers(writtenItems, {
@@ -822,6 +906,8 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
   }
 
   const targetResults = [...appliedResults, ...earlyFailures];
+  await transitionAnimation;
+  for (const result of targetResults) result.diagnostics.transitionDiagnostics = transition?.diagnostics;
   await cleanupGeneratedWallpapers(cacheDir, 120, writtenItems.map((item) => item.filePath));
   const ok = targetResults.length === payload.items.length && targetResults.every((result) => result.ok);
   await transition?.complete(ok);
