@@ -10,6 +10,7 @@ const canvas: CanvasSettings = {
   presetId: "custom",
   orientation: "landscape",
   backgroundColor: "#112233",
+  backgroundBaseMode: "image",
   backgroundTransparent: false,
   backgroundMode: "cover",
   backgroundAlignment: "center",
@@ -18,6 +19,9 @@ const canvas: CanvasSettings = {
   backgroundScale: 1,
   backgroundBlur: 0,
   backgroundBrightness: 100,
+  backgroundContrast: 100,
+  backgroundTemperature: 0,
+  backgroundVignette: 0,
   backgroundOpacity: 1,
   backgroundPaper: paper,
   backgroundImage: { id: "bg", name: "bg", path: "/bg.png", url: "file:///bg.png" }
@@ -54,7 +58,8 @@ const layer = {
     blendMode: "normal",
     polaroidFrame: false,
     tapeDecoration: false,
-    tornEdgeMask: false
+    tornEdgeMask: false,
+    paperFrame: { type: "none", borderWidth: 20, paperColor: "#fffdf8", edgeRoughness: 35, shadowStrength: 35, innerPadding: 0, rotationVariation: 0, textureIntensity: 20, seed: 1 }
   },
   sourceState: { sourceIds: [], mode: "shuffle", currentIndex: 0, shuffleQueue: [], usedImageIds: [], preventDuplicates: true, includeSubfolders: false }
 } satisfies PlaceholderLayer;

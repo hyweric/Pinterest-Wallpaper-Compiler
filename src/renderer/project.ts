@@ -3,6 +3,7 @@ import type {
   GeneratedCombination,
   ImageFilters,
   ImageSource,
+  PaperFrameEffect,
   PaperTextureEffect,
   PlaceholderEffects,
   PlaceholderLayer,
@@ -18,7 +19,7 @@ export const presets = [
   { id: "1920x1080", label: "Desktop HD", width: 1920, height: 1080 },
   { id: "2560x1440", label: "Desktop QHD", width: 2560, height: 1440 },
   { id: "3840x2160", label: "Desktop 4K", width: 3840, height: 2160 },
-  { id: "1440x900", label: "MacBook 16:10", width: 1440, height: 900 },
+  { id: "1920x1200", label: "MacBook 16:10", width: 1920, height: 1200 },
   { id: "custom", label: "Custom", width: 1920, height: 1080 }
 ];
 
@@ -32,8 +33,12 @@ export function createDefaultWallpaperSettings(): WallpaperSettings {
     paused: false,
     interval: "15m",
     customIntervalMinutes: 20,
+    customIntervalValue: 20,
+    customIntervalUnit: "minutes",
     launchAtLogin: false,
     startMinimized: false,
+    transitionEnabled: true,
+    transitionDurationMs: 650,
     monitorMode: "all",
     scope: "same-all-desktops",
     targetTemplateMode: "single-template",
@@ -73,6 +78,7 @@ export function createProject(): WallpaperProject {
       presetId: "1920x1080",
       orientation: "landscape",
       backgroundColor: "#f1eee8",
+      backgroundBaseMode: "color",
       backgroundTransparent: false,
       backgroundMode: "cover",
       backgroundAlignment: "center",
@@ -81,11 +87,15 @@ export function createProject(): WallpaperProject {
       backgroundScale: 1,
       backgroundBlur: 0,
       backgroundBrightness: 100,
+      backgroundContrast: 100,
+      backgroundTemperature: 0,
+      backgroundVignette: 0,
       backgroundOpacity: 1,
       backgroundPaper: createDefaultPaper()
     },
     layers: [],
     sources: [],
+    customTextures: [],
     wallpaper: createDefaultWallpaperSettings(),
     templates: createDefaultTemplateLibrary(),
     savedCombinations: [],
@@ -161,7 +171,8 @@ export function createDefaultFilters(): ImageFilters {
     grayscale: 0,
     fade: 0,
     vignette: 0,
-    grain: 0
+    grain: 0,
+    presetId: "none"
   };
 }
 
@@ -177,6 +188,20 @@ export function createDefaultPaper(): PaperTextureEffect {
   };
 }
 
+export function createDefaultPaperFrame(): PaperFrameEffect {
+  return {
+    type: "none",
+    borderWidth: 20,
+    paperColor: "#fffdf8",
+    edgeRoughness: 35,
+    shadowStrength: 35,
+    innerPadding: 0,
+    rotationVariation: 0,
+    textureIntensity: 20,
+    seed: 1
+  };
+}
+
 export function createDefaultEffects(): PlaceholderEffects {
   return {
     filters: createDefaultFilters(),
@@ -187,13 +212,29 @@ export function createDefaultEffects(): PlaceholderEffects {
     blendMode: "normal",
     polaroidFrame: false,
     tapeDecoration: false,
-    tornEdgeMask: false
+    tornEdgeMask: false,
+    paperFrame: createDefaultPaperFrame()
   };
 }
 
+function mediaCounts(images: ImageSource["images"]) {
+  const videos = images.filter((image) => image.mediaType === "video").length;
+  return { total: images.length, images: images.length - videos, videos };
+}
+
+export function sourceImagesForPolicy(source: ImageSource) {
+  const policy = source.mediaPolicy ?? "images-only";
+  if (policy === "images-and-video-thumbnails") return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
+  return source.images.filter((image) => image.mediaType !== "video");
+}
+
 function normalizeSource(source: ImageSource): ImageSource {
+  const images = (source.images ?? []).map((image) => ({ ...image, mediaType: image.mediaType ?? "image" as const }));
   return {
     ...source,
+    images,
+    mediaPolicy: source.mediaPolicy === "images-and-video-thumbnails" ? "images-and-video-thumbnails" : "images-only",
+    mediaCounts: mediaCounts(images),
     providerId: source.providerId ?? (source.type === "mock-web" ? undefined : source.type),
     importStatus: source.importStatus ?? "ready",
     includeSubfolders: source.includeSubfolders ?? false,
@@ -205,6 +246,7 @@ function normalizeSource(source: ImageSource): ImageSource {
 function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
   return {
     ...canvas,
+    backgroundBaseMode: canvas.backgroundBaseMode ?? (canvas.backgroundTransparent ? "transparent" : canvas.backgroundImage ? "image" : "color"),
     backgroundTransparent: canvas.backgroundTransparent ?? false,
     backgroundMode: canvas.backgroundMode ?? "cover",
     backgroundAlignment: canvas.backgroundAlignment ?? "center",
@@ -213,12 +255,22 @@ function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
     backgroundScale: canvas.backgroundScale ?? 1,
     backgroundBlur: canvas.backgroundBlur ?? 0,
     backgroundBrightness: canvas.backgroundBrightness ?? 100,
+    backgroundContrast: canvas.backgroundContrast ?? 100,
+    backgroundTemperature: canvas.backgroundTemperature ?? 0,
+    backgroundVignette: canvas.backgroundVignette ?? 0,
     backgroundOpacity: canvas.backgroundOpacity ?? 1,
     backgroundPaper: { ...createDefaultPaper(), ...(canvas.backgroundPaper ?? {}) }
   };
 }
 
 function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
+  const legacyPaperType = layer.effects?.paperFrame?.type as string | undefined;
+  const paperType = legacyPaperType === "clean-paper" || legacyPaperType === "photo-print" ? "clean"
+    : legacyPaperType === "torn-paper" ? "torn"
+      : legacyPaperType === "deckle-edge" ? "deckle"
+        : legacyPaperType === "newspaper-cutout" ? "newsprint"
+          : legacyPaperType === "polaroid" ? "polaroid"
+            : "none";
   return {
     ...layer,
     borderOpacity: layer.borderOpacity ?? 1,
@@ -233,7 +285,8 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
       ...createDefaultEffects(),
       ...(layer.effects ?? {}),
       filters: { ...createDefaultFilters(), ...(layer.effects?.filters ?? {}) },
-      paper: { ...createDefaultPaper(), ...(layer.effects?.paper ?? {}) }
+      paper: { ...createDefaultPaper(), ...(layer.effects?.paper ?? {}) },
+      paperFrame: { ...createDefaultPaperFrame(), ...(layer.effects?.paperFrame ?? {}), type: paperType }
     }
   };
 }
@@ -411,6 +464,8 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
   wallpaper.targetTemplateMode = wallpaper.targetTemplateMode ?? "single-template";
   wallpaper.targetTemplateIds = wallpaper.targetTemplateIds ?? {};
   wallpaper.targetPlaylistIds = wallpaper.targetPlaylistIds ?? {};
+  wallpaper.transitionEnabled = wallpaper.transitionEnabled ?? true;
+  wallpaper.transitionDurationMs = Math.max(200, Math.min(1600, wallpaper.transitionDurationMs ?? 650));
   const layers = (raw.layers ?? []).map(normalizeLayer);
   let sources = (raw.sources ?? []).map(normalizeSource);
   const defaultLibrary = createDefaultTemplateLibrary();
@@ -450,6 +505,7 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
     canvas: normalizeCanvas(raw.canvas),
     layers,
     sources,
+    customTextures: raw.customTextures ?? [],
     wallpaper,
     templates: {
       ...defaultLibrary,
@@ -466,6 +522,22 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
     createdAt: raw.createdAt ?? new Date().toISOString(),
     updatedAt: raw.updatedAt ?? new Date().toISOString()
   };
+
+  const sourceNameById = new Map(base.sources.map((source) => [source.id, source.name]));
+  let genericIndex = 1;
+  const migrateLayerName = (layer: PlaceholderLayer) => {
+    const sourceId = layer.sourceState.sourceIds[0] ?? layer.sourceId;
+    const sourceName = sourceId ? sourceNameById.get(sourceId) : undefined;
+    if (sourceName && layer.name.trim() === sourceName.trim()) return { ...layer, name: `Image ${genericIndex++}` };
+    if (/^placeholder(?:\s+\d+)?$/i.test(layer.name.trim())) return { ...layer, name: `Image ${genericIndex++}` };
+    genericIndex += 1;
+    return layer;
+  };
+  base.layers = base.layers.map(migrateLayerName);
+  base.templates.templates = base.templates.templates.map((template) => ({
+    ...template,
+    project: { ...template.project, layers: template.project.layers.map(migrateLayerName) }
+  }));
 
   if (base.templates.templates.length === 0) {
     const migrated = createWallpaperTemplate(base, { name: base.name });
@@ -487,7 +559,7 @@ export function collectLayerImages(project: WallpaperProject, layer: Placeholder
   return sourceIds.flatMap((sourceId) => {
     const source = project.sources.find((item) => item.id === sourceId);
     if (!source) return [];
-    return source.images.map((image) => ({ image, source }));
+    return sourceImagesForPolicy(source).map((image) => ({ image, source }));
   });
 }
 
@@ -587,8 +659,10 @@ export function assignmentForLayer(project: WallpaperProject, layer: Placeholder
   const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
   for (const sourceId of sourceIds) {
     const source = project.sources.find((item) => item.id === sourceId);
-    if (!source || source.images.length === 0) continue;
-    return source.images.find((image) => image.id === layer.selectedImageId) ?? source.images[0];
+    if (!source) continue;
+    const images = sourceImagesForPolicy(source);
+    if (images.length === 0) continue;
+    return images.find((image) => image.id === layer.selectedImageId) ?? images[0];
   }
   return undefined;
 }

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   appendAppliedHistory,
+  buildMacOSWallpaperTargets,
   generationStateAfterApplication,
   nextHistoryIndex,
   nextScheduledAt,
@@ -57,4 +58,19 @@ test("generated shuffle state is committed only after a successful application",
   const candidate = { layers: [{ sourceState: { currentIndex: 1, shuffleQueue: ["b"] } }] };
   assert.equal(generationStateAfterApplication(current, candidate, false).layers[0].sourceState.currentIndex, 0);
   assert.equal(generationStateAfterApplication(current, candidate, true).layers[0].sourceState.currentIndex, 1);
+});
+
+
+test("macOS target discovery preserves inactive Spaces even when wallpapers match", () => {
+  const targets = buildMacOSWallpaperTargets(
+    [
+      { pictureId: 11, spaceId: "space-a", displayId: "display-1", currentPath: "/wallpapers/shared.png" },
+      { pictureId: 12, spaceId: "space-b", displayId: "display-1", currentPath: "/wallpapers/shared.png" },
+      { pictureId: 13, spaceId: "space-c", displayId: "display-1", currentPath: "/wallpapers/other.png" }
+    ],
+    [{ index: 1, currentPath: "/wallpapers/shared.png" }]
+  );
+  assert.deepEqual(targets.map((target) => target.id), ["picture-11", "picture-12", "picture-13"]);
+  assert.equal(targets.filter((target) => target.current).length, 1);
+  assert.equal(targets[1].current, false);
 });

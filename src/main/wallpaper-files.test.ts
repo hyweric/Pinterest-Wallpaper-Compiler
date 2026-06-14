@@ -30,5 +30,23 @@ test("cleanup keeps only the newest generated files", async () => {
 });
 
 test("suggested names cannot escape the generated directory", () => {
-  assert.equal(safeWallpaperFileName("../../bad name.png"), "bad-name.png");
+  assert.match(safeWallpaperFileName("../../bad name.png"), /^bad-name-\d+-[a-z0-9]+\.png$/);
+});
+
+
+test("cleanup never removes preserved active wallpaper files", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "pwc-preserve-"));
+  const files: string[] = [];
+  for (let index = 0; index < 4; index += 1) {
+    const file = path.join(dir, `${index}.png`);
+    files.push(file);
+    await writeFile(file, Buffer.from([index + 1]));
+    const date = new Date(1_700_000_000_000 + index * 1000);
+    await utimes(file, date, date);
+  }
+  const preserved = files[0];
+  const removed = await cleanupGeneratedWallpapers(dir, 2, [preserved]);
+  assert.equal(removed.includes(preserved), false);
+  assert.deepEqual(removed.map((file) => path.basename(file)).sort(), ["1.png", "2.png"]);
+  assert.equal((await validateWallpaperFile(preserved)).size, 1);
 });

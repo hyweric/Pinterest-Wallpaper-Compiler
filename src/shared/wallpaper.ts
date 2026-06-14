@@ -2,14 +2,23 @@ import type {
   GeneratedCombination,
   TemplateLibrary,
   WallpaperInterval,
-  WallpaperTemplate
+  WallpaperTemplate,
+  WallpaperTarget
 } from "./types.js";
 
 export const appliedHistoryLimit = 40;
 
-export function wallpaperIntervalToMs(interval: WallpaperInterval, customMinutes: number) {
+export function wallpaperIntervalToMs(
+  interval: WallpaperInterval,
+  customMinutes: number,
+  customValue = customMinutes,
+  customUnit: "seconds" | "minutes" | "hours" = "minutes"
+) {
   const minute = 60_000;
   switch (interval) {
+    case "5s": return 5_000;
+    case "10s": return 10_000;
+    case "30s": return 30_000;
     case "1m": return minute;
     case "5m": return 5 * minute;
     case "15m": return 15 * minute;
@@ -17,13 +26,24 @@ export function wallpaperIntervalToMs(interval: WallpaperInterval, customMinutes
     case "hourly": return 60 * minute;
     case "few-hours": return 3 * 60 * minute;
     case "daily": return 24 * 60 * minute;
-    case "custom": return Math.max(1, customMinutes) * minute;
+    case "custom": {
+      const value = Math.max(1, customValue || customMinutes || 1);
+      if (customUnit === "seconds") return value * 1_000;
+      if (customUnit === "hours") return value * 60 * minute;
+      return value * minute;
+    }
     default: return undefined;
   }
 }
 
-export function nextScheduledAt(interval: WallpaperInterval, customMinutes: number, from = new Date()) {
-  const ms = wallpaperIntervalToMs(interval, customMinutes);
+export function nextScheduledAt(
+  interval: WallpaperInterval,
+  customMinutes: number,
+  from = new Date(),
+  customValue = customMinutes,
+  customUnit: "seconds" | "minutes" | "hours" = "minutes"
+) {
+  const ms = wallpaperIntervalToMs(interval, customMinutes, customValue, customUnit);
   return ms ? new Date(from.getTime() + ms).toISOString() : undefined;
 }
 
@@ -95,4 +115,64 @@ export function planTemplateRotation(library: TemplateLibrary, templates: Wallpa
     templateId,
     nextLibrary: { ...library, shuffleQueue: rest }
   };
+}
+
+export interface MacOSDockTargetRow {
+  pictureId: number;
+  spaceId?: string;
+  displayId?: string;
+  currentPath?: string;
+}
+
+export interface MacOSVisibleDesktopRow {
+  index: number;
+  currentPath?: string;
+}
+
+export function buildMacOSWallpaperTargets(
+  dockRows: MacOSDockTargetRow[],
+  visibleRows: MacOSVisibleDesktopRow[],
+  fallbackLimitation?: string
+): WallpaperTarget[] {
+  if (dockRows.length) {
+    const unmatchedVisible = [...visibleRows];
+    return dockRows.map((row, index) => {
+      let visibleIndex = -1;
+      if (row.currentPath) visibleIndex = unmatchedVisible.findIndex((item) => item.currentPath === row.currentPath);
+      const current = visibleIndex >= 0;
+      if (visibleIndex >= 0) unmatchedVisible.splice(visibleIndex, 1);
+      return {
+        id: `picture-${row.pictureId}`,
+        label: current ? `Current desktop${visibleRows.length > 1 ? ` ${visibleIndex + 1}` : ""}` : `Desktop / Space ${index + 1}`,
+        index: index + 1,
+        displayId: row.displayId,
+        spaceId: row.spaceId,
+        current,
+        reliable: true,
+        limitation: "Inactive Mission Control Spaces are identified by stable Dock picture records; macOS does not expose friendly Space names.",
+        currentPath: row.currentPath
+      };
+    });
+  }
+
+  if (visibleRows.length) {
+    return visibleRows.map((row) => ({
+      id: `desktop-${row.index}`,
+      label: `Current desktop ${row.index}`,
+      index: row.index,
+      current: true,
+      reliable: true,
+      limitation: "Only currently visible desktops were exposed because the Dock wallpaper database was unavailable.",
+      currentPath: row.currentPath
+    }));
+  }
+
+  return [{
+    id: "desktop-1",
+    label: "Current desktop",
+    index: 1,
+    current: true,
+    reliable: false,
+    limitation: fallbackLimitation ?? "macOS did not expose desktop targets."
+  }];
 }

@@ -126,3 +126,13 @@ Frame geometry (`x`, `y`, `width`, `height`, `rotation`) is independent from ima
 Wallpaper generation is now transactional. The renderer prepares a candidate template and source-cycle state, renders it, and asks the Electron main process to verify, write, and apply the file. Template/source shuffle state and applied-history metadata are committed only after the native adapter confirms success. Failed automatic updates retain the previous generation state and pause rotation after three consecutive failures.
 
 Applied history stores the rendered file path, template identity, image assignments, timestamp, and monitor mode. Previous/Next reapply those saved files without mutating template data. The main process validates files, limits the generated-wallpaper cache, isolates macOS/Windows adapters, and keeps the renderer active while the window is hidden. The tray exposes generate, previous, pause/resume, open, and quit actions.
+
+## Phase 9 media, surface, and batch-export model
+
+Generated wallpapers are written atomically to uniquely named files in the application-support cache. The native macOS adapter refreshes currently visible screens through AppKit and never restarts Dock; inactive Mission Control Space records remain a best-effort Dock-database integration because macOS does not expose a stable public API for assigning inactive Spaces individually. Active wallpaper files are preserved during cache cleanup.
+
+Background styling is organized as three progressive layers: **Base** (color, transparency, or image), **Surface** (a small coordinated material library or a custom imported texture), and collapsed **Effects**. Preview and export share the same texture identifiers, placement rules, and image adjustments.
+
+Image placeholders store a non-destructive `paperFrame` effect independently from their source image, crop, and normal border. Paper frame type, insets, deterministic rotation, texture, and shadow are rendered consistently in editor preview and full-resolution export.
+
+Each reusable source stores a media policy (`images-only`, `images-and-video-thumbnails`, or `videos-only`) and media counts. Cached video thumbnails remain available but are excluded from generation by default. Export Set works on a cloned template workspace, writes multiple variations through main-process IPC, supports cancellation and overwrite protection, and preserves live wallpaper shuffle state unless the user explicitly opts to advance it.

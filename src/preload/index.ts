@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  CustomTextureResult,
   ExportPayload,
+  ExportSetFilePayload,
+  ExportSetFileResult,
   FolderResult,
   ImageFileResult,
   OpenProjectResult,
@@ -43,6 +46,11 @@ const api = {
   openProject: (): Promise<OpenProjectResult> => ipcRenderer.invoke("project:open"),
   exportImage: (payload: ExportPayload): Promise<SaveDialogResult> =>
     ipcRenderer.invoke("image:export", payload),
+  chooseExportSetFolder: (): Promise<SaveDialogResult> => ipcRenderer.invoke("export-set:choose-folder"),
+  writeExportSetFile: (payload: ExportSetFilePayload): Promise<ExportSetFileResult> => ipcRenderer.invoke("export-set:write-file", payload),
+  importCustomTexture: (): Promise<CustomTextureResult> => ipcRenderer.invoke("texture:import"),
+  removeCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:remove", path),
+  revealCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:reveal", path),
   applyWallpaper: (payload: WallpaperApplyPayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply", payload),
   applyWallpaperFile: (payload: WallpaperApplyFilePayload): Promise<WallpaperApplyResult> =>

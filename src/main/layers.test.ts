@@ -35,7 +35,8 @@ function layer(id: string): PlaceholderLayer {
       blendMode: "normal",
       polaroidFrame: false,
       tapeDecoration: false,
-      tornEdgeMask: false
+      tornEdgeMask: false,
+      paperFrame: { type: "none", borderWidth: 20, paperColor: "#fffdf8", edgeRoughness: 35, shadowStrength: 35, innerPadding: 0, rotationVariation: 0, textureIntensity: 20, seed: 1 }
     },
     sourceState: { sourceIds: [], mode: "shuffle", currentIndex: 0, shuffleQueue: [], usedImageIds: [], preventDuplicates: true, includeSubfolders: false }
   };

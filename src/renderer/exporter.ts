@@ -1,5 +1,6 @@
-import type { CanvasSettings, PaperTextureEffect, PlaceholderLayer, WallpaperProject } from "../shared/types";
+import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTextureEffect, PlaceholderLayer, WallpaperProject } from "../shared/types";
 import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
+import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { getImageForLayer } from "./project";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -27,28 +28,65 @@ function filterString(layer: PlaceholderLayer) {
   ].join(" ");
 }
 
-function shapePath(context: CanvasRenderingContext2D, layer: Pick<PlaceholderLayer, "width" | "height" | "borderRadius" | "maskShape">) {
-  const { width, height } = layer;
+function roundedPath(context: CanvasRenderingContext2D, width: number, height: number, radius: number, ellipse = false) {
   context.beginPath();
-  const geometry = resolveMaskGeometry(layer.maskShape, width, height, layer.borderRadius);
-  if (geometry.ellipse) {
-    context.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+  if (ellipse) {
+    context.ellipse(width / 2, height / 2, Math.max(0, width / 2), Math.max(0, height / 2), 0, 0, Math.PI * 2);
     context.closePath();
     return;
   }
-  const radius = geometry.radius;
-  context.moveTo(radius, 0);
-  context.lineTo(width - radius, 0);
-  context.quadraticCurveTo(width, 0, width, radius);
-  context.lineTo(width, height - radius);
-  context.quadraticCurveTo(width, height, width - radius, height);
-  context.lineTo(radius, height);
-  context.quadraticCurveTo(0, height, 0, height - radius);
-  context.lineTo(0, radius);
-  context.quadraticCurveTo(0, 0, radius, 0);
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+  context.moveTo(r, 0);
+  context.lineTo(width - r, 0);
+  context.quadraticCurveTo(width, 0, width, r);
+  context.lineTo(width, height - r);
+  context.quadraticCurveTo(width, height, width - r, height);
+  context.lineTo(r, height);
+  context.quadraticCurveTo(0, height, 0, height - r);
+  context.lineTo(0, r);
+  context.quadraticCurveTo(0, 0, r, 0);
   context.closePath();
 }
 
+function shapePath(context: CanvasRenderingContext2D, layer: Pick<PlaceholderLayer, "width" | "height" | "borderRadius" | "maskShape">) {
+  const geometry = resolveMaskGeometry(layer.maskShape, layer.width, layer.height, layer.borderRadius);
+  roundedPath(context, layer.width, layer.height, geometry.radius, geometry.ellipse);
+}
+
+function seeded(seed: number) {
+  let state = Math.max(1, Math.floor(seed || 1));
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+function roughPaperPath(context: CanvasRenderingContext2D, width: number, height: number, effect: PaperFrameEffect) {
+  if (!paperFrameIsRough(effect)) {
+    roundedPath(context, width, height, Math.min(18, effect.borderWidth * 0.4));
+    return;
+  }
+  const random = seeded(effect.seed);
+  const torn = effect.type === "torn";
+  const amplitude = torn
+    ? Math.max(4, effect.edgeRoughness * 0.22)
+    : Math.max(0.8, effect.edgeRoughness * 0.045);
+  const step = torn
+    ? Math.max(18, Math.min(width, height) / 12)
+    : Math.max(3, Math.min(width, height) / 62);
+  const point = (base: number, allowTear = false) => {
+    const jitter = (random() - 0.5) * amplitude * 2;
+    const tear = torn && allowTear && random() > 0.82 ? (0.35 + random() * 0.65) * amplitude * 2.2 : 0;
+    return base + jitter + tear;
+  };
+  context.beginPath();
+  context.moveTo(0, point(0, true));
+  for (let x = step; x <= width; x += step) context.lineTo(Math.min(width, x), point(0, true));
+  for (let y = step; y <= height; y += step) context.lineTo(point(width, true), Math.min(height, y));
+  for (let x = width - step; x >= 0; x -= step) context.lineTo(Math.max(0, x), point(height, true));
+  for (let y = height - step; y >= 0; y -= step) context.lineTo(point(0, true), Math.max(0, y));
+  context.closePath();
+}
 function drawPlacedImage(
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
@@ -58,15 +96,7 @@ function drawPlacedImage(
   alignment: Parameters<typeof computeImagePlacement>[5],
   crop: Parameters<typeof computeImagePlacement>[6]
 ) {
-  const placement = computeImagePlacement(
-    image.naturalWidth,
-    image.naturalHeight,
-    frameWidth,
-    frameHeight,
-    mode,
-    alignment,
-    crop
-  );
+  const placement = computeImagePlacement(image.naturalWidth, image.naturalHeight, frameWidth, frameHeight, mode, alignment, crop);
   if (placement.tile) {
     let startX = placement.x;
     let startY = placement.y;
@@ -75,105 +105,119 @@ function drawPlacedImage(
     while (startX + placement.width <= 0) startX += placement.width;
     while (startY + placement.height <= 0) startY += placement.height;
     for (let y = startY; y < frameHeight; y += placement.height) {
-      for (let x = startX; x < frameWidth; x += placement.width) {
-        context.drawImage(image, x, y, placement.width, placement.height);
-      }
+      for (let x = startX; x < frameWidth; x += placement.width) context.drawImage(image, x, y, placement.width, placement.height);
     }
     return;
   }
   context.drawImage(image, placement.x, placement.y, placement.width, placement.height);
 }
 
-function drawPaperTexture(
+function customTexture(project: WallpaperProject, paper: PaperTextureEffect): CustomTextureAsset | undefined {
+  return paper.type === "custom" ? project.customTextures.find((texture) => texture.id === paper.customTextureId) : undefined;
+}
+
+async function drawPaperTexture(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
   paper: PaperTextureEffect,
-  grain = 0
+  grain = 0,
+  custom?: CustomTextureAsset
 ) {
   const amount = Math.max(grain, paper.intensity);
   if ((paper.type === "none" || paper.opacity <= 0) && amount <= 0) return;
   context.save();
-  context.globalAlpha = Math.max(paper.opacity, amount / 100) * 0.38;
+  context.globalAlpha = Math.max(paper.opacity, amount / 100) * 0.42;
   context.globalCompositeOperation = paper.blendMode === "normal" ? "source-over" : paper.blendMode;
-  const step = Math.max(6, 18 / Math.max(0.5, paper.scale));
+  if (paper.type === "custom" && custom) {
+    const image = await loadImage(custom.url);
+    const pattern = context.createPattern(image, "repeat");
+    if (pattern) {
+      const scale = Math.max(0.05, paper.scale);
+      pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
+      context.fillStyle = pattern;
+      context.fillRect(0, 0, width, height);
+    }
+    context.restore();
+    return;
+  }
+
+  const random = seeded(paper.seed);
+  const step = Math.max(4, 18 / Math.max(0.4, paper.scale));
   context.translate(width / 2, height / 2);
   context.rotate((paper.rotation * Math.PI) / 180);
   context.translate(-width / 2, -height / 2);
-  let seed = paper.seed || 1;
-  for (let y = 0; y < height; y += step) {
-    for (let x = 0; x < width; x += step) {
-      seed = (seed * 9301 + 49297) % 233280;
-      const value = seed / 233280;
-      if (paper.type === "newspaper") {
-        context.fillStyle = value > 0.48 ? "rgba(36,31,25,0.22)" : "rgba(255,255,255,0.18)";
-        context.beginPath();
-        context.arc(x, y, Math.max(0.8, step * 0.12), 0, Math.PI * 2);
-        context.fill();
-      } else if (paper.type === "canvas") {
-        context.strokeStyle = value > 0.5 ? "rgba(255,255,255,0.24)" : "rgba(36,31,25,0.16)";
-        context.lineWidth = 1;
+  for (let y = -step; y < height + step; y += step) {
+    for (let x = -step; x < width + step; x += step) {
+      const value = random();
+      if (paper.type === "canvas") {
+        context.strokeStyle = value > 0.5 ? "rgba(255,255,255,.34)" : "rgba(45,38,30,.22)";
+        context.lineWidth = Math.max(0.6, step * 0.07);
         context.beginPath();
         context.moveTo(x, y);
-        context.lineTo(x + step * 0.8, y);
+        context.lineTo(x + step, y);
         context.moveTo(x, y);
-        context.lineTo(x, y + step * 0.8);
+        context.lineTo(x, y + step);
         context.stroke();
       } else if (paper.type === "recycled") {
-        context.fillStyle = value > 0.6 ? "rgba(92,79,60,0.22)" : "rgba(255,255,255,0.24)";
-        context.fillRect(x, y, Math.max(1, step * 0.35), Math.max(1, step * 0.08));
+        context.fillStyle = value > 0.62 ? "rgba(96,78,52,.30)" : "rgba(255,255,255,.25)";
+        context.fillRect(x, y, Math.max(1, step * 0.48), Math.max(0.7, step * 0.08));
+      } else if (paper.type === "matte-photo") {
+        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.36)" : "rgba(20,20,20,.09)";
+        context.fillRect(x, y, step, Math.max(0.7, step * 0.05));
+      } else if (paper.type === "dust-scratches" || paper.type === "halftone" || paper.type === "newspaper") {
+        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.28)" : "rgba(30,25,20,.34)";
+        context.beginPath();
+        context.arc(x, y, Math.max(0.5, step * 0.1), 0, Math.PI * 2);
+        context.fill();
       } else {
-        context.fillStyle = value > 0.5 ? "rgba(255,255,255,0.45)" : "rgba(36,31,25,0.35)";
-        context.fillRect(x, y, Math.max(1, step * 0.18), Math.max(1, step * 0.18));
+        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.48)" : "rgba(45,38,30,.26)";
+        context.fillRect(x, y, Math.max(0.8, step * 0.12), Math.max(0.8, step * 0.12));
       }
     }
-  }
-  if (paper.type === "fold-marks" || paper.type === "matte-photo") {
-    context.strokeStyle = "rgba(255,255,255,0.5)";
-    context.lineWidth = paper.type === "fold-marks" ? 2 : 1;
-    context.beginPath();
-    context.moveTo(width * 0.5, 0);
-    context.lineTo(width * 0.52, height);
-    context.stroke();
   }
   context.restore();
 }
 
-async function drawBackground(context: CanvasRenderingContext2D, canvas: CanvasSettings, format: "png" | "jpeg") {
-  if (!canvas.backgroundTransparent || format === "jpeg") {
-    context.fillStyle = canvas.backgroundTransparent && format === "jpeg" ? "#ffffff" : canvas.backgroundColor;
+function drawCanvasVignette(context: CanvasRenderingContext2D, canvas: CanvasSettings) {
+  if (canvas.backgroundVignette <= 0) return;
+  const gradient = context.createRadialGradient(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.2, canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.72);
+  gradient.addColorStop(0, "rgba(0,0,0,0)");
+  gradient.addColorStop(1, `rgba(0,0,0,${Math.min(0.8, canvas.backgroundVignette / 100)})`);
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+async function drawBackground(context: CanvasRenderingContext2D, project: WallpaperProject, format: "png" | "jpeg") {
+  const canvas = project.canvas;
+  const baseMode = canvas.backgroundBaseMode ?? (canvas.backgroundTransparent ? "transparent" : canvas.backgroundImage ? "image" : "color");
+  if (baseMode !== "transparent" || format === "jpeg") {
+    context.fillStyle = baseMode === "transparent" && format === "jpeg" ? "#ffffff" : canvas.backgroundColor;
     context.fillRect(0, 0, canvas.width, canvas.height);
   }
-  if (canvas.backgroundImage) {
+  if (baseMode === "image" && canvas.backgroundImage) {
     const image = await loadImage(canvas.backgroundImage.url);
     context.save();
     context.globalAlpha = canvas.backgroundOpacity;
-    context.filter = `brightness(${canvas.backgroundBrightness}%) blur(${canvas.backgroundBlur}px)`;
-    drawPlacedImage(
-      context,
-      image,
-      canvas.width,
-      canvas.height,
-      canvas.backgroundMode,
-      canvas.backgroundAlignment,
-      { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale }
-    );
+    context.filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur}px)`;
+    drawPlacedImage(context, image, canvas.width, canvas.height, canvas.backgroundMode, canvas.backgroundAlignment, { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale });
     context.restore();
+    if (canvas.backgroundTemperature !== 0) {
+      context.save();
+      context.globalCompositeOperation = "soft-light";
+      context.globalAlpha = Math.min(0.35, Math.abs(canvas.backgroundTemperature) / 280);
+      context.fillStyle = canvas.backgroundTemperature > 0 ? "#ff9b55" : "#5e8dff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.restore();
+    }
   }
-  drawPaperTexture(context, canvas.width, canvas.height, canvas.backgroundPaper);
+  await drawPaperTexture(context, canvas.width, canvas.height, canvas.backgroundPaper, 0, customTexture(project, canvas.backgroundPaper));
 }
 
 function drawVignette(context: CanvasRenderingContext2D, layer: PlaceholderLayer) {
   const amount = layer.effects.filters.vignette;
   if (amount <= 0) return;
-  const gradient = context.createRadialGradient(
-    layer.width / 2,
-    layer.height / 2,
-    Math.min(layer.width, layer.height) * 0.18,
-    layer.width / 2,
-    layer.height / 2,
-    Math.max(layer.width, layer.height) * 0.72
-  );
+  const gradient = context.createRadialGradient(layer.width / 2, layer.height / 2, Math.min(layer.width, layer.height) * 0.18, layer.width / 2, layer.height / 2, Math.max(layer.width, layer.height) * 0.72);
   gradient.addColorStop(0, "rgba(0,0,0,0)");
   gradient.addColorStop(1, `rgba(0,0,0,${Math.min(0.7, amount / 100)})`);
   context.fillStyle = gradient;
@@ -183,57 +227,71 @@ function drawVignette(context: CanvasRenderingContext2D, layer: PlaceholderLayer
 async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperProject, layer: PlaceholderLayer) {
   if (layer.hidden) return;
   const imageRef = getImageForLayer(project, layer);
+  const paperFrame = layer.effects.paperFrame;
+  const insets = paperFrameInsets(paperFrame, layer.width, layer.height);
+  const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
+  const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
 
   context.save();
   context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
-  context.rotate((layer.rotation * Math.PI) / 180);
+  context.rotate(((layer.rotation + paperFrameRotation(paperFrame)) * Math.PI) / 180);
   context.globalAlpha = layer.opacity;
   context.globalCompositeOperation = layer.effects.blendMode === "normal" ? "source-over" : layer.effects.blendMode;
   context.translate(-layer.width / 2, -layer.height / 2);
 
-  if (layer.shadow) {
-    context.shadowColor = "rgba(15, 23, 42, 0.28)";
-    context.shadowBlur = 28;
-    context.shadowOffsetY = 14;
+  const shadowStrength = Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength);
+  if (shadowStrength > 0) {
+    context.shadowColor = `rgba(15,23,42,${Math.min(0.45, shadowStrength / 180)})`;
+    context.shadowBlur = 8 + shadowStrength * 0.55;
+    context.shadowOffsetY = 3 + shadowStrength * 0.22;
   }
 
-  shapePath(context, layer);
+  if (paperFrame.type !== "none") {
+    roughPaperPath(context, layer.width, layer.height, paperFrame);
+    context.fillStyle = paperFrame.paperColor;
+    context.fill();
+    context.shadowColor = "transparent";
+    if (paperFrame.textureIntensity > 0) {
+      await drawPaperTexture(context, layer.width, layer.height, { ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, 0, customTexture(project, layer.effects.paper));
+    }
+  }
+
+  context.save();
+  context.translate(insets.left, insets.top);
+  const innerRadius = layer.maskShape === "circle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top));
+  roundedPath(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle");
   context.clip();
-  if (layer.effects.backgroundColor) {
-    context.fillStyle = layer.effects.backgroundColor;
-    context.fillRect(0, 0, layer.width, layer.height);
-  }
-
+  context.shadowColor = "transparent";
+  context.fillStyle = layer.effects.backgroundColor || "#ffffff";
+  context.fillRect(0, 0, innerWidth, innerHeight);
   if (imageRef) {
     const image = await loadImage(imageRef.url);
     context.save();
     context.filter = filterString(layer);
-    drawPlacedImage(context, image, layer.width, layer.height, layer.cropMode, layer.alignment, layer.crop);
+    drawPlacedImage(context, image, innerWidth, innerHeight, layer.cropMode, layer.alignment, layer.crop);
     context.restore();
   } else {
     context.fillStyle = "#d9d7d0";
-    context.fillRect(0, 0, layer.width, layer.height);
+    context.fillRect(0, 0, innerWidth, innerHeight);
   }
-
-  drawPaperTexture(context, layer.width, layer.height, layer.effects.paper, layer.effects.filters.grain);
-  drawVignette(context, layer);
-
+  await drawPaperTexture(context, innerWidth, innerHeight, layer.effects.paper, layer.effects.filters.grain, customTexture(project, layer.effects.paper));
   if (layer.effects.innerShadow) {
     context.save();
     context.shadowColor = "rgba(15,23,42,.34)";
     context.shadowBlur = 20;
     context.lineWidth = 14;
-    shapePath(context, layer);
+    roundedPath(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle");
     context.strokeStyle = "rgba(0,0,0,.01)";
     context.stroke();
     context.restore();
   }
   context.restore();
+  context.restore();
 
   if (layer.borderWidth > 0) {
     context.save();
     context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
-    context.rotate((layer.rotation * Math.PI) / 180);
+    context.rotate(((layer.rotation + paperFrameRotation(paperFrame)) * Math.PI) / 180);
     context.globalAlpha = layer.opacity * layer.borderOpacity;
     context.translate(-layer.width / 2, -layer.height / 2);
     shapePath(context, layer);
@@ -244,14 +302,14 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   }
 }
 
-export async function renderProjectToDataUrl(project: WallpaperProject, format: "png" | "jpeg") {
+export async function renderProjectToDataUrl(project: WallpaperProject, format: "png" | "jpeg", quality = 0.92) {
   const output = document.createElement("canvas");
   output.width = project.canvas.width;
   output.height = project.canvas.height;
   const context = output.getContext("2d");
   if (!context) throw new Error("Canvas rendering is unavailable.");
 
-  await drawBackground(context, project.canvas, format);
+  await drawBackground(context, project, format);
   for (const layer of project.layers) await drawLayer(context, project, layer);
-  return output.toDataURL(format === "png" ? "image/png" : "image/jpeg", 0.92);
+  return output.toDataURL(format === "png" ? "image/png" : "image/jpeg", quality);
 }

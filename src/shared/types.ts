@@ -10,6 +10,9 @@ export type ImageSelectionMode = "fixed" | "sequential" | "random" | "shuffle" |
 
 export type WallpaperInterval =
   | "manual"
+  | "5s"
+  | "10s"
+  | "30s"
   | "1m"
   | "5m"
   | "15m"
@@ -48,6 +51,10 @@ export type ImageAlignment =
   | "bottom-right";
 
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "soft-light";
+export type MediaType = "image" | "video";
+export type SourceMediaPolicy = "images-only" | "images-and-video-thumbnails";
+export type BackgroundBaseMode = "color" | "transparent" | "image";
+export type PaperFrameType = "none" | "clean" | "polaroid" | "torn" | "deckle" | "newsprint";
 
 export interface ImageFilters {
   brightness: number;
@@ -78,12 +85,26 @@ export interface PaperTextureEffect {
     | "newspaper"
     | "fold-marks"
     | "dust-scratches"
-    | "halftone";
+    | "halftone"
+    | "custom";
   intensity: number;
   scale: number;
   rotation: number;
   opacity: number;
   blendMode: BlendMode;
+  seed: number;
+  customTextureId?: string;
+}
+
+export interface PaperFrameEffect {
+  type: PaperFrameType;
+  borderWidth: number;
+  paperColor: string;
+  edgeRoughness: number;
+  shadowStrength: number;
+  innerPadding: number;
+  rotationVariation: number;
+  textureIntensity: number;
   seed: number;
 }
 
@@ -97,6 +118,7 @@ export interface PlaceholderEffects {
   polaroidFrame: boolean;
   tapeDecoration: boolean;
   tornEdgeMask: boolean;
+  paperFrame: PaperFrameEffect;
 }
 
 export interface CropTransform {
@@ -111,6 +133,7 @@ export interface CanvasSettings {
   presetId: string;
   orientation: "landscape" | "portrait" | "square" | "custom";
   backgroundColor: string;
+  backgroundBaseMode: BackgroundBaseMode;
   backgroundTransparent: boolean;
   backgroundImage?: LocalImageRef;
   backgroundMode: BackgroundFitMode;
@@ -120,6 +143,9 @@ export interface CanvasSettings {
   backgroundScale: number;
   backgroundBlur: number;
   backgroundBrightness: number;
+  backgroundContrast: number;
+  backgroundTemperature: number;
+  backgroundVignette: number;
   backgroundOpacity: number;
   backgroundPaper: PaperTextureEffect;
 }
@@ -133,6 +159,8 @@ export interface LocalImageRef {
   size?: number;
   externalId?: string;
   sourceUrl?: string;
+  mediaType?: MediaType;
+  videoThumbnail?: boolean;
 }
 
 export interface ImageSource {
@@ -153,6 +181,8 @@ export interface ImageSource {
   includeSubfolders?: boolean;
   lastScannedAt?: string;
   missing?: boolean;
+  mediaPolicy: SourceMediaPolicy;
+  mediaCounts?: { total: number; images: number; videos: number };
   updatedAt: string;
 }
 
@@ -215,6 +245,8 @@ export interface WallpaperSettings {
   paused: boolean;
   interval: WallpaperInterval;
   customIntervalMinutes: number;
+  customIntervalValue: number;
+  customIntervalUnit: "seconds" | "minutes" | "hours";
   launchAtLogin: boolean;
   startMinimized: boolean;
   monitorMode: "primary" | "all" | "span";
@@ -229,7 +261,17 @@ export interface WallpaperSettings {
   lastAppliedFilePath?: string;
   lastAppliedTemplateId?: string;
   lastError?: string;
+  transitionEnabled: boolean;
+  transitionDurationMs: number;
   consecutiveFailures: number;
+}
+
+export interface CustomTextureAsset {
+  id: string;
+  name: string;
+  path: string;
+  url: string;
+  createdAt: string;
 }
 
 export interface TemplateCollection {
@@ -275,6 +317,7 @@ export interface WallpaperProject {
   canvas: CanvasSettings;
   layers: ProjectLayer[];
   sources: ImageSource[];
+  customTextures: CustomTextureAsset[];
   wallpaper: WallpaperSettings;
   templates: TemplateLibrary;
   savedCombinations: GeneratedCombination[];
@@ -323,10 +366,32 @@ export interface ExportPayload {
   suggestedName: string;
 }
 
+export interface ExportSetFilePayload {
+  destinationPath: string;
+  dataUrl: string;
+  fileName: string;
+  overwrite: boolean;
+}
+
+export interface ExportSetFileResult {
+  ok: boolean;
+  skipped?: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+export interface CustomTextureResult {
+  canceled: boolean;
+  texture?: CustomTextureAsset;
+  error?: string;
+}
+
 export interface WallpaperApplyPayload {
   dataUrl: string;
   suggestedName: string;
   monitorMode?: WallpaperSettings["monitorMode"];
+  transitionEnabled?: boolean;
+  transitionDurationMs?: number;
   displayMode?: WallpaperDisplayMode;
   scope?: WallpaperScope;
   targetId?: string;
@@ -341,6 +406,8 @@ export interface WallpaperApplyFilePayload {
 export interface WallpaperTargetApplyItem {
   targetId: string;
   targetLabel: string;
+  displayId?: string;
+  current?: boolean;
   dataUrl: string;
   suggestedName: string;
 }
@@ -348,6 +415,8 @@ export interface WallpaperTargetApplyItem {
 export interface WallpaperApplyTargetsPayload {
   items: WallpaperTargetApplyItem[];
   displayMode?: WallpaperDisplayMode;
+  transitionEnabled?: boolean;
+  transitionDurationMs?: number;
   scope?: WallpaperScope;
 }
 
@@ -397,6 +466,12 @@ export interface WallpaperApplyDiagnostics {
   lastError?: string;
   targetId?: string;
   targetLabel?: string;
+  targetIndex?: number;
+  displayId?: string;
+  spaceId?: string;
+  requestedPath?: string;
+  reportedPath?: string;
+  verificationResult?: "matched" | "mismatched" | "unavailable";
   targetResults?: WallpaperTargetResult[];
 }
 
@@ -416,6 +491,8 @@ export interface TrayRuntimeState {
   paused: boolean;
   interval?: WallpaperInterval;
   customIntervalMinutes?: number;
+  customIntervalValue?: number;
+  customIntervalUnit?: "seconds" | "minutes" | "hours";
   nextScheduledAt?: string;
   status?: WallpaperRuntimeStatus;
   lastError?: string;

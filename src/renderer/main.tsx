@@ -47,6 +47,8 @@ import type {
   ImageSelectionMode,
   ImageSource,
   LocalImageRef,
+  PaperFrameType,
+  SourceMediaPolicy,
   MaskShape,
   PaperTextureEffect,
   PinterestImportProgress,
@@ -61,6 +63,7 @@ import {
   activeTemplateSourceIds,
   createCombination,
   createDefaultEffects,
+  createDefaultPaperFrame,
   createPlaceholder,
   createProject,
   createWallpaperTemplate,
@@ -69,6 +72,7 @@ import {
   normalizeProject,
   presets,
   selectImageForLayer,
+  sourceImagesForPolicy,
   touchProject,
   uid,
   unlinkSourceFromActiveTemplate,
@@ -77,6 +81,8 @@ import {
 } from "./project";
 import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
+import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
+import { projectAfterExportSet } from "../shared/export-set";
 import {
   appendAppliedHistory,
   generationStateAfterApplication,
@@ -149,11 +155,31 @@ type AppView = "home" | "editor";
 type TemplateFilter = "all" | "favorites" | "recent" | "rotation";
 type SourceLibraryView = "linked" | "global";
 type LeftPanelTab = "sources" | "layers";
-type InspectorTab = "canvas" | "background" | "template" | "frame" | "image" | "style" | "effects";
+type InspectorTab = "settings" | "image" | "effects";
 type RenameState =
   | { kind: "layer"; id: string; value: string }
   | { kind: "template"; id: string; value: string }
   | { kind: "source"; id: string; value: string };
+
+type ExportSetState = {
+  open: boolean;
+  templateId?: string;
+  count: number;
+  format: "png" | "jpeg";
+  quality: number;
+  destinationPath?: string;
+  includeTemplateName: boolean;
+  includeTimestamp: boolean;
+  avoidRepeats: boolean;
+  advanceLiveState: boolean;
+  overwrite: boolean;
+  busy: boolean;
+  cancelRequested: boolean;
+  completed: number;
+  skipped: number;
+  failed: number;
+  error?: string;
+};
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -182,6 +208,22 @@ function sourceKindLabel(source: ImageSource) {
   return "Local folder";
 }
 
+function sourceLocationLabel(source: ImageSource) {
+  return source.path ?? source.url ?? source.cachePath ?? "Stored in project";
+}
+
+function formatCountdown(target?: string, now = Date.now()) {
+  if (!target) return "Not scheduled";
+  const remaining = Math.max(0, Date.parse(target) - now);
+  const seconds = Math.ceil(remaining / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const trailingSeconds = seconds % 60;
+  if (minutes < 60) return trailingSeconds ? `${minutes}m ${trailingSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const trailingMinutes = minutes % 60;
+  return trailingMinutes ? `${hours}h ${trailingMinutes}m` : `${hours}h`;
+}
 
 function getDroppedPaths(event: React.DragEvent) {
   const filePaths = Array.from(event.dataTransfer.files)
@@ -289,7 +331,7 @@ function App() {
   const [layerMenu, setLayerMenu] = useState<LayerMenuState | undefined>();
   const [sourceLibraryView, setSourceLibraryView] = useState<SourceLibraryView>("linked");
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("sources");
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("canvas");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("settings");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
@@ -298,6 +340,7 @@ function App() {
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
   const [backgroundAdvancedOpen, setBackgroundAdvancedOpen] = useState(() => localStorage.getItem(backgroundAdvancedKey) === "true");
+  const [nowTick, setNowTick] = useState(Date.now());
   const [history, setHistory] = useState<{ past: WallpaperProject[]; future: WallpaperProject[] }>({ past: [], future: [] });
   const [pinterestDialog, setPinterestDialog] = useState<PinterestDialogState>({
     open: false,
@@ -308,17 +351,37 @@ function App() {
     log: [],
     busy: false
   });
+  const [exportSet, setExportSet] = useState<ExportSetState>({
+    open: false,
+    count: 10,
+    format: "png",
+    quality: 0.92,
+    includeTemplateName: true,
+    includeTimestamp: false,
+    avoidRepeats: true,
+    advanceLiveState: false,
+    overwrite: false,
+    busy: false,
+    cancelRequested: false,
+    completed: 0,
+    skipped: 0,
+    failed: 0
+  });
   const dragRef = useRef<DragState | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
   const loginRotationTriggeredRef = useRef(false);
+  const exportCancelRef = useRef(false);
+  const sourceApplyTimerRef = useRef<number | undefined>(undefined);
+  const sourceApplyVersionRef = useRef(0);
   const selectedLayers = project.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId) ?? selectedLayers.at(-1);
   const linkedSourceIds = activeTemplateSourceIds(project);
   const linkedSources = project.sources.filter((source) => linkedSourceIds.includes(source.id));
   const visibleSources = sourceLibraryView === "linked" ? linkedSources : project.sources;
+  const selectedSource = project.sources.find((source) => source.id === selectedSourceId);
   const visibleTemplates = useMemo(() => {
     const templates = [...project.templates.templates];
     if (templateFilter === "favorites") return templates.filter((template) => template.favorite);
@@ -331,18 +394,39 @@ function App() {
     return templates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }, [project.templates.templates, templateFilter]);
 
+  function wallpaperMs(wallpaper = project.wallpaper) {
+    return wallpaperIntervalToMs(
+      wallpaper.interval,
+      wallpaper.customIntervalMinutes,
+      wallpaper.customIntervalValue,
+      wallpaper.customIntervalUnit
+    );
+  }
+
+  function scheduleFor(wallpaper = project.wallpaper, from = new Date()) {
+    return nextScheduledAt(
+      wallpaper.interval,
+      wallpaper.customIntervalMinutes,
+      from,
+      wallpaper.customIntervalValue,
+      wallpaper.customIntervalUnit
+    );
+  }
+
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
 
   useEffect(() => {
     setInspectorTab((current) => {
-      const layerTabs: InspectorTab[] = ["frame", "image", "style", "effects"];
-      const canvasTabs: InspectorTab[] = ["canvas", "background", "template"];
-      if (selectedLayer) return layerTabs.includes(current) ? current : "frame";
-      return canvasTabs.includes(current) ? current : "canvas";
+      if (selectedLayer) return current === "effects" ? "effects" : "image";
+      return "settings";
     });
   }, [selectedLayer?.id]);
+
+  useEffect(() => () => {
+    if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
+  }, []);
 
   useEffect(() => {
     void window.wallpaperApi.setTrayState({
@@ -350,6 +434,8 @@ function App() {
       paused: project.wallpaper.paused,
       interval: project.wallpaper.interval,
       customIntervalMinutes: project.wallpaper.customIntervalMinutes,
+      customIntervalValue: project.wallpaper.customIntervalValue,
+      customIntervalUnit: project.wallpaper.customIntervalUnit,
       nextScheduledAt: project.wallpaper.nextScheduledAt,
       status: wallpaperStatus,
       lastError: project.wallpaper.lastError
@@ -359,6 +445,8 @@ function App() {
     project.wallpaper.paused,
     project.wallpaper.interval,
     project.wallpaper.customIntervalMinutes,
+    project.wallpaper.customIntervalValue,
+    project.wallpaper.customIntervalUnit,
     project.wallpaper.nextScheduledAt,
     project.wallpaper.lastError,
     wallpaperStatus
@@ -373,6 +461,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem(backgroundAdvancedKey, String(backgroundAdvancedOpen));
   }, [backgroundAdvancedOpen]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     return window.wallpaperApi.onTrayCommand((command) => {
@@ -438,7 +531,7 @@ function App() {
   );
 
   useEffect(() => {
-    const ms = wallpaperIntervalToMs(project.wallpaper.interval, project.wallpaper.customIntervalMinutes);
+    const ms = wallpaperMs(project.wallpaper);
     if (!project.wallpaper.enabled || project.wallpaper.paused || !ms) {
       setWallpaperStatus(project.wallpaper.paused ? "paused" : "idle");
       setProject((current) => current.wallpaper.nextScheduledAt
@@ -453,7 +546,7 @@ function App() {
       }, 0);
       return () => window.clearTimeout(timer);
     }
-    const scheduled = project.wallpaper.nextScheduledAt || nextScheduledAt(project.wallpaper.interval, project.wallpaper.customIntervalMinutes);
+    const scheduled = project.wallpaper.nextScheduledAt || scheduleFor(project.wallpaper);
     if (scheduled && scheduled !== project.wallpaper.nextScheduledAt) {
       setProject((current) => ({
         ...current,
@@ -471,6 +564,8 @@ function App() {
     project.wallpaper.paused,
     project.wallpaper.interval,
     project.wallpaper.customIntervalMinutes,
+    project.wallpaper.customIntervalValue,
+    project.wallpaper.customIntervalUnit,
     project.wallpaper.nextScheduledAt
   ]);
 
@@ -573,13 +668,15 @@ function App() {
         "enabled" in patch ||
         "paused" in patch ||
         "interval" in patch ||
-        "customIntervalMinutes" in patch;
+        "customIntervalMinutes" in patch ||
+        "customIntervalValue" in patch ||
+        "customIntervalUnit" in patch;
       return {
         ...current,
         wallpaper: {
           ...wallpaper,
           nextScheduledAt: scheduleChanged && wallpaper.enabled && !wallpaper.paused
-            ? nextScheduledAt(wallpaper.interval, wallpaper.customIntervalMinutes)
+            ? scheduleFor(wallpaper)
             : scheduleChanged
               ? undefined
               : wallpaper.nextScheduledAt
@@ -730,6 +827,7 @@ function App() {
       canvas: {
         ...current.canvas,
         backgroundImage: result.image,
+        backgroundBaseMode: "image",
         backgroundTransparent: false,
         backgroundOffsetX: 0,
         backgroundOffsetY: 0,
@@ -739,7 +837,47 @@ function App() {
   }
 
   function clearBackgroundImage() {
-    commitProject((current) => ({ ...current, canvas: removeBackgroundImage(current.canvas) }));
+    commitProject((current) => ({ ...current, canvas: { ...removeBackgroundImage(current.canvas), backgroundBaseMode: "color", backgroundTransparent: false } }));
+  }
+
+  async function importCustomTexture() {
+    const result = await window.wallpaperApi.importCustomTexture();
+    if (result.canceled) return;
+    if (result.error || !result.texture) {
+      setMessage(result.error ?? "Unable to import texture.");
+      return;
+    }
+    commitProject((current) => ({
+      ...current,
+      customTextures: [...current.customTextures.filter((texture) => texture.id !== result.texture!.id), result.texture!],
+      canvas: {
+        ...current.canvas,
+        backgroundPaper: { ...current.canvas.backgroundPaper, type: "custom", customTextureId: result.texture!.id, intensity: Math.max(35, current.canvas.backgroundPaper.intensity), opacity: Math.max(0.35, current.canvas.backgroundPaper.opacity) }
+      }
+    }));
+    setMessage(`Imported texture ${result.texture.name}.`);
+  }
+
+  async function removeCustomTextureAsset(textureId: string) {
+    const texture = projectRef.current.customTextures.find((item) => item.id === textureId);
+    if (!texture) return;
+    await window.wallpaperApi.removeCustomTexture(texture.path);
+    commitProject((current) => ({
+      ...current,
+      customTextures: current.customTextures.filter((item) => item.id !== textureId),
+      canvas: current.canvas.backgroundPaper.customTextureId === textureId
+        ? { ...current.canvas, backgroundPaper: { ...current.canvas.backgroundPaper, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } }
+        : current.canvas,
+      layers: current.layers.map((layer) => layer.effects.paper.customTextureId === textureId
+        ? { ...layer, effects: { ...layer.effects, paper: { ...layer.effects.paper, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } } }
+        : layer)
+    }));
+    setMessage(`Removed texture ${texture.name}.`);
+  }
+
+  async function revealCustomTexture(textureId: string) {
+    const texture = projectRef.current.customTextures.find((item) => item.id === textureId);
+    if (texture) await window.wallpaperApi.revealCustomTexture(texture.path);
   }
 
   async function matchFrameToImage(layer: PlaceholderLayer) {
@@ -800,7 +938,9 @@ function App() {
       path: result.path,
       images: result.images,
       importStatus: "ready",
-      importLog: [`Imported ${result.images.length} local images from ${result.path}.`],
+      mediaPolicy: "images-only",
+      mediaCounts: { total: result.images.length, images: result.images.filter((image) => image.mediaType !== "video").length, videos: result.images.filter((image) => image.mediaType === "video").length },
+      importLog: [`Imported ${result.images.length} local items from ${result.path}.`],
       updatedAt: new Date().toISOString()
     };
     const [resolved] = addSourcesToProject([source]);
@@ -821,7 +961,9 @@ function App() {
             name: images.length === 1 ? images[0].name : `${images.length} local images`,
             images,
             importStatus: "ready",
-            importLog: [`Imported ${images.length} local image files as one collection.`],
+            mediaPolicy: "images-only",
+            mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+            importLog: [`Imported ${images.length} local files as one collection.`],
             updatedAt: new Date().toISOString()
           }
         : undefined;
@@ -841,37 +983,101 @@ function App() {
     return merged.resolved;
   }
 
+  function projectWithSourceAssignment(base: WallpaperProject, source: ImageSource, layerId: string) {
+    const layer = base.layers.find((item) => item.id === layerId);
+    if (!layer || layer.locked) return undefined;
+    const eligibleImages = sourceImagesForPolicy(source);
+    if (eligibleImages.length === 0) return undefined;
+    const singleImage = eligibleImages.length === 1;
+    let next = linkedSourceIds.includes(source.id) ? base : linkSourceToActiveTemplate(base, source.id);
+    next = {
+      ...next,
+      layers: next.layers.map((item) => item.id === layerId ? {
+        ...item,
+        sourceId: source.id,
+        selectedImageId: singleImage ? eligibleImages[0]?.id : undefined,
+        generatedImageId: undefined,
+        sourceState: {
+          ...item.sourceState,
+          sourceIds: [source.id],
+          mode: singleImage ? "fixed" : "shuffle",
+          currentIndex: 0,
+          shuffleQueue: [],
+          usedImageIds: [],
+          preventDuplicates: eligibleImages.length > 1
+        }
+      } : item)
+    };
+    const assigned = next.layers.find((item) => item.id === layerId);
+    if (!assigned) return undefined;
+    const selection = selectImageForLayer(next, assigned, new Set<string>());
+    next = {
+      ...next,
+      layers: next.layers.map((item) => item.id === layerId ? selection.layer : item)
+    };
+    return touchProject(updateActiveTemplateSnapshot(normalizeProject(next)));
+  }
+
   function assignSourceToLayer(source: ImageSource, layer: PlaceholderLayer) {
     if (layer.locked) {
       setMessage("Unlock the layer before changing its source.");
       return;
     }
-    const singleImage = source.images.length === 1;
-    patchLayer(layer.id, {
-      sourceId: source.id,
-      selectedImageId: singleImage ? source.images[0]?.id : undefined,
-      generatedImageId: undefined,
-      sourceState: {
-        ...layer.sourceState,
-        sourceIds: [source.id],
-        mode: singleImage ? "fixed" : "shuffle",
-        currentIndex: 0,
-        shuffleQueue: [],
-        usedImageIds: [],
-        preventDuplicates: source.images.length > 1
-      }
-    });
+    const next = projectWithSourceAssignment(projectRef.current, source, layer.id);
+    if (!next) {
+      setMessage(`${source.name} has no items allowed by its media filter.`);
+      return;
+    }
+    setHistory((stack) => ({ past: [...stack.past, cloneProject(projectRef.current)].slice(-historyLimit), future: [] }));
+    projectRef.current = next;
+    setProject(next);
     setSelectedSourceId(source.id);
     setMessage(`Assigned ${source.name} to ${layer.name}.`);
   }
 
   function handleSourceClick(source: ImageSource) {
     setSelectedSourceId(source.id);
-    if (!selectedLayer || selectedLayer.locked) return;
-    if (!linkedSourceIds.includes(source.id)) {
-      commitProject((current) => linkSourceToActiveTemplate(current, source.id), true);
+    if (!selectedLayer) {
+      setMessage(`Inspecting ${source.name}. Select an unlocked image to assign it.`);
+      return;
     }
-    assignSourceToLayer(source, selectedLayer);
+    if (selectedLayer.locked) {
+      setMessage("Unlock the selected layer before assigning a source.");
+      return;
+    }
+    const before = cloneProject(projectRef.current);
+    const candidate = projectWithSourceAssignment(before, source, selectedLayer.id);
+    if (!candidate) {
+      setMessage(`${source.name} has no items allowed by its media filter.`);
+      return;
+    }
+    setHistory((stack) => ({ past: [...stack.past, before].slice(-historyLimit), future: [] }));
+    projectRef.current = candidate;
+    setProject(candidate);
+    setMessage(`Switching ${selectedLayer.name} to ${source.name}…`);
+
+    sourceApplyVersionRef.current += 1;
+    const version = sourceApplyVersionRef.current;
+    if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
+    const runLatestSourceApply = async () => {
+      if (version !== sourceApplyVersionRef.current) return;
+      if (applyInFlightRef.current) {
+        sourceApplyTimerRef.current = window.setTimeout(() => void runLatestSourceApply(), 120);
+        return;
+      }
+      const activeLayer = candidate.layers.find((item) => item.id === selectedLayer.id);
+      const assignments = Object.fromEntries(candidate.layers.map((item) => [item.id, item.generatedImageId ?? item.selectedImageId]).filter((entry): entry is [string, string] => Boolean(entry[1])));
+      const combination = createCombination(assignments, candidate.templates.activeTemplateId);
+      const applied = await applyCandidate(candidate, combination, { label: `Applied ${source.name}` });
+      if (!applied && version === sourceApplyVersionRef.current) {
+        projectRef.current = before;
+        setProject(before);
+        setMessage(`Could not apply ${source.name}; restored the previous source.`);
+      } else if (applied && activeLayer) {
+        setSelectedSourceId(source.id);
+      }
+    };
+    sourceApplyTimerRef.current = window.setTimeout(() => void runLatestSourceApply(), 320);
   }
 
   async function importDroppedPaths(paths: string[]) {
@@ -911,7 +1117,9 @@ function App() {
       name: images.length === 1 ? images[0].name : `${images.length} local images`,
       images,
       importStatus: "ready",
-      importLog: [`Imported ${images.length} individual local images.`],
+      mediaPolicy: "images-only",
+      mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+      importLog: [`Imported ${images.length} individual local files.`],
       updatedAt: new Date().toISOString()
     };
     const [resolved] = addSourcesToProject([source]);
@@ -1006,7 +1214,7 @@ function App() {
           paused: automatic && failures >= 3 ? true : current.wallpaper.paused,
           nextScheduledAt: automatic && failures >= 3
             ? undefined
-            : nextScheduledAt(current.wallpaper.interval, current.wallpaper.customIntervalMinutes)
+            : scheduleFor(current.wallpaper)
         }
       };
       projectRef.current = next;
@@ -1035,7 +1243,9 @@ function App() {
         suggestedName: `${candidate.name.replace(/[^\w.-]+/g, "-")}-${Date.now()}.png`,
         monitorMode: candidate.wallpaper.monitorMode,
         displayMode: candidate.wallpaper.displayMode,
-        scope: candidate.wallpaper.scope
+        scope: candidate.wallpaper.scope,
+        transitionEnabled: candidate.wallpaper.transitionEnabled,
+        transitionDurationMs: candidate.wallpaper.transitionDurationMs
       });
       setWallpaperStatus("verifying");
       setLastWallpaperDiagnostics(result.diagnostics);
@@ -1067,7 +1277,7 @@ function App() {
           lastError: undefined,
           consecutiveFailures: 0,
           nextScheduledAt: candidate.wallpaper.enabled && !candidate.wallpaper.paused
-            ? nextScheduledAt(candidate.wallpaper.interval, candidate.wallpaper.customIntervalMinutes, new Date(appliedAt))
+            ? scheduleFor(candidate.wallpaper, new Date(appliedAt))
             : undefined
         },
         recentCombinations: appendAppliedHistory(candidate.recentCombinations, historyEntry)
@@ -1147,9 +1357,13 @@ function App() {
       const result = await window.wallpaperApi.applyWallpaperTargets({
         scope: "different-per-desktop",
         displayMode: working.wallpaper.displayMode,
+        transitionEnabled: working.wallpaper.transitionEnabled,
+        transitionDurationMs: working.wallpaper.transitionDurationMs,
         items: rendered.map(({ target, dataUrl, templateName }) => ({
           targetId: target.id,
           targetLabel: target.label,
+          displayId: target.displayId,
+          current: target.current,
           dataUrl,
           suggestedName: `${templateName.replace(/[^\w.-]+/g, "-")}-${target.id}-${Date.now()}.png`
         }))
@@ -1182,7 +1396,7 @@ function App() {
           lastError: undefined,
           consecutiveFailures: 0,
           nextScheduledAt: working.wallpaper.enabled && !working.wallpaper.paused
-            ? nextScheduledAt(working.wallpaper.interval, working.wallpaper.customIntervalMinutes, new Date(appliedAt))
+            ? scheduleFor(working.wallpaper, new Date(appliedAt))
             : undefined
         },
         recentCombinations: entries.reduce((history, entry) => appendAppliedHistory(history, entry), working.recentCombinations)
@@ -1333,6 +1547,106 @@ function App() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Export failed.");
     }
+  }
+
+  function openExportSet(templateId = project.templates.activeTemplateId) {
+    exportCancelRef.current = false;
+    setExportSet((current) => ({
+      ...current,
+      open: true,
+      templateId,
+      busy: false,
+      cancelRequested: false,
+      completed: 0,
+      skipped: 0,
+      failed: 0,
+      error: undefined
+    }));
+  }
+
+  async function chooseExportSetFolder() {
+    const result = await window.wallpaperApi.chooseExportSetFolder();
+    if (!result.canceled && result.filePath) setExportSet((current) => ({ ...current, destinationPath: result.filePath }));
+  }
+
+  function cancelExportSet() {
+    exportCancelRef.current = true;
+    setExportSet((current) => ({ ...current, cancelRequested: true }));
+  }
+
+  async function runExportSet() {
+    const options = exportSet;
+    const count = clamp(Math.round(options.count), 1, 500);
+    let destinationPath = options.destinationPath;
+    if (!destinationPath) {
+      const result = await window.wallpaperApi.chooseExportSetFolder();
+      if (result.canceled || !result.filePath) return;
+      destinationPath = result.filePath;
+      setExportSet((current) => ({ ...current, destinationPath }));
+    }
+    const template = projectRef.current.templates.templates.find((item) => item.id === options.templateId)
+      ?? projectRef.current.templates.templates.find((item) => item.id === projectRef.current.templates.activeTemplateId);
+    if (!template) {
+      setExportSet((current) => ({ ...current, error: "Choose a template before exporting." }));
+      return;
+    }
+
+    exportCancelRef.current = false;
+    setExportSet((current) => ({ ...current, busy: true, cancelRequested: false, completed: 0, skipped: 0, failed: 0, error: undefined }));
+    let exportProject = workspaceFromTemplate(cloneProject(projectRef.current), template);
+    const used = new Set<string>();
+    const signatures = new Set<string>();
+    let completed = 0;
+    let skipped = 0;
+    let failed = 0;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const baseName = (options.includeTemplateName ? template.name : "Wallpaper")
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "Wallpaper";
+
+    for (let index = 1; index <= count; index += 1) {
+      if (exportCancelRef.current) break;
+      let prepared = prepareGeneratedProjectWithUsed(exportProject, template.id, options.avoidRepeats ? used : new Set<string>());
+      let signature = Object.values(prepared.combination.assignments).sort().join("|");
+      let attempts = 0;
+      while (options.avoidRepeats && signatures.has(signature) && attempts < 5) {
+        prepared = prepareGeneratedProjectWithUsed(prepared.project, template.id, used);
+        signature = Object.values(prepared.combination.assignments).sort().join("|");
+        attempts += 1;
+      }
+      signatures.add(signature);
+      exportProject = prepared.project;
+      try {
+        const dataUrl = await renderProjectToDataUrl(exportProject, options.format, options.quality);
+        const suffix = `${String(index).padStart(3, "0")}${options.includeTimestamp ? `-${stamp}` : ""}`;
+        const fileName = `${baseName}-${suffix}.${options.format === "png" ? "png" : "jpg"}`;
+        const result = await window.wallpaperApi.writeExportSetFile({
+          destinationPath,
+          dataUrl,
+          fileName,
+          overwrite: options.overwrite
+        });
+        if (result.ok) completed += 1;
+        else if (result.skipped) skipped += 1;
+        else failed += 1;
+      } catch {
+        failed += 1;
+      }
+      setExportSet((current) => ({ ...current, completed, skipped, failed }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+
+    if (options.advanceLiveState && !exportCancelRef.current) {
+      const normalized = touchProject(updateActiveTemplateSnapshot(normalizeProject(exportProject)));
+      const nextProject = projectAfterExportSet(projectRef.current, normalized, true);
+      projectRef.current = nextProject;
+      setProject(nextProject);
+    }
+    const summary = exportCancelRef.current
+      ? `Export stopped: ${completed} exported, ${skipped} skipped, ${failed} failed.`
+      : `Export complete: ${completed} exported, ${skipped} skipped, ${failed} failed.`;
+    setMessage(summary);
+    setExportSet((current) => ({ ...current, busy: false, cancelRequested: exportCancelRef.current, completed, skipped, failed, error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed.` : undefined }));
   }
 
   async function saveProject() {
@@ -2071,10 +2385,19 @@ function App() {
           onDelete={deleteTemplate}
           onToggleFavorite={(template) => patchTemplate(template.id, { favorite: !template.favorite })}
           onToggleRotation={(template) => patchTemplate(template.id, { enabledForRotation: !template.enabledForRotation })}
+          onExportSet={(template) => openExportSet(template.id)}
           onOpenProject={() => void openProject()}
           onSaveProject={() => void saveProject()}
         />
         <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
+        <ExportSetDialog
+          state={exportSet}
+          onChange={setExportSet}
+          onChooseFolder={() => void chooseExportSetFolder()}
+          onRun={() => void runExportSet()}
+          onCancel={cancelExportSet}
+          onClose={() => setExportSet((current) => ({ ...current, open: false }))}
+        />
       </>
     );
   }
@@ -2107,25 +2430,31 @@ function App() {
         >
           <div className="library-heading">
             <div>
-              <span className="eyebrow">IMAGE POOLS</span>
-              <h2>{sourceLibraryView === "linked" ? "Template Sources" : "Global Sources"}</h2>
+              <span className="eyebrow">COLLECTIONS</span>
+              <h2>Sources</h2>
             </div>
             <div className="compact-actions">
-              <button className="icon-button" title="Add folder pool" onClick={addFolderSource}><FolderOpen size={17} /></button>
-              <button className="icon-button" title="Add Pinterest board" onClick={() => setPinterestDialog((current) => ({ ...current, open: true }))}><Sparkles size={17} /></button>
-              <button className="icon-button" title="Add local image collection" onClick={addLocalImagesSource}><ImagePlus size={17} /></button>
+              <button className="icon-button tooltip-anchor" data-tooltip="Add folder pool" aria-label="Add folder pool" onClick={addFolderSource}><FolderOpen size={17} /></button>
+              <button className="icon-button tooltip-anchor" data-tooltip="Add Pinterest board" aria-label="Add Pinterest board" onClick={() => setPinterestDialog((current) => ({ ...current, open: true }))}><Sparkles size={17} /></button>
+              <button className="icon-button tooltip-anchor" data-tooltip="Add local image collection" aria-label="Add local image collection" onClick={addLocalImagesSource}><ImagePlus size={17} /></button>
             </div>
           </div>
 
           <div className="source-tabs" role="tablist" aria-label="Source library">
-            <button className={sourceLibraryView === "linked" ? "active" : ""} onClick={() => setSourceLibraryView("linked")}>This Template <span>{linkedSources.length}</span></button>
-            <button className={sourceLibraryView === "global" ? "active" : ""} onClick={() => setSourceLibraryView("global")}>Global <span>{project.sources.length}</span></button>
+            <button className={sourceLibraryView === "linked" ? "active" : ""} onClick={() => setSourceLibraryView("linked")}>Linked <span>{linkedSources.length}</span></button>
+            <button className={sourceLibraryView === "global" ? "active" : ""} onClick={() => setSourceLibraryView("global")}>Library <span>{project.sources.length}</span></button>
           </div>
 
           <p className="source-help">
-            {sourceLibraryView === "linked"
-              ? selectedLayer && !selectedLayer.locked ? "Click a collection to assign its whole pool to the selected frame." : "Click a collection to inspect it. Select an unlocked frame to assign sources."
-              : "Reusable folders, boards, and image collections shared across every template. Individual images are never listed here."}
+            {selectedLayer
+              ? selectedLayer.locked
+                ? "Unlock the selected frame to change its source."
+                : "Choose a source to assign its whole pool to this frame."
+              : selectedSource
+                ? "Source details"
+                : sourceLibraryView === "linked"
+                  ? "Select a source to view its details."
+                  : "Reusable folders, boards, and image collections shared across templates."}
           </p>
 
           {sourceLibraryView === "linked" && linkedSources.length === 0 && (
@@ -2133,6 +2462,45 @@ function App() {
               <Plus size={16} /> Add from global sources
             </button>
           )}
+
+          {selectedSource && !selectedLayer && (
+            <div className="source-detail-card">
+              <div className="source-detail-heading">
+                <span className="source-icon">{selectedSource.type === "local-folder" ? <FolderOpen size={17} /> : selectedSource.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
+                <div>
+                  <strong>{selectedSource.name}</strong>
+                  <span>{sourceKindLabel(selectedSource)}</span>
+                </div>
+              </div>
+              <div className="source-summary-line">
+                <span>{sourceImagesForPolicy(selectedSource).length} available</span>
+                <span className={`status-dot ${selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}`} />
+              </div>
+              <label className="source-media-policy">Media<select value={selectedSource.mediaPolicy} onChange={(event) => {
+                const mediaPolicy = event.target.value as SourceMediaPolicy;
+                commitProject((current) => ({ ...current, sources: current.sources.map((source) => source.id === selectedSource.id ? { ...source, mediaPolicy } : source) }));
+                setMessage(`Updated ${selectedSource.name}: ${mediaPolicy.replace(/-/g, " ")}.`);
+              }}><option value="images-only">Images only</option><option value="images-and-video-thumbnails">Images + video thumbnails</option></select></label>
+              <details className="source-technical-details">
+                <summary>Details <ChevronDown size={14} /></summary>
+                <dl>
+                  <div><dt>Total</dt><dd>{selectedSource.mediaCounts?.total ?? selectedSource.images.length}{selectedSource.expectedItemCount ? ` / ${selectedSource.expectedItemCount}` : ""}</dd></div>
+                  <div><dt>Images</dt><dd>{selectedSource.mediaCounts?.images ?? selectedSource.images.filter((image) => image.mediaType !== "video").length}</dd></div>
+                  <div><dt>Videos</dt><dd>{selectedSource.mediaCounts?.videos ?? selectedSource.images.filter((image) => image.mediaType === "video").length}</dd></div>
+                  <div><dt>Available</dt><dd>{sourceImagesForPolicy(selectedSource).length}</dd></div>
+                  <div><dt>Location</dt><dd title={sourceLocationLabel(selectedSource)}>{sourceLocationLabel(selectedSource)}</dd></div>
+                  <div><dt>Status</dt><dd>{selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}</dd></div>
+                  <div><dt>Updated</dt><dd>{selectedSource.lastImportCompletedAt ? new Date(selectedSource.lastImportCompletedAt).toLocaleString() : selectedSource.lastScannedAt ? new Date(selectedSource.lastScannedAt).toLocaleString() : "Not scanned"}</dd></div>
+                </dl>
+              </details>
+              {(selectedSource.mediaCounts?.videos ?? 0) > 0 && selectedSource.mediaPolicy === "images-only" && <p className="source-exclusion-note">{selectedSource.mediaCounts?.videos} video thumbnail{selectedSource.mediaCounts?.videos === 1 ? "" : "s"} excluded</p>}
+              <div className="source-detail-actions">
+                <button className="pill-button" onClick={() => void rescanSource(selectedSource)}>Refresh</button>
+                <button className="pill-button" onClick={() => void showSourceInFolder(selectedSource)}>Show</button>
+              </div>
+            </div>
+          )}
+
 
           <div className="source-list collection-list">
             {visibleSources.length === 0 ? (
@@ -2144,12 +2512,13 @@ function App() {
             ) : visibleSources.map((source) => {
               const linked = linkedSourceIds.includes(source.id);
               const assigned = Boolean(selectedLayer && (selectedLayer.sourceId === source.id || selectedLayer.sourceState.sourceIds.includes(source.id)));
+              const eligibleCount = sourceImagesForPolicy(source).length;
               const countLabel = source.expectedItemCount && source.expectedItemCount > source.images.length
-                ? `${source.images.length} / ${source.expectedItemCount}`
-                : `${source.images.length}`;
+                ? `${eligibleCount} usable · ${source.images.length} cached / ${source.expectedItemCount}`
+                : `${eligibleCount} usable`;
               return (
                 <div
-                  className={`${selectedLayer && selectedSourceId === source.id ? "source-row active" : "source-row"} ${selectedLayer && assigned ? "assigned" : ""}`}
+                  className={`${!selectedLayer && selectedSourceId === source.id ? "source-row active" : "source-row"} ${selectedLayer && assigned ? "assigned" : ""}`}
                   key={source.id}
                   draggable
                   onDragStart={(event) => {
@@ -2190,10 +2559,8 @@ function App() {
             })}
           </div>
 
-          <div className="source-footer">
-            <span>{selectedLayer && !selectedLayer.locked ? "One click assigns the selected frame" : "Select a frame to assign a pool"}</span>
-            <span>{sourceLibraryView === "linked" ? "Unlink keeps the global source" : "Delete warns about template usage"}</span>
-          </div>
+
+
 
           {sourceMenu && (
             <SourceContextMenu
@@ -2212,14 +2579,24 @@ function App() {
         <section className={`panel layers-panel ${leftPanelTab === "layers" ? "" : "hidden-panel"}`}>
           <div className="panel-title-row">
             <h2><Layers size={17} /> Layers</h2>
-            <button className="icon-button" title="Add placeholder" onClick={addPlaceholder}><Plus size={16} /></button>
+            <button className="icon-button tooltip-anchor" data-tooltip="Add placeholder" aria-label="Add placeholder" onClick={addPlaceholder}><Plus size={16} /></button>
           </div>
+          {project.layers.some((layer) => layer.hidden) && (
+            <details className="hidden-layers-menu">
+              <summary><EyeOff size={14} /> Hidden Layers <span>{project.layers.filter((layer) => layer.hidden).length}</span></summary>
+              <div>
+                {project.layers.filter((layer) => layer.hidden).map((layer) => (
+                  <button key={layer.id} onClick={() => toggleLayerVisibility(layer.id)}><Eye size={14} /> Restore {layer.name}</button>
+                ))}
+              </div>
+            </details>
+          )}
           <div className="layers-list" aria-label="Layers from front to back">
-            {[...project.layers].reverse().map((layer) => {
+            {[...project.layers].filter((layer) => !layer.hidden).reverse().map((layer) => {
               const selected = selectedLayerIds.includes(layer.id);
               return (
                 <div
-                  className={`layer-row ${selected ? "active" : ""} ${layer.hidden ? "hidden" : ""}`}
+                  className={`layer-row ${selected ? "active" : ""}`}
                   key={layer.id}
                   draggable={!layer.locked}
                   onDragStart={(event) => {
@@ -2228,10 +2605,7 @@ function App() {
                     event.dataTransfer.setData("application/x-pwc-layer-ids", JSON.stringify(ids));
                     event.dataTransfer.effectAllowed = "move";
                   }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                  }}
+                  onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }}
                   onDrop={(event) => {
                     event.preventDefault();
                     const raw = event.dataTransfer.getData("application/x-pwc-layer-ids");
@@ -2240,28 +2614,21 @@ function App() {
                     if (!ids.length || ids.includes(layer.id)) return;
                     const rect = event.currentTarget.getBoundingClientRect();
                     const beforeInPanel = event.clientY < rect.top + rect.height / 2;
-                    commitProject((current) => ({
-                      ...current,
-                      layers: moveLayerBlockToTarget(current.layers, ids, layer.id, beforeInPanel)
-                    }));
+                    commitProject((current) => ({ ...current, layers: moveLayerBlockToTarget(current.layers, ids, layer.id, beforeInPanel) }));
                     setSelectedLayerIds(ids);
                     setSelectedLayerId(ids.at(-1));
                   }}
                 >
-                  <span className="layer-drag-handle" title="Drag to reorder"><GripVertical size={15} /></span>
+                  <span className="layer-drag-handle tooltip-anchor" data-tooltip="Drag to reorder"><GripVertical size={15} /></span>
                   <button className="layer-main" onClick={(event) => selectLayerFromPanel(layer.id, event)}>
                     <span className="layer-type-icon"><ImagePlus size={14} /></span>
                     <span className="layer-name">{layer.name}</span>
-                  </button>
-                  <button className="layer-icon-button" title={layer.hidden ? "Show layer" : "Hide layer"} onClick={() => toggleLayerVisibility(layer.id)}>
-                    {layer.hidden ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                  <button className="layer-icon-button" title={layer.locked ? "Unlock layer" : "Lock layer"} onClick={() => toggleLayerLock(layer.id)}>
-                    {layer.locked ? <Lock size={15} /> : <Unlock size={15} />}
+                    {layer.locked && <Lock size={12} className="layer-lock-indicator" />}
                   </button>
                   <button
-                    className="layer-icon-button"
-                    title="Layer actions"
+                    className="layer-icon-button tooltip-anchor"
+                    data-tooltip="Layer actions"
+                    aria-label="Layer actions"
                     onClick={(event) => {
                       const rect = event.currentTarget.getBoundingClientRect();
                       if (!selected) selectOnlyLayer(layer.id);
@@ -2297,9 +2664,9 @@ function App() {
       <section className="workspace">
         <header className="toolbar minimal-toolbar">
           <div className="toolbar-cluster">
-            <button className="icon-button" title="Back to templates" onClick={() => void goHome()}><Home size={17} /></button>
-            <button className="icon-button" title="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
-            <button className="icon-button" title="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
+            <button className="icon-button tooltip-anchor" data-tooltip="Back to templates" aria-label="Back to templates" onClick={() => void goHome()}><Home size={17} /></button>
+            <button className="icon-button tooltip-anchor" data-tooltip="Undo" aria-label="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
+            <button className="icon-button tooltip-anchor" data-tooltip="Redo" aria-label="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
           </div>
           <div className="toolbar-title">
             <strong>{project.name}</strong>
@@ -2308,17 +2675,16 @@ function App() {
           <div className="toolbar-cluster">
             <button className="primary-action" onClick={() => void generateAndApply()}><Wallpaper size={17} /> Generate and Apply</button>
             <div className="overflow-wrap">
-              <button className="icon-button" title="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
+              <button className="icon-button tooltip-anchor" data-tooltip="More actions" aria-label="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
               {toolbarMenuOpen && (
                 <div className="popover-menu toolbar-overflow">
                   <button onClick={openProject}><FolderOpen size={16} /> Open</button>
                   <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
                   <button onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
-                  <button onClick={generate}><RefreshCcw size={16} /> Generate Preview</button>
-                  <button onClick={() => void applyCurrentDesignAsWallpaper()}><Wallpaper size={16} /> Set Current</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   <button onClick={() => exportWallpaper("jpeg")}><Download size={16} /> Export JPEG</button>
+                  <button onClick={() => openExportSet()}><Images size={16} /> Export Set</button>
                   <button onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={16} /> Toggle Left Panel</button>
                   <button onClick={() => setRightPanelOpen((value) => !value)}><SlidersHorizontal size={16} /> Toggle Inspector</button>
                 </div>
@@ -2364,12 +2730,12 @@ function App() {
             style={{
               width: scaled.width,
               height: scaled.height,
-              backgroundColor: project.canvas.backgroundTransparent ? "transparent" : project.canvas.backgroundColor,
-              backgroundImage: project.canvas.backgroundTransparent
+              backgroundColor: project.canvas.backgroundBaseMode === "transparent" ? "transparent" : project.canvas.backgroundColor,
+              backgroundImage: project.canvas.backgroundBaseMode === "transparent"
                 ? "linear-gradient(45deg, #f1f1ef 25%, transparent 25%), linear-gradient(-45deg, #f1f1ef 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #f1f1ef 75%), linear-gradient(-45deg, transparent 75%, #f1f1ef 75%)"
                 : undefined,
-              backgroundSize: project.canvas.backgroundTransparent ? `${16 * zoom}px ${16 * zoom}px` : undefined,
-              backgroundPosition: project.canvas.backgroundTransparent ? `0 0, 0 ${8 * zoom}px, ${8 * zoom}px ${-8 * zoom}px, ${-8 * zoom}px 0px` : undefined
+              backgroundSize: project.canvas.backgroundBaseMode === "transparent" ? `${16 * zoom}px ${16 * zoom}px` : undefined,
+              backgroundPosition: project.canvas.backgroundBaseMode === "transparent" ? `0 0, 0 ${8 * zoom}px, ${8 * zoom}px ${-8 * zoom}px, ${-8 * zoom}px 0px` : undefined
             }}
             onPointerMove={onCanvasPointerMove}
             onPointerUp={endDrag}
@@ -2378,7 +2744,7 @@ function App() {
               if (event.target === event.currentTarget) clearLayerSelection();
             }}
           >
-            <BackgroundImageView canvas={project.canvas} zoom={zoom} />
+            <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} zoom={zoom} />
             {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x * zoom }} />}
             {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y * zoom }} />}
             {project.layers.map((layer) => {
@@ -2386,55 +2752,89 @@ function App() {
               if (layer.hidden) return null;
               const selected = selectedLayerIds.includes(layer.id);
               const cropping = cropModeLayerId === layer.id;
+              const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
+              const insets = paperFrameInsets(paperFrame, layer.width, layer.height);
+              const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
+              const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
+              const paperActive = paperFrame.type !== "none";
+              const rough = paperFrameIsRough(paperFrame);
               return (
                 <div
-                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${layer.effects.polaroidFrame ? "polaroid" : ""} ${layer.effects.tapeDecoration ? "taped" : ""}`}
+                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""}`}
                   key={layer.id}
                   style={{
                     left: layer.x * zoom,
                     top: layer.y * zoom,
                     width: layer.width * zoom,
                     height: layer.height * zoom,
-                    transform: `rotate(${layer.rotation}deg)`,
+                    transform: `rotate(${layer.rotation + paperFrameRotation(paperFrame)}deg)`,
                     borderWidth: layer.borderWidth * zoom,
                     borderColor: hexWithOpacity(layer.borderColor, layer.borderOpacity),
-                    borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius * zoom,
-                    overflow: "hidden",
+                    borderRadius: paperActive ? Math.min(18, paperFrame.borderWidth * 0.4) * zoom : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius * zoom,
+                    overflow: rough ? "visible" : "hidden",
+                    clipPath: rough ? paperFrameClipPath(paperFrame) : undefined,
                     opacity: layer.opacity,
-                    backgroundColor: layer.effects.backgroundColor,
+                    backgroundColor: paperActive ? paperFrame.paperColor : layer.effects.backgroundColor,
                     mixBlendMode: layer.effects.blendMode,
                     boxShadow: [
                       layer.effects.glow ? "0 0 0 2px rgba(255,255,255,.8), 0 0 32px rgba(207,42,69,.38)" : "",
-                      layer.shadow ? "0 16px 34px rgba(15, 23, 42, 0.25)" : "",
-                      layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : ""
+                      Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) > 0 ? `0 ${Math.max(4, paperFrame.shadowStrength * 0.18)}px ${Math.max(12, paperFrame.shadowStrength * 0.75)}px rgba(15,23,42,${Math.min(0.42, Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) / 180)})` : ""
                     ].filter(Boolean).join(", ") || "none"
                   }}
-	                  onDoubleClick={(event) => {
+                  onDoubleClick={(event) => {
                     event.stopPropagation();
                     if (!layer.locked) setCropModeLayerId(layer.id);
-	                  }}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => void handlePlaceholderDrop(event, layer)}
-	                  onPointerDown={(event) => beginDrag(event, layer, cropping ? "crop" : "move")}
-	                >
-                  {image ? (
-                    <FramedImage
-                      src={image.url}
-                      frameWidth={layer.width}
-                      frameHeight={layer.height}
-                      mode={layer.cropMode}
-                      alignment={layer.alignment}
-                      crop={layer.crop}
-                      zoom={zoom}
-                      filter={cssFilter(layer.effects.filters)}
-                      onNatural={(natural) => {
-                        imageNaturalRef.current[layer.id] = natural;
-                      }}
-                    />
-                  ) : (
-                    <span><ImagePlus size={22} /> Assign source</span>
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => void handlePlaceholderDrop(event, layer)}
+                  onPointerDown={(event) => beginDrag(event, layer, cropping ? "crop" : "move")}
+                >
+                  {!cropping && (
+                    <div className={`on-canvas-layer-controls ${selected ? "visible" : ""}`} onPointerDown={(event) => event.stopPropagation()}>
+                      <button
+                        className="tooltip-anchor"
+                        data-tooltip={layer.locked ? "Unlock layer" : "Lock layer"}
+                        aria-label={layer.locked ? "Unlock layer" : "Lock layer"}
+                        onClick={(event) => { event.stopPropagation(); toggleLayerLock(layer.id); }}
+                      >{layer.locked ? <Unlock size={14} /> : <Lock size={14} />}</button>
+                      <button
+                        className="tooltip-anchor"
+                        data-tooltip="Hide layer"
+                        aria-label="Hide layer"
+                        onClick={(event) => { event.stopPropagation(); toggleLayerVisibility(layer.id); }}
+                      ><EyeOff size={14} /></button>
+                    </div>
                   )}
-                  <span className="texture-overlay" style={textureStyle(layer)} />
+                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type }, project.customTextures) }} />}
+                  <div
+                    className="placeholder-image-area"
+                    style={{
+                      left: insets.left * zoom,
+                      top: insets.top * zoom,
+                      width: innerWidth * zoom,
+                      height: innerHeight * zoom,
+                      borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)) * zoom,
+                      backgroundColor: layer.effects.backgroundColor,
+                      boxShadow: layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
+                    }}
+                  >
+                    {image ? (
+                      <FramedImage
+                        src={image.url}
+                        frameWidth={innerWidth}
+                        frameHeight={innerHeight}
+                        mode={layer.cropMode}
+                        alignment={layer.alignment}
+                        crop={layer.crop}
+                        zoom={zoom}
+                        filter={cssFilter(layer.effects.filters)}
+                        onNatural={(natural) => { imageNaturalRef.current[layer.id] = natural; }}
+                      />
+                    ) : (
+                      <span><ImagePlus size={22} /> Assign source</span>
+                    )}
+                    <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
+                  </div>
                   {cropping && <span className="crop-mode-badge">CROP MODE</span>}
                   {selectedLayerId === layer.id && !layer.locked && !cropping && <SelectionHandles layer={layer} onBeginDrag={beginDrag} />}
                 </div>
@@ -2447,49 +2847,43 @@ function App() {
 
       <aside className={`sidebar right ${rightPanelOpen ? "" : "collapsed"}`}>
         <div className="panel-tabs inspector-tabs" role="tablist" aria-label="Inspector">
-          {((selectedLayer
-            ? [
-                ["frame", "Frame"],
-                ["image", "Image"],
-                ["style", "Style"],
-                ["effects", "Effects"]
-              ]
-            : [
-                ["canvas", "Canvas"],
-                ["background", "Background"],
-                ["template", "Template"]
-              ]) as Array<[InspectorTab, string]>).map(([id, label]) => (
-            <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
-          ))}
+          {(selectedLayer
+            ? ([ ["image", "Image"], ["effects", "Effects"] ] as Array<[InspectorTab, string]>)
+            : ([ ["settings", "Settings"] ] as Array<[InspectorTab, string]>))
+            .map(([id, label]) => (
+              <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
+            ))}
         </div>
-        {!selectedLayer && (inspectorTab === "canvas" || inspectorTab === "background") && (
-          <CanvasDesignPanel
-            canvas={project.canvas}
-            activeTab={inspectorTab}
-            advancedOpen={backgroundAdvancedOpen}
-            onAdvancedOpenChange={setBackgroundAdvancedOpen}
-            onPatch={patchCanvas}
-            onChooseBackground={() => void chooseBackground()}
-            onClearBackground={clearBackgroundImage}
-            onResize={resizeCanvas}
-            onPreset={setPreset}
-          />
-        )}
-        {!selectedLayer && inspectorTab === "template" && (
-          <WallpaperPanel
-            project={project}
-            onPatch={patchWallpaper}
-            onGenerateApply={() => void generateAndApply()}
-            onApplyCurrent={() => void applyCurrentDesignAsWallpaper()}
-          onPrevious={() => void applyPreviousWallpaper()}
-          onNext={() => void applyNextWallpaper()}
-          onGenerate={() => generate()}
-          busy={wallpaperBusy}
-          diagnostics={lastWallpaperDiagnostics}
-          targets={wallpaperTargets}
-          templates={project.templates.templates}
-          runtimeStatus={wallpaperStatus}
-        />
+        {!selectedLayer && inspectorTab === "settings" && (
+          <>
+            <CanvasDesignPanel
+              canvas={project.canvas}
+              customTextures={project.customTextures}
+              advancedOpen={backgroundAdvancedOpen}
+              onAdvancedOpenChange={setBackgroundAdvancedOpen}
+              onPatch={patchCanvas}
+              onChooseBackground={() => void chooseBackground()}
+              onClearBackground={clearBackgroundImage}
+              onImportTexture={() => void importCustomTexture()}
+              onRemoveTexture={(textureId) => void removeCustomTextureAsset(textureId)}
+              onRevealTexture={(textureId) => void revealCustomTexture(textureId)}
+              onResize={resizeCanvas}
+              onPreset={setPreset}
+            />
+            <WallpaperPanel
+              project={project}
+              onPatch={patchWallpaper}
+              onGenerateApply={() => void generateAndApply()}
+              onPrevious={() => void applyPreviousWallpaper()}
+              onNext={() => void applyNextWallpaper()}
+              busy={wallpaperBusy}
+              diagnostics={lastWallpaperDiagnostics}
+              targets={wallpaperTargets}
+              templates={project.templates.templates}
+              runtimeStatus={wallpaperStatus}
+              countdownLabel={formatCountdown(project.wallpaper.nextScheduledAt, nowTick)}
+            />
+          </>
         )}
         <Properties
           layer={selectedLayer}
@@ -2507,10 +2901,6 @@ function App() {
             patchLayer(layer.id, selection.layer);
           }}
         />
-        {!selectedLayer && inspectorTab === "template" && <section className="panel preview-panel">
-          <h2>Preview</h2>
-          {previewUrl ? <img src={previewUrl} /> : <div className="empty-preview">No preview rendered</div>}
-        </section>}
       </aside>
 
       {pinterestDialog.open && (
@@ -2524,6 +2914,14 @@ function App() {
         />
       )}
       <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
+      <ExportSetDialog
+        state={exportSet}
+        onChange={setExportSet}
+        onChooseFolder={() => void chooseExportSetFolder()}
+        onRun={() => void runExportSet()}
+        onCancel={cancelExportSet}
+        onClose={() => setExportSet((current) => ({ ...current, open: false }))}
+      />
     </main>
   );
 }
@@ -2543,6 +2941,7 @@ function TemplateHome({
   onDelete,
   onToggleFavorite,
   onToggleRotation,
+  onExportSet,
   onOpenProject,
   onSaveProject
 }: {
@@ -2559,6 +2958,7 @@ function TemplateHome({
   onDelete: (templateId: string) => void;
   onToggleFavorite: (template: WallpaperTemplate) => void;
   onToggleRotation: (template: WallpaperTemplate) => void;
+  onExportSet: (template: WallpaperTemplate) => void;
   onOpenProject: () => void;
   onSaveProject: () => void;
 }) {
@@ -2641,6 +3041,7 @@ function TemplateHome({
               <button onClick={() => onOpen(template)}>Edit</button>
               <button onClick={() => onDuplicate(template)}>Duplicate</button>
               <button onClick={() => onRename(template)}>Rename</button>
+              <button onClick={() => onExportSet(template)}>Export Set</button>
               <button onClick={() => onToggleRotation(template)}>{template.enabledForRotation ? "Disable Rotation" : "Add to Rotation"}</button>
               <button className="danger" onClick={() => onDelete(template.id)}>Delete</button>
             </div>
@@ -2669,9 +3070,10 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
     >
       {template.project.layers.filter((layer) => !layer.hidden).map((layer) => {
         const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
-        const image = sourceIds
+        const previewSource = sourceIds
           .map((sourceId) => sources.find((source) => source.id === sourceId))
-          .find((source) => source?.images.length)?.images[0];
+          .find((source) => source && sourceImagesForPolicy(source).length);
+        const image = previewSource ? sourceImagesForPolicy(previewSource)[0] : undefined;
         return (
           <span
             key={layer.id}
@@ -2757,12 +3159,10 @@ function FramedImage({
   );
 }
 
-function BackgroundImageView({ canvas, zoom }: { canvas: CanvasSettings; zoom: number }) {
+function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"]; zoom: number }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
-  if (!canvas.backgroundImage) {
-    return <span className="canvas-background-texture" style={backgroundTextureStyle(canvas)} />;
-  }
-  const placement = natural.width
+  const showImage = canvas.backgroundBaseMode === "image" && Boolean(canvas.backgroundImage);
+  const placement = showImage && natural.width
     ? computeImagePlacement(
         natural.width,
         natural.height,
@@ -2773,10 +3173,10 @@ function BackgroundImageView({ canvas, zoom }: { canvas: CanvasSettings; zoom: n
         { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale }
       )
     : undefined;
-  const filter = `brightness(${canvas.backgroundBrightness}%) blur(${canvas.backgroundBlur * zoom}px)`;
+  const filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur * zoom}px)`;
   return (
     <>
-      {placement?.tile ? (
+      {showImage && canvas.backgroundImage && (placement?.tile ? (
         <div
           className="canvas-background-image tiled-image"
           style={{
@@ -2804,41 +3204,43 @@ function BackgroundImageView({ canvas, zoom }: { canvas: CanvasSettings; zoom: n
             opacity: canvas.backgroundOpacity
           } : { opacity: 0 }}
         />
-      )}
-      <span className="canvas-background-texture" style={backgroundTextureStyle(canvas)} />
+      ))}
+      {canvas.backgroundTemperature !== 0 && <span className="canvas-background-temperature" style={{ backgroundColor: canvas.backgroundTemperature > 0 ? "#ff9b55" : "#5e8dff", opacity: Math.min(0.35, Math.abs(canvas.backgroundTemperature) / 280), mixBlendMode: "soft-light" }} />}
+      <span className="canvas-background-texture" style={backgroundTextureStyle(canvas, customTextures)} />
     </>
   );
 }
 
-function backgroundTextureStyle(canvas: CanvasSettings): React.CSSProperties {
+function backgroundTextureStyle(canvas: CanvasSettings, customTextures: WallpaperProject["customTextures"]): React.CSSProperties {
   const paper = canvas.backgroundPaper;
   return {
-    opacity: Math.max(paper.opacity, paper.intensity / 100),
+    opacity: Math.max(paper.opacity, paper.intensity / 100) * 0.55,
     mixBlendMode: paper.blendMode,
-    backgroundImage: paperTextureBackground(paper),
-    backgroundSize: `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
-    transform: `rotate(${paper.rotation}deg)`
+    backgroundImage: paperTextureBackground(paper, customTextures),
+    backgroundSize: paper.type === "custom" ? `${Math.max(18, 140 * paper.scale)}px auto` : `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
+    transform: `rotate(${paper.rotation}deg) scale(1.05)`
   };
 }
 
-function paperTextureBackground(paper: PaperTextureEffect) {
+function paperTextureBackground(paper: PaperTextureEffect, customTextures: WallpaperProject["customTextures"] = []) {
   if (paper.type === "none") return undefined;
-  if (paper.type === "canvas") {
-    return "linear-gradient(90deg, rgba(36,31,25,.18) 1px, transparent 1px), linear-gradient(0deg, rgba(255,255,255,.34) 1px, transparent 1px)";
+  if (paper.type === "custom") {
+    const texture = customTextures.find((item) => item.id === paper.customTextureId);
+    return texture ? `url(${texture.url})` : undefined;
   }
-  if (paper.type === "newspaper") {
-    return "radial-gradient(circle, rgba(36,31,25,.24) 0 1px, transparent 1px)";
+  if (paper.type === "canvas") {
+    return "linear-gradient(90deg, rgba(36,31,25,.22) 1px, transparent 1px), linear-gradient(0deg, rgba(255,255,255,.38) 1px, transparent 1px)";
   }
   if (paper.type === "recycled") {
-    return "linear-gradient(12deg, rgba(86,74,56,.18) 0 2px, transparent 2px 12px), radial-gradient(circle, rgba(255,255,255,.35) 0 1px, transparent 1px)";
+    return "linear-gradient(12deg, rgba(86,74,56,.22) 0 2px, transparent 2px 12px), radial-gradient(circle, rgba(255,255,255,.42) 0 1px, transparent 1px)";
   }
   if (paper.type === "matte-photo") {
-    return "linear-gradient(90deg, rgba(255,255,255,.32), rgba(36,31,25,.08), rgba(255,255,255,.2))";
+    return "linear-gradient(90deg, rgba(255,255,255,.4), rgba(36,31,25,.1), rgba(255,255,255,.28))";
   }
-  if (paper.type === "fold-marks") {
-    return "linear-gradient(88deg, transparent 0 48%, rgba(255,255,255,.5) 49%, rgba(36,31,25,.12) 51%, transparent 52%), radial-gradient(circle, rgba(36,31,25,.18) 0 1px, transparent 1px)";
+  if (paper.type === "dust-scratches") {
+    return "radial-gradient(circle at 20% 35%, rgba(30,25,20,.28) 0 .7px, transparent 1px), radial-gradient(circle at 72% 66%, rgba(255,255,255,.65) 0 .8px, transparent 1.2px)";
   }
-  return "radial-gradient(circle, rgba(255,255,255,.8) 0 1px, transparent 1px), radial-gradient(circle, rgba(40,32,26,.28) 0 1px, transparent 1px)";
+  return "radial-gradient(circle, rgba(255,255,255,.82) 0 1px, transparent 1.2px), radial-gradient(circle at 70% 30%, rgba(40,32,26,.3) 0 .8px, transparent 1.1px)";
 }
 
 function cssFilter(filters: ImageFilters) {
@@ -2853,14 +3255,14 @@ function cssFilter(filters: ImageFilters) {
   ].join(" ");
 }
 
-function textureStyle(layer: PlaceholderLayer): React.CSSProperties {
+function textureStyle(layer: PlaceholderLayer, customTextures: WallpaperProject["customTextures"]): React.CSSProperties {
   const paper = layer.effects.paper;
   return {
-    opacity: Math.max(paper.opacity, layer.effects.filters.grain / 100),
+    opacity: Math.max(paper.opacity, layer.effects.filters.grain / 100) * 0.55,
     mixBlendMode: paper.blendMode,
-    backgroundImage: paperTextureBackground(paper),
-    backgroundSize: `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
-    transform: `rotate(${paper.rotation}deg)`
+    backgroundImage: paperTextureBackground(paper, customTextures),
+    backgroundSize: paper.type === "custom" ? `${Math.max(18, 140 * paper.scale)}px auto` : `${26 / Math.max(0.4, paper.scale)}px ${26 / Math.max(0.4, paper.scale)}px`,
+    transform: `rotate(${paper.rotation}deg) scale(1.1)`
   };
 }
 
@@ -3039,6 +3441,58 @@ function RenameDialog({
   );
 }
 
+function ExportSetDialog({
+  state,
+  onChange,
+  onChooseFolder,
+  onRun,
+  onCancel,
+  onClose
+}: {
+  state: ExportSetState;
+  onChange: React.Dispatch<React.SetStateAction<ExportSetState>>;
+  onChooseFolder: () => void;
+  onRun: () => void;
+  onCancel: () => void;
+  onClose: () => void;
+}) {
+  if (!state.open) return null;
+  const totalFinished = state.completed + state.skipped + state.failed;
+  const progress = Math.min(100, (totalFinished / Math.max(1, state.count)) * 100);
+  return (
+    <div className="modal-backdrop" onMouseDown={() => !state.busy && onClose()}>
+      <section className="modal export-set-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-title-row">
+          <div><h2>Export Set</h2><p>Create distinct wallpaper variations without changing the active desktop or live source state.</p></div>
+          <button className="button ghost" disabled={state.busy} onClick={onClose}>Close</button>
+        </div>
+        <div className="export-set-grid">
+          <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /></label>
+          <label>Format<select value={state.format} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, format: event.target.value as "png" | "jpeg" }))}><option value="png">PNG</option><option value="jpeg">JPEG</option></select></label>
+          {state.format === "jpeg" && <label>JPEG quality<input type="range" min="0.4" max="1" step="0.02" value={state.quality} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, quality: Number(event.target.value) }))} /><span>{Math.round(state.quality * 100)}%</span></label>}
+        </div>
+        <div className="destination-row"><span title={state.destinationPath}>{state.destinationPath ?? "Choose a destination folder"}</span><button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose Folder</button></div>
+        <div className="export-options">
+          <label><input type="checkbox" checked={state.includeTemplateName} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTemplateName: event.target.checked }))} /> Include template name</label>
+          <label><input type="checkbox" checked={state.includeTimestamp} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTimestamp: event.target.checked }))} /> Include timestamp</label>
+          <label><input type="checkbox" checked={state.avoidRepeats} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, avoidRepeats: event.target.checked }))} /> Avoid repeated combinations</label>
+          <label><input type="checkbox" checked={state.advanceLiveState} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, advanceLiveState: event.target.checked }))} /> Advance live source state</label>
+          <label><input type="checkbox" checked={state.overwrite} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, overwrite: event.target.checked }))} /> Replace existing files</label>
+        </div>
+        {(state.busy || totalFinished > 0) && <>
+          <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
+          <div className="export-summary"><span>{state.completed} exported</span><span>{state.skipped} skipped</span><span>{state.failed} failed</span></div>
+        </>}
+        {state.error && <p className="dialog-error">{state.error}</p>}
+        <div className="dialog-actions">
+          {state.busy ? <button className="button destructive" onClick={onCancel}>Cancel</button> : <button className="button primary" onClick={onRun}>Export Variations</button>}
+          {!state.busy && <button className="button ghost" onClick={onClose}>Done</button>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function PinterestDialog({
   state,
   onChange,
@@ -3100,210 +3554,159 @@ function WallpaperPanel({
   project,
   onPatch,
   onGenerateApply,
-  onApplyCurrent,
   onPrevious,
   onNext,
-  onGenerate,
   busy,
   diagnostics,
   targets,
   templates,
-  runtimeStatus
+  runtimeStatus,
+  countdownLabel
 }: {
   project: WallpaperProject;
   onPatch: (patch: Partial<WallpaperProject["wallpaper"]>) => void;
   onGenerateApply: () => void;
-  onApplyCurrent: () => void;
   onPrevious: () => void;
   onNext: () => void;
-  onGenerate: () => void;
   busy: boolean;
   diagnostics?: WallpaperApplyResult["diagnostics"];
   targets: WallpaperTarget[];
   templates: WallpaperTemplate[];
   runtimeStatus: WallpaperRuntimeStatus;
+  countdownLabel: string;
 }) {
-  async function setLaunchAtLogin(enabled: boolean) {
-    await window.wallpaperApi.setLaunchAtLogin(enabled);
-    onPatch({ launchAtLogin: enabled });
-  }
-
+  const rotationActive = project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval !== "manual";
   const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
 
+  function toggleRotation() {
+    if (rotationActive) {
+      onPatch({ paused: true });
+      return;
+    }
+    onPatch({
+      enabled: true,
+      paused: false,
+      interval: project.wallpaper.interval === "manual" ? "15m" : project.wallpaper.interval
+    });
+  }
+
   return (
-    <section className="panel wallpaper-panel">
-      <h2><Wallpaper size={17} /> Wallpaper</h2>
-      <div className="toggle-row">
-        <button className={project.wallpaper.enabled ? "toggle active" : "toggle"} onClick={() => onPatch({ enabled: !project.wallpaper.enabled })}>
-          {project.wallpaper.enabled ? <Repeat size={16} /> : <Play size={16} />} Rotation
-        </button>
-        <button className={project.wallpaper.paused ? "toggle active" : "toggle"} disabled={!project.wallpaper.enabled} onClick={() => onPatch({ paused: !project.wallpaper.paused })}>
-          {project.wallpaper.paused ? <Play size={16} /> : <Pause size={16} />} {project.wallpaper.paused ? "Resume" : "Pause"}
-        </button>
-      </div>
-      <label>
-        Wallpaper scope
-        <select value={project.wallpaper.scope} onChange={(event) => onPatch({ scope: event.target.value as WallpaperProject["wallpaper"]["scope"] })}>
-          <option value="same-all-desktops">Same wallpaper on all desktops</option>
-          <option value="different-per-desktop">Different wallpaper on each desktop</option>
-          <option value="current-desktop">Current desktop only</option>
-        </select>
-      </label>
-      {project.wallpaper.scope === "different-per-desktop" && (
-        <details className="target-config" open>
-          <summary>Desktop targets <ChevronDown size={15} /></summary>
-          <label>
-            Template assignment
-            <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
-              <option value="single-template">All desktops use one template</option>
-              <option value="different-template">Each desktop uses a different enabled template</option>
-              <option value="playlist">Template rotation playlist per desktop</option>
-            </select>
-          </label>
-          {project.wallpaper.targetTemplateMode === "single-template" && (
+    <section className="panel wallpaper-panel settings-section">
+      <details open>
+        <summary>Wallpaper Targets <ChevronDown size={15} /></summary>
+        <label>
+          Apply to
+          <select value={project.wallpaper.scope} onChange={(event) => onPatch({ scope: event.target.value as WallpaperProject["wallpaper"]["scope"] })}>
+            <option value="same-all-desktops">All monitors and desktops</option>
+            <option value="different-per-desktop">Different on each target</option>
+            <option value="current-desktop">Current monitor only</option>
+          </select>
+        </label>
+        {project.wallpaper.scope === "different-per-desktop" && (
+          <details className="target-config">
+            <summary>Target templates <ChevronDown size={14} /></summary>
             <label>
-              Shared template
-              <select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
-                <option value="">Active template</option>
-                {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              Assignment
+              <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
+                <option value="single-template">Same template</option>
+                <option value="different-template">Different template</option>
+                <option value="playlist">Playlist per target</option>
               </select>
             </label>
-          )}
-          <div className="target-list">
-            {(targets.length ? targets : [{ id: "desktop-1", label: "Current desktop", index: 1, current: true, reliable: false, limitation: "Targets have not been detected yet." }]).map((target) => (
-              <div className="target-row" key={target.id}>
-                <span>
-                  <strong>{target.label}</strong>
-                  <small>{target.reliable ? "Detected" : target.limitation ?? "Limited macOS target support"}</small>
-                </span>
-                {project.wallpaper.targetTemplateMode === "different-template" && (
-                  <select value={project.wallpaper.targetTemplateIds[target.id] ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, [target.id]: event.target.value || undefined } })}>
-                    <option value="">Auto enabled template</option>
-                    {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                  </select>
-                )}
-                {project.wallpaper.targetTemplateMode === "playlist" && <small className="target-playlist-note">Uses this template rotation playlist</small>}
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
-      <button className="pill-button primary" disabled={busy} onClick={onGenerateApply}><Wallpaper size={17} /> {busy ? "Applying…" : "Generate and Apply"}</button>
-      <button className="pill-button" disabled={busy} onClick={onApplyCurrent}>Apply Current Preview</button>
-      <button className="pill-button" disabled={busy} onClick={onGenerate}><Shuffle size={16} /> Generate New Combination</button>
-      <div className="toggle-row">
-        <button className="toggle" disabled={busy} onClick={onPrevious}>Previous Wallpaper</button>
-        <button className="toggle" disabled={busy} onClick={onNext}>Next Wallpaper</button>
-      </div>
-      <label>
-        Update interval
-        <select value={project.wallpaper.interval} onChange={(event) => onPatch({ interval: event.target.value as WallpaperProject["wallpaper"]["interval"] })}>
-          <option value="manual">Manual only</option>
-          <option value="1m">Every 1 minute</option>
-          <option value="5m">Every 5 minutes</option>
-          <option value="15m">Every 15 minutes</option>
-          <option value="30m">Every 30 minutes</option>
-          <option value="hourly">Hourly</option>
-          <option value="few-hours">Every few hours</option>
-          <option value="daily">Daily</option>
-          <option value="login">At login</option>
-          <option value="custom">Custom</option>
-        </select>
-      </label>
-      {project.wallpaper.interval === "custom" && (
-        <label>Custom minutes<input type="number" min="1" value={project.wallpaper.customIntervalMinutes} onChange={(event) => onPatch({ customIntervalMinutes: Number(event.target.value) })} /></label>
-      )}
-      <div className="toggle-row">
-        <button className={project.wallpaper.launchAtLogin ? "toggle active" : "toggle"} onClick={() => void setLaunchAtLogin(!project.wallpaper.launchAtLogin)}>Launch at Login</button>
-        <button className={project.wallpaper.startMinimized ? "toggle active" : "toggle"} onClick={() => onPatch({ startMinimized: !project.wallpaper.startMinimized })}>Start Minimized</button>
-      </div>
-      <label>
-        Monitor mode
-        <select value={project.wallpaper.monitorMode} onChange={(event) => onPatch({ monitorMode: event.target.value as WallpaperProject["wallpaper"]["monitorMode"] })}>
-          <option value="all">All monitors</option>
-          <option value="primary">Primary monitor</option>
-          <option value="span">Span across monitors</option>
-        </select>
-      </label>
-      <label>
-        Desktop fit
-        <select value={project.wallpaper.displayMode} onChange={(event) => onPatch({ displayMode: event.target.value as WallpaperProject["wallpaper"]["displayMode"] })}>
-          <option value="fill">Fill</option>
-          <option value="fit">Fit</option>
-          <option value="stretch">Stretch</option>
-          <option value="tile">Tile</option>
-          <option value="center">Center</option>
-          <option value="span">Span</option>
-        </select>
-      </label>
-      <div className="wallpaper-status">
-        <span>Template: {currentTemplate?.name ?? project.name}</span>
-        <span>Status: {runtimeStatus}</span>
-        <span>Last applied: {project.wallpaper.lastUpdatedAt ? new Date(project.wallpaper.lastUpdatedAt).toLocaleString() : "Never"}</span>
-        <span>Next update: {project.wallpaper.nextScheduledAt ? new Date(project.wallpaper.nextScheduledAt).toLocaleString() : "Not scheduled"}</span>
-        {project.wallpaper.lastError && (
-          <details>
-            <summary>Last error</summary>
-            <p>{project.wallpaper.lastError}</p>
-          </details>
-        )}
-        <details className="diagnostics">
-          <summary>Wallpaper diagnostics <ChevronDown size={15} /></summary>
-          {diagnostics ? (
-            <div className="diagnostic-grid">
-              <span>Rendered path</span><code>{diagnostics.renderedPath ?? "Unavailable"}</code>
-              <span>File size</span><code>{diagnostics.fileSize ?? 0} bytes</code>
-              <span>Valid image</span><code>{diagnostics.validImage ? "Yes" : "Not confirmed"}</code>
-              <span>Permission status</span><code>{diagnostics.permissionStatus ?? "Unknown"}</code>
-              <span>Verification</span><code>{diagnostics.changed ? `Changed via ${diagnostics.verificationMethod ?? "native check"}` : "Not confirmed"}</code>
-              <span>Last apply error</span><code>{diagnostics.lastError ?? project.wallpaper.lastError ?? "None"}</code>
-              {diagnostics.nativeResults.map((result, index) => (
-                <code className="diagnostic-command" key={`${result.method}-${index}`}>
-                  {result.method}
-                  {"\n"}exit={result.exitCode ?? "n/a"} timeout={String(result.timedOut)}
-                  {"\n"}stdout: {result.stdout.trim() || "(empty)"}
-                  {"\n"}stderr: {result.stderr.trim() || "(empty)"}
-                  {result.error ? `\nerror: ${result.error}` : ""}
-                </code>
-              ))}
-              {diagnostics.targetResults?.map((target) => (
-                <code className="diagnostic-command" key={target.targetId}>
-                  target: {target.targetLabel} ({target.targetId})
-                  {"\n"}ok: {String(target.ok)}
-                  {"\n"}file: {target.filePath ?? "none"}
-                  {"\n"}size: {target.fileSize ?? 0}
-                  {"\n"}verified: {target.diagnostics.verifiedPaths.join(", ") || "none"}
-                  {target.error ? `\nerror: ${target.error}` : ""}
-                </code>
+            {project.wallpaper.targetTemplateMode === "single-template" && (
+              <label>Template<select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
+                <option value="">Active template</option>
+                {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </select></label>
+            )}
+            <div className="target-list">
+              {targets.map((target) => (
+                <div className="target-row" key={target.id}>
+                  <span><strong>{target.label}</strong><small>{target.reliable ? "Detected" : target.limitation ?? "Best effort"}</small></span>
+                  {project.wallpaper.targetTemplateMode === "different-template" && (
+                    <select value={project.wallpaper.targetTemplateIds[target.id] ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, [target.id]: event.target.value || undefined } })}>
+                      <option value="">Automatic</option>
+                      {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    </select>
+                  )}
+                </div>
               ))}
             </div>
-          ) : (
-            <p>No wallpaper apply attempt has been recorded in this session.</p>
-          )}
-        </details>
+          </details>
+        )}
+      </details>
+
+      <details open>
+        <summary>Schedule <ChevronDown size={15} /></summary>
+        <div className="rotation-control-row">
+          <button className={`button ${rotationActive ? "secondary" : "primary"}`} onClick={toggleRotation}>
+            {rotationActive ? <Pause size={15} /> : <Play size={15} />} {rotationActive ? "Pause" : "Resume"}
+          </button>
+          <span className={`runtime-chip ${runtimeStatus}`}>{runtimeStatus}</span>
+        </div>
+        <label>Interval<select value={project.wallpaper.interval} onChange={(event) => {
+          const interval = event.target.value as WallpaperProject["wallpaper"]["interval"];
+          onPatch(interval === "manual" ? { interval, enabled: false, paused: false } : { interval, enabled: true, paused: false });
+        }}>
+          <option value="manual">Manual</option><option value="5s">5 seconds</option><option value="10s">10 seconds</option><option value="30s">30 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="hourly">Hourly</option><option value="few-hours">Every few hours</option><option value="daily">Daily</option><option value="login">At login</option><option value="custom">Custom</option>
+        </select></label>
+        {project.wallpaper.interval === "custom" && (
+          <div className="custom-interval-row">
+            <label>Every<input type="number" min="1" value={project.wallpaper.customIntervalValue} onChange={(event) => onPatch({ customIntervalValue: Number(event.target.value) })} /></label>
+            <label>Unit<select value={project.wallpaper.customIntervalUnit} onChange={(event) => onPatch({ customIntervalUnit: event.target.value as WallpaperProject["wallpaper"]["customIntervalUnit"] })}><option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option></select></label>
+          </div>
+        )}
+        {rotationActive && <p className="settings-hint">Next update {countdownLabel}</p>}
+      </details>
+
+      <button className="button primary generate-apply-button" disabled={busy} onClick={onGenerateApply}><Wallpaper size={16} /> {busy ? "Applying…" : "Generate and Apply"}</button>
+      <div className="compact-action-row">
+        <button className="button ghost" disabled={busy} onClick={onPrevious}>Previous</button>
+        <button className="button ghost" disabled={busy} onClick={onNext}>Next</button>
       </div>
+
+      <details>
+        <summary>Advanced <ChevronDown size={15} /></summary>
+        <label className="toggle-setting"><input type="checkbox" checked={project.wallpaper.transitionEnabled} onChange={(event) => onPatch({ transitionEnabled: event.target.checked })} /> Fade transition</label>
+        {project.wallpaper.transitionEnabled && <FilterSlider label="Fade duration" value={project.wallpaper.transitionDurationMs} min={200} max={1600} step={50} onChange={(value) => onPatch({ transitionDurationMs: value })} />}
+        <p className="settings-hint">Active monitors fade smoothly. Inactive Mission Control Spaces update without animation.</p>
+      </details>
+
+      <div className="wallpaper-status-card">
+        <div><span>Template</span><strong>{currentTemplate?.name ?? project.name}</strong></div>
+        <div><span>Status</span><strong>{runtimeStatus}</strong></div>
+        {project.wallpaper.lastUpdatedAt && <div><span>Last applied</span><strong>{new Date(project.wallpaper.lastUpdatedAt).toLocaleTimeString()}</strong></div>}
+        {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
+      </div>
+      {diagnostics && <details className="diagnostics"><summary>Diagnostics <ChevronDown size={14} /></summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
     </section>
   );
 }
 
 function CanvasDesignPanel({
   canvas,
-  activeTab,
+  customTextures,
   advancedOpen,
   onAdvancedOpenChange,
   onPatch,
   onChooseBackground,
   onClearBackground,
+  onImportTexture,
+  onRemoveTexture,
+  onRevealTexture,
   onResize,
   onPreset
 }: {
   canvas: CanvasSettings;
-  activeTab: InspectorTab;
+  customTextures: WallpaperProject["customTextures"];
   advancedOpen: boolean;
   onAdvancedOpenChange: (open: boolean) => void;
   onPatch: (patch: Partial<CanvasSettings>) => void;
   onChooseBackground: () => void;
   onClearBackground: () => void;
+  onImportTexture: () => void;
+  onRemoveTexture: (textureId: string) => void;
+  onRevealTexture: (textureId: string) => void;
   onResize: (width: number, height: number, mode: CanvasResizeMode) => void;
   onPreset: (id: string, mode: CanvasResizeMode) => void;
 }) {
@@ -3313,85 +3716,70 @@ function CanvasDesignPanel({
   const [lockAspect, setLockAspect] = useState(true);
   const aspect = canvas.width / Math.max(1, canvas.height);
 
-  useEffect(() => {
-    setDraftWidth(canvas.width);
-    setDraftHeight(canvas.height);
-  }, [canvas.width, canvas.height]);
+  useEffect(() => { setDraftWidth(canvas.width); setDraftHeight(canvas.height); }, [canvas.width, canvas.height]);
+  function changeWidth(value: number) { const width = Math.max(64, value); setDraftWidth(width); if (lockAspect) setDraftHeight(Math.max(64, Math.round(width / aspect))); }
+  function changeHeight(value: number) { const height = Math.max(64, value); setDraftHeight(height); if (lockAspect) setDraftWidth(Math.max(64, Math.round(height * aspect))); }
+  function patchPaper(patch: Partial<PaperTextureEffect>) { onPatch({ backgroundPaper: { ...canvas.backgroundPaper, ...patch } }); }
 
-  function changeWidth(value: number) {
-    const width = Math.max(64, value);
-    setDraftWidth(width);
-    if (lockAspect) setDraftHeight(Math.max(64, Math.round(width / aspect)));
-  }
-
-  function changeHeight(value: number) {
-    const height = Math.max(64, value);
-    setDraftHeight(height);
-    if (lockAspect) setDraftWidth(Math.max(64, Math.round(height * aspect)));
-  }
-
-  function patchPaper(patch: Partial<PaperTextureEffect>) {
-    onPatch({ backgroundPaper: { ...canvas.backgroundPaper, ...patch } });
-  }
+  const surfaces: Array<{ type: PaperTextureEffect["type"]; label: string }> = [
+    { type: "none", label: "None" }, { type: "fine-grain", label: "Paper" }, { type: "matte-photo", label: "Matte" },
+    { type: "canvas", label: "Canvas" }, { type: "recycled", label: "Recycled" }, { type: "dust-scratches", label: "Grain" }
+  ];
 
   return (
-    <section className="panel canvas-design-panel">
-      <h2>{activeTab === "canvas" ? "Canvas" : "Background"}</h2>
-      {activeTab === "canvas" && <details open>
-        <summary>Canvas Dimensions <ChevronDown size={15} /></summary>
+    <section className="panel canvas-design-panel settings-section">
+      <h2>Settings</h2>
+      <details>
+        <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
-        <div className="two-col">
-          <label>Width<input type="number" min="64" value={draftWidth} onChange={(event) => changeWidth(Number(event.target.value))} /></label>
-          <label>Height<input type="number" min="64" value={draftHeight} onChange={(event) => changeHeight(Number(event.target.value))} /></label>
-        </div>
+        <div className="two-col"><label>Width<input type="number" min="64" value={draftWidth} onChange={(event) => changeWidth(Number(event.target.value))} /></label><label>Height<input type="number" min="64" value={draftHeight} onChange={(event) => changeHeight(Number(event.target.value))} /></label></div>
         <label>Resize content<select value={resizeMode} onChange={(event) => setResizeMode(event.target.value as CanvasResizeMode)}><option value="keep">Keep positions</option><option value="scale">Scale proportionally</option><option value="center">Center content</option></select></label>
-        <div className="compact-action-row">
-          <button className={lockAspect ? "toggle active" : "toggle"} onClick={() => setLockAspect((value) => !value)}>Lock ratio</button>
-          <button className="toggle" onClick={() => { setDraftWidth(canvas.height); setDraftHeight(canvas.width); }}>Swap</button>
-          <button className="toggle" onClick={() => {
-            const ratio = window.devicePixelRatio || 1;
-            setDraftWidth(Math.round(window.screen.width * ratio));
-            setDraftHeight(Math.round(window.screen.height * ratio));
-          }}>Current monitor</button>
+        <div className="compact-action-row three-up">
+          <button className={lockAspect ? "button selected" : "button secondary"} onClick={() => setLockAspect((value) => !value)}>Lock Ratio</button>
+          <button className="button secondary" onClick={() => { setDraftWidth(canvas.height); setDraftHeight(canvas.width); }}>Swap</button>
+          <button className="button secondary" onClick={() => { const ratio = window.devicePixelRatio || 1; setDraftWidth(Math.round(window.screen.width * ratio)); setDraftHeight(Math.round(window.screen.height * ratio)); }}>Use Current</button>
         </div>
-        <button className="pill-button primary" onClick={() => onResize(draftWidth, draftHeight, resizeMode)}>Apply dimensions</button>
-      </details>}
+        <button className="button primary full-width" onClick={() => onResize(draftWidth, draftHeight, resizeMode)}>Apply Size</button>
+      </details>
 
-      {activeTab === "background" && <details open>
-        <summary>Basic Background <ChevronDown size={15} /></summary>
-        <div className="two-col">
-          <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>
-          <label>Mode<select value={canvas.backgroundMode} onChange={(event) => onPatch({ backgroundMode: event.target.value as CanvasSettings["backgroundMode"] })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original size</option><option value="center">Center</option><option value="tile">Tile</option></select></label>
+      <details open>
+        <summary>Background <ChevronDown size={15} /></summary>
+        <div className="segmented-control three-options" role="group" aria-label="Background base">
+          <button className={canvas.backgroundBaseMode === "color" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "color", backgroundTransparent: false })}>Color</button>
+          <button className={canvas.backgroundBaseMode === "transparent" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "transparent", backgroundTransparent: true })}>Clear</button>
+          <button className={canvas.backgroundBaseMode === "image" ? "active" : ""} onClick={() => canvas.backgroundImage ? onPatch({ backgroundBaseMode: "image", backgroundTransparent: false }) : onChooseBackground()}>Image</button>
         </div>
-        <div className="compact-action-row">
-          <button className="pill-button" onClick={onChooseBackground}><ImagePlus size={15} /> Choose image</button>
-          <button className="pill-button" disabled={!canvas.backgroundImage} onClick={onClearBackground}>Reset to color</button>
-          <button className={canvas.backgroundTransparent ? "toggle active" : "toggle"} onClick={() => onPatch({ backgroundTransparent: !canvas.backgroundTransparent })}>Transparent</button>
-        </div>
-        <button className={canvas.backgroundPaper.type !== "none" ? "toggle active" : "toggle"} onClick={() => patchPaper(canvas.backgroundPaper.type === "none" ? { type: "fine-grain", intensity: Math.max(20, canvas.backgroundPaper.intensity), opacity: Math.max(0.25, canvas.backgroundPaper.opacity) } : { type: "none", intensity: 0, opacity: 0 })}>
-          Texture {canvas.backgroundPaper.type === "none" ? "Off" : "On"}
-        </button>
-      </details>}
+        {canvas.backgroundBaseMode === "color" && <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>}
+        {canvas.backgroundBaseMode === "image" && <>
+          <div className="compact-action-row"><button className="button secondary" onClick={onChooseBackground}><ImagePlus size={15} /> {canvas.backgroundImage ? "Replace" : "Choose"}</button><button className="button ghost" disabled={!canvas.backgroundImage} onClick={onClearBackground}>Remove</button></div>
+          <label>Fit<select value={canvas.backgroundMode} onChange={(event) => onPatch({ backgroundMode: event.target.value as CanvasSettings["backgroundMode"] })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="center">Center</option><option value="tile">Tile</option></select></label>
+          <label>Alignment<select value={canvas.backgroundAlignment} onChange={(event) => onPatch({ backgroundAlignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <FilterSlider label="Opacity" value={canvas.backgroundOpacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ backgroundOpacity: value })} />
+        </>}
+      </details>
 
-      {activeTab === "background" && <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
-        <summary>Advanced Background <ChevronDown size={15} /></summary>
-        <label>Alignment<select value={canvas.backgroundAlignment} onChange={(event) => onPatch({ backgroundAlignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <div className="two-col">
-          <label>Offset X<input type="number" value={canvas.backgroundOffsetX} onChange={(event) => onPatch({ backgroundOffsetX: Number(event.target.value) })} /></label>
-          <label>Offset Y<input type="number" value={canvas.backgroundOffsetY} onChange={(event) => onPatch({ backgroundOffsetY: Number(event.target.value) })} /></label>
+      <details>
+        <summary>Surface <ChevronDown size={15} /></summary>
+        <div className="texture-picker-grid compact-texture-grid">
+          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(30, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: paperTextureBackground({ ...canvas.backgroundPaper, type: surface.type }, customTextures) }} /><span>{surface.label}</span></button>)}
+          {customTextures.map((texture) => <div className={canvas.backgroundPaper.type === "custom" && canvas.backgroundPaper.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}><button onClick={() => patchPaper({ type: "custom", customTextureId: texture.id, intensity: Math.max(30, canvas.backgroundPaper.intensity), opacity: Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: `url(${texture.url})` }} /><span>{texture.name}</span></button><div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div></div>)}
         </div>
-        <FilterSlider label="Scale" value={canvas.backgroundScale} min={0.1} max={4} step={0.05} onChange={(value) => onPatch({ backgroundScale: value })} />
-        <FilterSlider label="Opacity" value={canvas.backgroundOpacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ backgroundOpacity: value })} />
+        <button className="button ghost compact" onClick={onImportTexture}>Import Custom Surface</button>
+        {canvas.backgroundPaper.type !== "none" && <><FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value, opacity: Math.max(.05, value / 100) })} /><FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={.4} max={3} step={.1} onChange={(value) => patchPaper({ scale: value })} /></>}
+      </details>
+
+      <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
+        <summary>Advanced <ChevronDown size={15} /></summary>
+        <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
         <FilterSlider label="Brightness" value={canvas.backgroundBrightness} min={0} max={200} onChange={(value) => onPatch({ backgroundBrightness: value })} />
-        <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={0.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
-        <label>Texture<select value={canvas.backgroundPaper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="dust-scratches">Grain</option><option value="fold-marks">Folded paper</option></select></label>
-        <FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
-        <FilterSlider label="Opacity" value={canvas.backgroundPaper.opacity} min={0} max={1} step={0.05} onChange={(value) => patchPaper({ opacity: value })} />
-        <FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={0.4} max={3} step={0.1} onChange={(value) => patchPaper({ scale: value })} />
-        <FilterSlider label="Rotation" value={canvas.backgroundPaper.rotation} min={-180} max={180} onChange={(value) => patchPaper({ rotation: value })} />
-        <label>Blend mode<select value={canvas.backgroundPaper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
-        <label>Random seed<input type="number" value={canvas.backgroundPaper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
-      </details>}
+        <FilterSlider label="Contrast" value={canvas.backgroundContrast} min={0} max={200} onChange={(value) => onPatch({ backgroundContrast: value })} />
+        <FilterSlider label="Temperature" value={canvas.backgroundTemperature} min={-100} max={100} onChange={(value) => onPatch({ backgroundTemperature: value })} />
+        <div className="two-col"><label>Offset X<input type="number" value={canvas.backgroundOffsetX} onChange={(event) => onPatch({ backgroundOffsetX: Number(event.target.value) })} /></label><label>Offset Y<input type="number" value={canvas.backgroundOffsetY} onChange={(event) => onPatch({ backgroundOffsetY: Number(event.target.value) })} /></label></div>
+        <FilterSlider label="Image scale" value={canvas.backgroundScale} min={.1} max={4} step={.05} onChange={(value) => onPatch({ backgroundScale: value })} />
+        <FilterSlider label="Surface opacity" value={canvas.backgroundPaper.opacity} min={0} max={1} step={.05} onChange={(value) => patchPaper({ opacity: value })} />
+        <label>Surface blend<select value={canvas.backgroundPaper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
+        <label>Seed<input type="number" value={canvas.backgroundPaper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
+      </details>
     </section>
   );
 }
@@ -3424,149 +3812,98 @@ function Properties({
   onResetFrame: (layer: PlaceholderLayer) => void;
   onMatchAspect: (layer: PlaceholderLayer) => void;
 }) {
-  const sourceId = layer?.sourceState.sourceIds[0] ?? layer?.sourceId;
-  const source = sources.find((item) => item.id === sourceId);
-  if (!layer) {
-    return null;
-  }
+  if (!layer) return null;
   const activeLayer = layer;
+  const sourceId = layer.sourceState.sourceIds[0] ?? layer.sourceId;
+  const source = sources.find((item) => item.id === sourceId);
+
   if (layer.locked) {
-    return (
-      <section className="panel muted-panel">
-        <h2>{layer.name}</h2>
-        <p>This layer is locked. Use the Layers tab to unlock it before editing frame, crop, source, style, or effects.</p>
-      </section>
-    );
+    return <section className="panel muted-panel"><h2>{layer.name}</h2><p>This layer is locked. Use the lock control on the canvas to edit it.</p></section>;
   }
 
   function numeric<K extends keyof PlaceholderLayer>(key: K) {
     return (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PlaceholderLayer>);
   }
-  function patchFilters(patch: Partial<ImageFilters>) {
-    onPatch({ effects: { ...activeLayer.effects, filters: { ...activeLayer.effects.filters, ...patch } } });
-  }
-  function patchPaper(patch: Partial<PaperTextureEffect>) {
-    onPatch({ effects: { ...activeLayer.effects, paper: { ...activeLayer.effects.paper, ...patch } } });
-  }
-  function resetCrop() {
-    onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" });
-  }
+  function patchFilters(patch: Partial<ImageFilters>) { onPatch({ effects: { ...activeLayer.effects, filters: { ...activeLayer.effects.filters, ...patch } } }); }
+  function patchPaperFrame(patch: Partial<PlaceholderLayer["effects"]["paperFrame"]>) { onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, ...patch } } }); }
+  function resetCrop() { onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" }); }
+  const frameType = layer.effects.paperFrame.type;
 
   return (
     <section className="panel properties">
-      <div className="panel-title-row">
-        <h2>Layer Properties</h2>
-        <button className="icon-button danger" onClick={onDelete} title="Delete layer"><Trash2 size={17} /></button>
-      </div>
+      <div className="panel-title-row"><h2>{layer.name}</h2><button className="icon-button danger tooltip-anchor" data-tooltip="Delete layer" aria-label="Delete layer" onClick={onDelete}><Trash2 size={16} /></button></div>
 
-      {activeTab === "frame" && <details open>
-        <summary>Position + Frame <ChevronDown size={15} /></summary>
-        <label>Name<input value={layer.name} onChange={(event) => onPatch({ name: event.target.value })} /></label>
-        <div className="two-col">
-          <label>X<input type="number" value={layer.x} onChange={numeric("x")} /></label>
-          <label>Y<input type="number" value={layer.y} onChange={numeric("y")} /></label>
-          <label>Width<input type="number" min="40" value={layer.width} onChange={numeric("width")} /></label>
-          <label>Height<input type="number" min="40" value={layer.height} onChange={numeric("height")} /></label>
-        </div>
-        <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
-        <div className="compact-action-row">
-          <button className={layer.keepAspectRatio ? "toggle active" : "toggle"} onClick={() => onPatch({ keepAspectRatio: !layer.keepAspectRatio })}>Lock frame ratio</button>
-          <button className="toggle" onClick={() => onMatchAspect(layer)}>Match image ratio</button>
-          <button className="toggle" onClick={() => onResetFrame(layer)}>Reset frame</button>
-        </div>
-      </details>}
+      {activeTab === "image" && <>
+        <details open>
+          <summary>Source <ChevronDown size={15} /></summary>
+          <div className="assigned-source-card"><span>{source ? sourceKindLabel(source) : "No source"}</span><strong>{source?.name ?? "Choose a source from the left panel"}</strong></div>
+          <button className="button secondary full-width" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Next Image</button>
+        </details>
 
-      {activeTab === "image" && <details open>
-        <summary>Image Fit + Crop <ChevronDown size={15} /></summary>
-        <div className="pool-card">
-          <div className="pool-card-heading"><span>Assigned pool</span><strong>{source?.name ?? "None"}</strong></div>
-          <select value={sourceId ?? ""} onChange={(event) => {
-            const nextSourceId = event.target.value || undefined;
-            const assignedSource = sources.find((sourceItem) => sourceItem.id === nextSourceId);
-            onPatch({
-              sourceId: nextSourceId,
-              selectedImageId: undefined,
-              generatedImageId: undefined,
-              sourceState: {
-                ...layer.sourceState,
-                sourceIds: nextSourceId ? [nextSourceId] : [],
-                mode: nextSourceId ? "shuffle" : layer.sourceState.mode,
-                currentIndex: 0,
-                shuffleQueue: [],
-                usedImageIds: [],
-                preventDuplicates: Boolean(assignedSource && assignedSource.images.length > 1)
-              }
-            });
-          }}><option value="">No pool assigned</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-          {source && <span className="pool-summary">{source.images.length} images cycle from this collection</span>}
-        </div>
-        <label>Image fit<select value={layer.cropMode} onChange={(event) => onPatch({ cropMode: event.target.value as CropMode })}><option value="cover">Fill frame</option><option value="contain">Fit whole image</option><option value="stretch">Stretch to frame</option><option value="original">Original size</option><option value="tile">Tile</option></select></label>
-        <label>Alignment<select value={layer.alignment} onChange={(event) => onPatch({ alignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <div className="two-col">
-          <label>Offset X<input type="number" value={layer.crop.offsetX} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetX: Number(event.target.value) } })} /></label>
-          <label>Offset Y<input type="number" value={layer.crop.offsetY} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetY: Number(event.target.value) } })} /></label>
-        </div>
-        <FilterSlider label="Image zoom" value={layer.crop.zoom} min={0.1} max={5} step={0.05} onChange={(value) => onPatch({ crop: { ...layer.crop, zoom: value } })} />
-        <div className="compact-action-row">
-          <button className={cropMode ? "toggle active" : "toggle"} onClick={onCrop}>{cropMode ? "Exit crop" : "Crop on canvas"}</button>
-          <button className="toggle" onClick={resetCrop}>Reset crop</button>
-          <button className="toggle" disabled={!source} onClick={() => onRegenerate(layer)}>Next image</button>
-        </div>
-      </details>}
+        <details open>
+          <summary>Fit and Crop <ChevronDown size={15} /></summary>
+          <label>Fit<select value={layer.cropMode} onChange={(event) => onPatch({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
+          <label>Alignment<select value={layer.alignment} onChange={(event) => onPatch({ alignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <div className="compact-action-row"><button className={cropMode ? "button selected" : "button secondary"} onClick={onCrop}>{cropMode ? "Done Cropping" : "Crop"}</button><button className="button ghost" onClick={resetCrop}>Reset</button></div>
+          <FilterSlider label="Zoom" value={layer.crop.zoom} min={.1} max={6} step={.05} onChange={(value) => onPatch({ crop: { ...layer.crop, zoom: value } })} />
+          <div className="two-col"><label>Offset X<input type="number" value={layer.crop.offsetX} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetX: Number(event.target.value) } })} /></label><label>Offset Y<input type="number" value={layer.crop.offsetY} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetY: Number(event.target.value) } })} /></label></div>
+        </details>
 
-      {activeTab === "style" && <details open>
-        <summary>Border + Shape <ChevronDown size={15} /></summary>
-        <label>Mask<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle / ellipse</option></select></label>
-        <div className="two-col">
-          <label>Border width<input type="number" min="0" value={layer.borderWidth} onChange={numeric("borderWidth")} /></label>
-          <label>Corner radius<input type="number" min="0" disabled={layer.maskShape !== "rounded"} value={layer.borderRadius} onChange={numeric("borderRadius")} /></label>
-          <label>Border color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label>
-          <label>Border opacity<input type="number" min="0" max="1" step="0.05" value={layer.borderOpacity} onChange={numeric("borderOpacity")} /></label>
-        </div>
-        <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ opacity: value })} />
-        <label>Blend mode<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
-      </details>}
+        <details>
+          <summary>Adjustments <ChevronDown size={15} /></summary>
+          <PresetButtons currentId={layer.effects.filters.presetId ?? "none"} onPick={patchFilters} />
+          <FilterSlider label="Brightness" value={layer.effects.filters.brightness} min={0} max={200} onChange={(value) => patchFilters({ brightness: value, presetId: "custom" })} />
+          <FilterSlider label="Contrast" value={layer.effects.filters.contrast} min={0} max={200} onChange={(value) => patchFilters({ contrast: value, presetId: "custom" })} />
+          <FilterSlider label="Saturation" value={layer.effects.filters.saturation} min={0} max={200} onChange={(value) => patchFilters({ saturation: value, presetId: "custom" })} />
+          <FilterSlider label="Temperature" value={layer.effects.filters.temperature} min={-100} max={100} onChange={(value) => patchFilters({ temperature: value, presetId: "custom" })} />
+          <FilterSlider label="Fade" value={layer.effects.filters.fade} min={0} max={80} onChange={(value) => patchFilters({ fade: value, presetId: "custom" })} />
+        </details>
 
-      {activeTab === "style" && <details>
-        <summary>Shadow <ChevronDown size={15} /></summary>
-        <div className="toggle-row">
-          <button className={layer.shadow ? "toggle active" : "toggle"} onClick={() => onPatch({ shadow: !layer.shadow })}>Outer shadow</button>
-          <button className={layer.effects.innerShadow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, innerShadow: !layer.effects.innerShadow } })}>Inner shadow</button>
-          <button className={layer.effects.glow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, glow: !layer.effects.glow } })}>Glow</button>
-        </div>
-      </details>}
+        <details>
+          <summary>Frame Position and Size <ChevronDown size={15} /></summary>
+          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<input type="number" min="16" value={Math.round(layer.width)} onChange={numeric("width")} /></label><label>Height<input type="number" min="16" value={Math.round(layer.height)} onChange={numeric("height")} /></label></div>
+          <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
+          <label className="toggle-setting"><input type="checkbox" checked={layer.keepAspectRatio} onChange={(event) => onPatch({ keepAspectRatio: event.target.checked })} /> Lock frame ratio</label>
+          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button></div>
+        </details>
 
-      {activeTab === "effects" && <details open>
-        <summary>Image Adjustments <ChevronDown size={15} /></summary>
-        <PresetButtons onPick={(filters) => patchFilters(filters)} />
-        <FilterSlider label="Brightness" value={layer.effects.filters.brightness} min={0} max={200} onChange={(value) => patchFilters({ brightness: value })} />
-        <FilterSlider label="Contrast" value={layer.effects.filters.contrast} min={0} max={200} onChange={(value) => patchFilters({ contrast: value })} />
-        <FilterSlider label="Saturation" value={layer.effects.filters.saturation} min={0} max={200} onChange={(value) => patchFilters({ saturation: value })} />
-        <FilterSlider label="Exposure" value={layer.effects.filters.exposure} min={-20} max={20} onChange={(value) => patchFilters({ exposure: value })} />
-        <FilterSlider label="Temperature" value={layer.effects.filters.temperature} min={-100} max={100} onChange={(value) => patchFilters({ temperature: value })} />
-        <FilterSlider label="Blur" value={layer.effects.filters.blur} min={0} max={16} onChange={(value) => patchFilters({ blur: value })} />
-        <FilterSlider label="Sepia" value={layer.effects.filters.sepia} min={0} max={100} onChange={(value) => patchFilters({ sepia: value })} />
-        <FilterSlider label="Grayscale" value={layer.effects.filters.grayscale} min={0} max={100} onChange={(value) => patchFilters({ grayscale: value })} />
-        <FilterSlider label="Fade" value={layer.effects.filters.fade} min={0} max={80} onChange={(value) => patchFilters({ fade: value })} />
-        <FilterSlider label="Vignette" value={layer.effects.filters.vignette} min={0} max={100} onChange={(value) => patchFilters({ vignette: value })} />
-      </details>}
+        <details>
+          <summary>Border and Shape <ChevronDown size={15} /></summary>
+          <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
+          <div className="two-col"><label>Border<input type="number" min="0" value={layer.borderWidth} onChange={numeric("borderWidth")} /></label><label>Radius<input type="number" min="0" disabled={layer.maskShape !== "rounded"} value={layer.borderRadius} onChange={numeric("borderRadius")} /></label><label>Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<input type="number" min="0" max="1" step=".05" value={layer.borderOpacity} onChange={numeric("borderOpacity")} /></label></div>
+          <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
+        </details>
+      </>}
 
-      {activeTab === "effects" && <details>
-        <summary>Paper + Texture <ChevronDown size={15} /></summary>
-        <label>Texture<select value={layer.effects.paper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="dust-scratches">Grain</option><option value="fold-marks">Folded paper</option></select></label>
-        <FilterSlider label="Grain" value={layer.effects.filters.grain} min={0} max={100} onChange={(value) => patchFilters({ grain: value })} />
-        <FilterSlider label="Texture intensity" value={layer.effects.paper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
-        <FilterSlider label="Texture opacity" value={layer.effects.paper.opacity} min={0} max={1} step={0.05} onChange={(value) => patchPaper({ opacity: value })} />
-        <FilterSlider label="Texture scale" value={layer.effects.paper.scale} min={0.4} max={3} step={0.1} onChange={(value) => patchPaper({ scale: value })} />
-        <FilterSlider label="Texture rotation" value={layer.effects.paper.rotation} min={-180} max={180} onChange={(value) => patchPaper({ rotation: value })} />
-        <label>Blend mode<select value={layer.effects.paper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
-        <label>Random seed<input type="number" value={layer.effects.paper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
-      </details>}
+      {activeTab === "effects" && <>
+        <details open>
+          <summary>Paper Frame <ChevronDown size={15} /></summary>
+          <label>Style<select value={frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean</option><option value="polaroid">Polaroid</option><option value="torn">Torn</option><option value="deckle">Deckle</option><option value="newsprint">Newsprint</option></select></label>
+          {frameType !== "none" && <>
+            <div className="two-col"><label>Paper<input type="color" value={layer.effects.paperFrame.paperColor} onChange={(event) => patchPaperFrame({ paperColor: event.target.value })} /></label><label>Border<input type="number" min="0" max="240" value={layer.effects.paperFrame.borderWidth} onChange={(event) => patchPaperFrame({ borderWidth: Number(event.target.value) })} /></label></div>
+            {(frameType === "polaroid" || frameType === "clean") && <FilterSlider label="Padding" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
+            {(frameType === "torn" || frameType === "deckle") && <FilterSlider label={frameType === "torn" ? "Tear size" : "Fiber roughness"} value={layer.effects.paperFrame.edgeRoughness} min={0} max={100} onChange={(value) => patchPaperFrame({ edgeRoughness: value })} />}
+            <FilterSlider label="Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={(value) => patchPaperFrame({ shadowStrength: value })} />
+            <FilterSlider label="Texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />
+            {(frameType === "torn" || frameType === "deckle") && <button className="button ghost full-width" onClick={() => patchPaperFrame({ seed: Math.floor(Math.random() * 1_000_000) + 1 })}>Randomize Edge</button>}
+          </>}
+        </details>
 
-      {activeTab === "frame" && <div className="toggle-row">
-        <button className={layer.locked ? "toggle active" : "toggle"} onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />} Lock</button>
-        <button className={layer.hidden ? "toggle active" : "toggle"} onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />} Hide</button>
-      </div>}
+        <details>
+          <summary>Shadow and Blend <ChevronDown size={15} /></summary>
+          <div className="toggle-row"><button className={layer.shadow ? "toggle active" : "toggle"} onClick={() => onPatch({ shadow: !layer.shadow })}>Outer Shadow</button><button className={layer.effects.innerShadow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, innerShadow: !layer.effects.innerShadow } })}>Inner Shadow</button><button className={layer.effects.glow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, glow: !layer.effects.glow } })}>Glow</button></div>
+          <label>Blend<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
+        </details>
+
+        <details>
+          <summary>Advanced Adjustments <ChevronDown size={15} /></summary>
+          <FilterSlider label="Exposure" value={layer.effects.filters.exposure} min={-20} max={20} onChange={(value) => patchFilters({ exposure: value, presetId: "custom" })} />
+          <FilterSlider label="Blur" value={layer.effects.filters.blur} min={0} max={16} onChange={(value) => patchFilters({ blur: value, presetId: "custom" })} />
+          <FilterSlider label="Sepia" value={layer.effects.filters.sepia} min={0} max={100} onChange={(value) => patchFilters({ sepia: value, presetId: "custom" })} />
+          <FilterSlider label="Mono" value={layer.effects.filters.grayscale} min={0} max={100} onChange={(value) => patchFilters({ grayscale: value, presetId: "custom" })} />
+          <FilterSlider label="Grain" value={layer.effects.filters.grain} min={0} max={100} onChange={(value) => patchFilters({ grain: value, presetId: "custom" })} />
+        </details>
+      </>}
     </section>
   );
 }
@@ -3575,18 +3912,21 @@ function FilterSlider({ label, value, min, max, step = 1, onChange }: { label: s
   return <label className="filter-slider"><span>{label}<b>{value}</b></span><input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} /></label>;
 }
 
-function PresetButtons({ onPick }: { onPick: (filters: Partial<ImageFilters>) => void }) {
+function PresetButtons({ currentId, onPick }: { currentId: string; onPick: (filters: Partial<ImageFilters>) => void }) {
   const presetsMap: Array<[string, Partial<ImageFilters>]> = [
-    ["Warm Print", { brightness: 106, contrast: 96, saturation: 112, temperature: 32, sepia: 8 }],
-    ["Cool Film", { brightness: 96, contrast: 112, saturation: 82, temperature: -28, fade: 8 }],
-    ["Soft Fade", { brightness: 112, contrast: 82, saturation: 86, fade: 18 }],
-    ["Vintage Paper", { brightness: 104, contrast: 92, saturation: 74, sepia: 34, grain: 16 }],
-    ["Muted Editorial", { brightness: 98, contrast: 108, saturation: 68 }],
-    ["High Contrast", { brightness: 102, contrast: 148, saturation: 104 }],
-    ["Black and White", { grayscale: 100, contrast: 112 }],
-    ["Washed Daylight", { brightness: 118, contrast: 88, saturation: 92, fade: 10 }]
+    ["None", {}],
+    ["Warm", { brightness: 106, contrast: 96, saturation: 112, temperature: 32, sepia: 8 }],
+    ["Cool", { brightness: 96, contrast: 112, saturation: 82, temperature: -28, fade: 8 }],
+    ["Fade", { brightness: 112, contrast: 82, saturation: 86, fade: 18 }],
+    ["Vintage", { brightness: 104, contrast: 92, saturation: 74, sepia: 34, grain: 16 }],
+    ["Muted", { brightness: 98, contrast: 108, saturation: 68 }],
+    ["Contrast", { brightness: 102, contrast: 148, saturation: 104 }],
+    ["Mono", { grayscale: 100, contrast: 112 }]
   ];
-  return <div className="preset-grid">{presetsMap.map(([name, filters]) => <button key={name} onClick={() => onPick({ ...createDefaultEffects().filters, ...filters, presetId: name })}>{name}</button>)}</div>;
+  return <div className="preset-grid">{presetsMap.map(([name, filters]) => {
+    const id = name.toLowerCase();
+    return <button className={currentId === id ? "active" : ""} key={name} onClick={() => onPick({ ...createDefaultEffects().filters, ...filters, presetId: id })}>{name}</button>;
+  })}</div>;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
