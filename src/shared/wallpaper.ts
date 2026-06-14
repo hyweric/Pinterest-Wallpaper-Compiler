@@ -3,8 +3,43 @@ import type {
   TemplateLibrary,
   WallpaperInterval,
   WallpaperTemplate,
-  WallpaperTarget
+  WallpaperTarget,
+  WallpaperTargetMode
 } from "./types.js";
+
+export const inactiveSpaceTargetModes: WallpaperTargetMode[] = [
+  "all-desktops-current-monitor",
+  "all-desktops-all-monitors"
+];
+
+export function wallpaperTargetModeNeedsInactiveSpaces(mode: WallpaperTargetMode) {
+  return inactiveSpaceTargetModes.includes(mode);
+}
+
+export function wallpaperTargetModeLabel(mode: WallpaperTargetMode) {
+  switch (mode) {
+    case "current-desktop": return "Current desktop only";
+    case "current-monitor": return "Current monitor only";
+    case "all-visible-monitors": return "All visible monitors";
+    case "all-desktops-current-monitor": return "All desktops on current monitor";
+    case "all-desktops-all-monitors": return "All desktops on all monitors";
+  }
+}
+
+export function selectWallpaperTargets(
+  targets: WallpaperTarget[],
+  mode: WallpaperTargetMode,
+  monitorId?: string
+) {
+  const visible = targets.filter((target) => target.reliable && target.visible !== false && target.targetType !== "inactive-space");
+  if (mode === "all-visible-monitors" || mode === "all-desktops-all-monitors") return visible;
+  if ((mode === "current-monitor" || mode === "all-desktops-current-monitor") && monitorId) {
+    const selected = visible.find((target) => target.displayId === monitorId || target.id === monitorId);
+    if (selected) return [selected];
+  }
+  const current = visible.find((target) => target.current) ?? visible.find((target) => target.primary) ?? visible[0];
+  return current ? [current] : [];
+}
 
 export const appliedHistoryLimit = 40;
 

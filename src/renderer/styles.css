@@ -3327,3 +3327,30 @@ textarea:focus-visible {
 .renderer-recovery p { color: #6f7680; }
 .renderer-recovery div { display: flex; gap: 10px; margin: 20px 0 12px; }
 .renderer-recovery small { color: #8b929d; }
+
+.settings-warning {
+  margin: 8px 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(170, 112, 38, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 243, 221, 0.78);
+  color: #6b471c;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.macos-space-status {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border, #d9d9d3);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.settings-success {
+  margin: 0;
+  color: #315f3a;
+  font-size: 12px;
+  line-height: 1.45;
+}

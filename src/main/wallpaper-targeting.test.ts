@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import {
+  selectWallpaperTargets,
+  wallpaperTargetModeLabel,
+  wallpaperTargetModeNeedsInactiveSpaces
+} from "../shared/wallpaper.js";
+import type { WallpaperTarget } from "../shared/types.js";
+
+const targets: WallpaperTarget[] = [
+  {
+    id: "display-101",
+    label: "Built-in Display",
+    index: 1,
+    displayId: "101",
+    displayName: "Built-in Display",
+    current: false,
+    primary: true,
+    visible: true,
+    targetType: "physical-display",
+    reliable: true
+  },
+  {
+    id: "display-202",
+    label: "Studio Display",
+    index: 2,
+    displayId: "202",
+    displayName: "Studio Display",
+    current: true,
+    primary: false,
+    visible: true,
+    targetType: "physical-display",
+    reliable: true
+  }
+];
+
+test("current desktop resolves to the display containing the app window", () => {
+  assert.deepEqual(selectWallpaperTargets(targets, "current-desktop").map((item) => item.displayId), ["202"]);
+});
+
+test("current monitor honors the explicit monitor selection", () => {
+  assert.deepEqual(selectWallpaperTargets(targets, "current-monitor", "101").map((item) => item.displayId), ["101"]);
+});
+
+test("all visible monitors selects every reliable connected physical display", () => {
+  assert.deepEqual(selectWallpaperTargets(targets, "all-visible-monitors").map((item) => item.displayId), ["101", "202"]);
+});
+
+test("inactive Space modes retain their physical display scope", () => {
+  assert.equal(wallpaperTargetModeNeedsInactiveSpaces("all-desktops-current-monitor"), true);
+  assert.equal(wallpaperTargetModeNeedsInactiveSpaces("all-desktops-all-monitors"), true);
+  assert.deepEqual(selectWallpaperTargets(targets, "all-desktops-current-monitor", "101").map((item) => item.displayId), ["101"]);
+  assert.deepEqual(selectWallpaperTargets(targets, "all-desktops-all-monitors").map((item) => item.displayId), ["101", "202"]);
+  assert.equal(wallpaperTargetModeLabel("all-desktops-all-monitors"), "All desktops on all monitors");
+});
+
+test("macOS all-desktop implementation is diagnostic-driven, transactional, and may use the proven legacy database only when compatible", async () => {
+  const source = await readFile(path.join(process.cwd(), "src/main/wallpaper.ts"), "utf8");
+  const spacesSource = await readFile(path.join(process.cwd(), "src/main/macos-spaces.ts"), "utf8");
+  assert.match(source, /setDesktopImageURLForScreenOptionsError/);
+  assert.match(spacesSource, /diagnoseMacOSWallpaperEnvironment/);
+  assert.match(spacesSource, /com\.apple\.wallpaper\/Store\/Index\.plist/);
+  assert.match(spacesSource, /atomicCommit/);
+  assert.match(spacesSource, /desktopReferencesPath/);
+  assert.match(spacesSource, /desktoppicture\.db/);
+  assert.match(spacesSource, /legacyDatabase\.compatible/);
+  assert.match(spacesSource, /begin immediate/);
+  assert.match(spacesSource, /rollbackPerformed/);
+  assert.match(spacesSource, /PWC_SPACE_OBSERVER_V2/);
+  assert.match(spacesSource, /NSWorkspaceActiveSpaceDidChangeNotification/);
+  assert.match(spacesSource, /NSWorkspaceDidWakeNotification/);
+});
+
+test("targeting UI presents all requested modes and reports live diagnostic and verification counts", async () => {
+  const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
+  for (const mode of [
+    "current-desktop",
+    "current-monitor",
+    "all-visible-monitors",
+    "all-desktops-current-monitor",
+    "all-desktops-all-monitors"
+  ]) {
+    assert.match(source, new RegExp(`value=\"${mode}\"`));
+  }
+  assert.match(source, /Run macOS diagnostic/);
+  assert.match(source, /recommendedStrategy/);
+  assert.match(source, /verifiedSpaceCount/);
+  assert.doesNotMatch(source, /Advanced macOS mode: inactive Spaces are updated immediately/);
+});

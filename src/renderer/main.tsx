@@ -48,6 +48,7 @@ import type {
   ImageSelectionMode,
   ImageSource,
   LocalImageRef,
+  MacOSWallpaperDiagnosticReport,
   PaperFrameType,
   SourceMediaPolicy,
   MaskShape,
@@ -94,11 +95,13 @@ import {
   nextScheduledAt,
   planTemplateRotation,
   previousHistoryIndex,
-  wallpaperIntervalToMs
+  selectWallpaperTargets,
+  wallpaperIntervalToMs,
+  wallpaperTargetModeNeedsInactiveSpaces
 } from "../shared/wallpaper";
 import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
-import { SingleRunScheduler } from "../shared/scheduler";
+import { SingleFlightWallpaperOperation, SingleRunScheduler } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
@@ -440,6 +443,8 @@ function App() {
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [lastWallpaperDiagnostics, setLastWallpaperDiagnostics] = useState<WallpaperApplyResult["diagnostics"]>();
+  const [macOSWallpaperDiagnostic, setMacOSWallpaperDiagnostic] = useState<MacOSWallpaperDiagnosticReport>();
+  const [macOSDiagnosticBusy, setMacOSDiagnosticBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
   const [backgroundAdvancedOpen, setBackgroundAdvancedOpen] = useState(() => localStorage.getItem(backgroundAdvancedKey) === "true");
@@ -476,6 +481,9 @@ function App() {
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
+  const scheduledRunDeferredRef = useRef(false);
+  const wallpaperOperationRef = useRef<SingleFlightWallpaperOperation | undefined>(undefined);
+  if (!wallpaperOperationRef.current) wallpaperOperationRef.current = new SingleFlightWallpaperOperation(() => Date.now());
   const loginRotationTriggeredRef = useRef(false);
   const exportCancelRef = useRef(false);
   const sourceApplyTimerRef = useRef<number | undefined>(undefined);
@@ -526,6 +534,55 @@ function App() {
     );
   }
 
+  async function runMacOSWallpaperDiagnostic() {
+    setMacOSDiagnosticBusy(true);
+    try {
+      const report = await window.wallpaperApi.getMacOSWallpaperDiagnostic();
+      setMacOSWallpaperDiagnostic(report);
+      if (!report.ok && report.errors.length) setMessage(report.errors[0]);
+      return report;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to inspect macOS wallpaper settings.");
+      return undefined;
+    } finally {
+      setMacOSDiagnosticBusy(false);
+    }
+  }
+
+  function beginWallpaperOperation(kind: "manual" | "scheduled" | "history" | "source-change") {
+    const lease = wallpaperOperationRef.current!.begin(kind);
+    if (!lease) return undefined;
+    wallpaperSchedulerRef.current?.cancel();
+    applyInFlightRef.current = true;
+    setWallpaperBusy(true);
+    if (lease.recoveredStale) {
+      setMessage("Recovered a stale wallpaper operation. Starting a fresh run.");
+    }
+    return lease.token;
+  }
+
+  function finishWallpaperOperation(token: number) {
+    if (!wallpaperOperationRef.current!.finish(token)) return;
+    applyInFlightRef.current = false;
+    setWallpaperBusy(false);
+
+    const latest = projectRef.current;
+    const currentDue = latest.wallpaper.nextScheduledAt
+      ? Date.parse(latest.wallpaper.nextScheduledAt)
+      : Number.NaN;
+    const needsFreshSchedule = scheduledRunDeferredRef.current
+      || !Number.isFinite(currentDue)
+      || currentDue <= Date.now() + 250;
+    scheduledRunDeferredRef.current = false;
+    if (!latest.wallpaper.enabled || latest.wallpaper.paused || !wallpaperMs(latest.wallpaper) || !needsFreshSchedule) return;
+
+    const scheduled = scheduleFor(latest.wallpaper, new Date());
+    if (!scheduled) return;
+    const next = { ...latest, wallpaper: { ...latest.wallpaper, nextScheduledAt: scheduled } };
+    projectRef.current = next;
+    setProject(next);
+  }
+
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
@@ -541,6 +598,8 @@ function App() {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
     wallpaperSchedulerRef.current?.cancel();
+    wallpaperOperationRef.current?.clear();
+    applyInFlightRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -572,6 +631,11 @@ function App() {
       .then(setWallpaperTargets)
       .catch(() => setWallpaperTargets([]));
   }, []);
+
+  useEffect(() => {
+    if (!wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode)) return;
+    void runMacOSWallpaperDiagnostic();
+  }, [project.wallpaper.targetMode]);
 
   useEffect(() => {
     localStorage.setItem(backgroundAdvancedKey, String(backgroundAdvancedOpen));
@@ -690,12 +754,8 @@ function App() {
       const latestMs = wallpaperMs(latest.wallpaper);
       if (!latest.wallpaper.enabled || latest.wallpaper.paused || !latestMs) return;
       if (applyInFlightRef.current) {
-        const retryAt = new Date(Date.now() + 1_000).toISOString();
-        setProject((current) => {
-          const next = { ...current, wallpaper: { ...current.wallpaper, nextScheduledAt: retryAt } };
-          projectRef.current = next;
-          return next;
-        });
+        scheduledRunDeferredRef.current = true;
+        setMessage("Scheduled wallpaper run deferred until the current operation finishes.");
         return;
       }
       await generateAndApply({ rotateTemplate: true, automatic: true });
@@ -1379,12 +1439,11 @@ function App() {
     combination: GeneratedCombination,
     options: { automatic?: boolean; label?: string } = {}
   ) {
-    if (applyInFlightRef.current) {
+    const operationToken = beginWallpaperOperation(options.automatic ? "scheduled" : "manual");
+    if (operationToken === undefined) {
       setMessage("A wallpaper operation is already running.");
       return false;
     }
-    applyInFlightRef.current = true;
-    setWallpaperBusy(true);
     try {
       const generated = await generateWallpaperFile<ArrayBuffer>({
         render: () => renderProjectToArrayBuffer(candidate, "png"),
@@ -1417,6 +1476,8 @@ function App() {
           monitorMode: candidate.wallpaper.monitorMode,
           displayMode: candidate.wallpaper.displayMode,
           scope: candidate.wallpaper.scope,
+          targetMode: candidate.wallpaper.targetMode,
+          monitorId: candidate.wallpaper.monitorId,
           transitionEnabled: candidate.wallpaper.transitionEnabled,
           transitionDurationMs: candidate.wallpaper.transitionDurationMs
         }),
@@ -1464,8 +1525,7 @@ function App() {
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to generate and apply wallpaper.", Boolean(options.automatic));
       return false;
     } finally {
-      applyInFlightRef.current = false;
-      setWallpaperBusy(false);
+      finishWallpaperOperation(operationToken);
     }
   }
 
@@ -1489,20 +1549,18 @@ function App() {
   }
 
   async function applyDifferentWallpapers(base: WallpaperProject, options: { automatic?: boolean; label?: string } = {}) {
-    if (applyInFlightRef.current) {
-      setMessage("A wallpaper is already being applied.");
+    const operationToken = beginWallpaperOperation(options.automatic ? "scheduled" : "manual");
+    if (operationToken === undefined) {
+      setMessage("A wallpaper operation is already running.");
       return false;
     }
-    applyInFlightRef.current = true;
-    setWallpaperBusy(true);
     setWallpaperStatus("generating");
     try {
       const targets = wallpaperTargets.length ? wallpaperTargets : await window.wallpaperApi.getWallpaperTargets();
       setWallpaperTargets(targets);
-      const supportedTargets = targets.filter((target) => target.reliable);
-      const applyTargets = supportedTargets.length ? supportedTargets : targets.slice(0, 1);
+      const applyTargets = selectWallpaperTargets(targets, base.wallpaper.targetMode, base.wallpaper.monitorId);
       if (applyTargets.length === 0) {
-        recordWallpaperFailure("No wallpaper desktop targets are available.", Boolean(options.automatic));
+        recordWallpaperFailure("No matching visible monitor target is available.", Boolean(options.automatic));
         return false;
       }
 
@@ -1531,6 +1589,8 @@ function App() {
       setWallpaperStatus("applying");
       const result = await withWallpaperTimeout(window.wallpaperApi.applyWallpaperTargets({
         scope: "different-per-desktop",
+        targetMode: working.wallpaper.targetMode,
+        monitorId: working.wallpaper.monitorId,
         displayMode: working.wallpaper.displayMode,
         transitionEnabled: working.wallpaper.transitionEnabled,
         transitionDurationMs: working.wallpaper.transitionDurationMs,
@@ -1588,8 +1648,7 @@ function App() {
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to render and apply wallpapers.", Boolean(options.automatic));
       return false;
     } finally {
-      applyInFlightRef.current = false;
-      setWallpaperBusy(false);
+      finishWallpaperOperation(operationToken);
     }
   }
 
@@ -1614,7 +1673,7 @@ function App() {
     const target = targetTemplateId ? base.templates.templates.find((item) => item.id === targetTemplateId) : undefined;
     if (target) base = normalizeProject(workspaceFromTemplate(base, target));
 
-    if (base.wallpaper.scope === "different-per-desktop" && !options.templateId) {
+    if (base.wallpaper.targetTemplateMode !== "single-template" && !options.templateId) {
       await applyDifferentWallpapers(base, {
         automatic: options.automatic,
         label: options.automatic ? "Wallpaper targets rotated" : "Desktop wallpapers applied"
@@ -1647,12 +1706,11 @@ function App() {
       setMessage("That wallpaper file is no longer available in history.");
       return;
     }
-    if (applyInFlightRef.current) {
+    const operationToken = beginWallpaperOperation("history");
+    if (operationToken === undefined) {
       setMessage("A wallpaper operation is already running.");
       return;
     }
-    applyInFlightRef.current = true;
-    setWallpaperBusy(true);
     try {
       const result = await applyGeneratedWallpaperFile({
         filePath: entry.filePath,
@@ -1661,6 +1719,8 @@ function App() {
           monitorMode: current.wallpaper.monitorMode,
           displayMode: current.wallpaper.displayMode,
           scope: current.wallpaper.scope,
+          targetMode: current.wallpaper.targetMode,
+          monitorId: current.wallpaper.monitorId,
           transitionEnabled: current.wallpaper.transitionEnabled,
           transitionDurationMs: current.wallpaper.transitionDurationMs
         }),
@@ -1689,8 +1749,7 @@ function App() {
     } catch (error) {
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to apply wallpaper history item.", false);
     } finally {
-      applyInFlightRef.current = false;
-      setWallpaperBusy(false);
+      finishWallpaperOperation(operationToken);
     }
   }
 
@@ -3113,6 +3172,9 @@ function App() {
               onNext={() => void applyNextWallpaper()}
               busy={wallpaperBusy}
               diagnostics={lastWallpaperDiagnostics}
+              macOSDiagnostic={macOSWallpaperDiagnostic}
+              macOSDiagnosticBusy={macOSDiagnosticBusy}
+              onRunMacOSDiagnostic={() => void runMacOSWallpaperDiagnostic()}
               targets={wallpaperTargets}
               templates={project.templates.templates}
               runtimeStatus={wallpaperStatus}
@@ -3787,6 +3849,9 @@ function WallpaperPanel({
   onNext,
   busy,
   diagnostics,
+  macOSDiagnostic,
+  macOSDiagnosticBusy,
+  onRunMacOSDiagnostic,
   targets,
   templates,
   runtimeStatus,
@@ -3798,6 +3863,9 @@ function WallpaperPanel({
   onNext: () => void;
   busy: boolean;
   diagnostics?: WallpaperApplyResult["diagnostics"];
+  macOSDiagnostic?: MacOSWallpaperDiagnosticReport;
+  macOSDiagnosticBusy: boolean;
+  onRunMacOSDiagnostic: () => void;
   targets: WallpaperTarget[];
   templates: WallpaperTemplate[];
   runtimeStatus: WallpaperRuntimeStatus;
@@ -3824,33 +3892,78 @@ function WallpaperPanel({
         <summary>Wallpaper Targets <ChevronDown size={15} /></summary>
         <label>
           Apply to
-          <select value={project.wallpaper.scope} onChange={(event) => onPatch({ scope: event.target.value as WallpaperProject["wallpaper"]["scope"] })}>
-            <option value="same-all-desktops">All monitors and desktops</option>
-            <option value="different-per-desktop">Different on each target</option>
-            <option value="current-desktop">Current monitor only</option>
+          <select value={project.wallpaper.targetMode} onChange={(event) => {
+            const targetMode = event.target.value as WallpaperProject["wallpaper"]["targetMode"];
+            onPatch({
+              targetMode,
+              scope: targetMode === "current-desktop" || targetMode === "current-monitor" ? "current-desktop" : "same-all-desktops",
+              monitorMode: targetMode === "all-visible-monitors" || targetMode === "all-desktops-all-monitors" ? "all" : "primary"
+            });
+          }}>
+            <option value="current-desktop">Current desktop only</option>
+            <option value="current-monitor">Current monitor only</option>
+            <option value="all-visible-monitors">All visible monitors</option>
+            <option value="all-desktops-current-monitor">All desktops on current monitor</option>
+            <option value="all-desktops-all-monitors">All desktops on all monitors</option>
           </select>
         </label>
-        {project.wallpaper.scope === "different-per-desktop" && (
+        {(project.wallpaper.targetMode === "current-monitor" || project.wallpaper.targetMode === "all-desktops-current-monitor") && (
+          <label>
+            Monitor
+            <select value={project.wallpaper.monitorId ?? targets.find((target) => target.current)?.displayId ?? ""} onChange={(event) => onPatch({ monitorId: event.target.value || undefined })}>
+              {targets.filter((target) => target.targetType === "physical-display").map((target) => (
+                <option key={target.id} value={target.displayId ?? target.id}>{target.label}{target.current ? " · current" : ""}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode) && (
+          <div className="macos-space-status">
+            <div className="compact-action-row">
+              <button className="button ghost" disabled={macOSDiagnosticBusy} onClick={onRunMacOSDiagnostic}>
+                <RefreshCcw size={14} /> {macOSDiagnosticBusy ? "Inspecting…" : "Run macOS diagnostic"}
+              </button>
+            </div>
+            {!macOSDiagnostic && <p className="settings-warning">Run the diagnostic to verify which immediate all-desktop strategy is available on this Mac.</p>}
+            {macOSDiagnostic && (
+              <>
+                <p className={macOSDiagnostic.recommendedStrategy === "observer-only" || macOSDiagnostic.recommendedStrategy === "unsupported" ? "settings-warning" : "settings-success"}>
+                  Detected {macOSDiagnostic.displays.length} monitor{macOSDiagnostic.displays.length === 1 ? "" : "s"} and {macOSDiagnostic.totalSpaceCount} Mission Control desktop{macOSDiagnostic.totalSpaceCount === 1 ? "" : "s"}. Strategy: {macOSDiagnostic.recommendedStrategy}.
+                </p>
+                {macOSDiagnostic.warnings.map((warning) => <p className="settings-warning" key={warning}>{warning}</p>)}
+                {macOSDiagnostic.errors.map((error) => <p className="status-error" key={error}>{error}</p>)}
+              </>
+            )}
+            {diagnostics?.macOSAllSpaces && (
+              <p className={diagnostics.macOSAllSpaces.modernStoreVerified || diagnostics.macOSAllSpaces.legacyDatabaseVerified ? "settings-success" : "settings-warning"}>
+                Last apply: verified {diagnostics.macOSAllSpaces.verifiedSpaceCount} of {diagnostics.macOSAllSpaces.targetSpaceCount} desktop records and {diagnostics.macOSAllSpaces.verifiedDisplayCount} of {diagnostics.macOSAllSpaces.targetDisplayCount} display records. {diagnostics.macOSAllSpaces.observerFallback ? "Observer fallback is active." : "Observer maintenance is active."}
+              </p>
+            )}
+            {macOSDiagnostic && <details className="diagnostics"><summary>macOS wallpaper diagnostic <ChevronDown size={14} /></summary><pre>{JSON.stringify(macOSDiagnostic, null, 2)}</pre></details>}
+          </div>
+        )}
+        <p className="settings-hint">“Desktop” means a Mission Control Space. “Visible monitors” changes only the active Space on each connected display; “All desktops” includes inactive Spaces.</p>
+        <label>
+          Wallpaper assignment
+          <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
+            <option value="single-template">Same wallpaper on selected targets</option>
+            <option value="different-template">Different template per target</option>
+            <option value="playlist">Playlist per target</option>
+          </select>
+        </label>
+        {project.wallpaper.targetTemplateMode === "single-template" && (
+          <label>Template<select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
+            <option value="">Active template</option>
+            {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+          </select></label>
+        )}
+        {project.wallpaper.targetTemplateMode !== "single-template" && (
           <details className="target-config">
             <summary>Target templates <ChevronDown size={14} /></summary>
-            <label>
-              Assignment
-              <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
-                <option value="single-template">Same template</option>
-                <option value="different-template">Different template</option>
-                <option value="playlist">Playlist per target</option>
-              </select>
-            </label>
-            {project.wallpaper.targetTemplateMode === "single-template" && (
-              <label>Template<select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
-                <option value="">Active template</option>
-                {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-              </select></label>
-            )}
             <div className="target-list">
               {targets.map((target) => (
                 <div className="target-row" key={target.id}>
-                  <span><strong>{target.label}</strong><small>{target.reliable ? "Detected" : target.limitation ?? "Best effort"}</small></span>
+                  <span><strong>{target.label}</strong><small>{target.current ? "Current display" : target.primary ? "Primary display" : "Visible display"}</small></span>
                   {project.wallpaper.targetTemplateMode === "different-template" && (
                     <select value={project.wallpaper.targetTemplateIds[target.id] ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, [target.id]: event.target.value || undefined } })}>
                       <option value="">Automatic</option>

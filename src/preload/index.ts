@@ -18,6 +18,7 @@ import type {
   WallpaperApplyResult,
   WallpaperGeneratePayload,
   WallpaperGenerateResult,
+  MacOSWallpaperDiagnosticReport,
   WallpaperTarget,
   WallpaperProject,
   TrayRuntimeState
@@ -60,6 +61,7 @@ const api = {
   applyWallpaperFile: (payload: WallpaperApplyFilePayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply-file", payload),
   getWallpaperTargets: (): Promise<WallpaperTarget[]> => ipcRenderer.invoke("wallpaper:targets"),
+  getMacOSWallpaperDiagnostic: (): Promise<MacOSWallpaperDiagnosticReport> => ipcRenderer.invoke("wallpaper:macos-diagnostic"),
   applyWallpaperTargets: (payload: WallpaperApplyTargetsPayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply-targets", payload),
   setTrayState: (state: TrayRuntimeState): Promise<TrayRuntimeState> => ipcRenderer.invoke("tray:set-state", state),

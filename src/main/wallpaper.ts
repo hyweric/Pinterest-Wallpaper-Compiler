@@ -1,15 +1,40 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import os from "node:os";
+import { realpathSync } from "node:fs";
 import path from "node:path";
-import type { NativeCommandResult, WallpaperApplyDiagnostics, WallpaperDisplayMode, WallpaperScope, WallpaperTarget, WallpaperTargetResult } from "../shared/types.js";
-import { buildMacOSWallpaperTargets, classifyMacOSDockRows } from "../shared/wallpaper.js";
+import type {
+  NativeCommandResult,
+  MacOSWallpaperDiagnosticReport,
+  WallpaperApplyDiagnostics,
+  WallpaperDisplayMode,
+  WallpaperScope,
+  WallpaperTarget,
+  WallpaperTargetMode,
+  WallpaperTargetResult
+} from "../shared/types.js";
+import {
+  selectWallpaperTargets,
+  wallpaperTargetModeLabel,
+  wallpaperTargetModeNeedsInactiveSpaces
+} from "../shared/wallpaper.js";
+import {
+  MacOSActiveSpaceWallpaperObserver,
+  applyMacOSWallpapersAcrossSpaces,
+  diagnoseMacOSWallpaperEnvironment,
+  getMacOSReferencedWallpaperPaths
+} from "./macos-spaces.js";
 
 export interface WallpaperControllerOptions {
   displayMode?: WallpaperDisplayMode;
   monitorMode?: "primary" | "all" | "span";
   scope?: WallpaperScope;
+  targetMode?: WallpaperTargetMode;
+  monitorId?: string;
   targetId?: string;
+  currentDisplayId?: string;
+}
+
+export interface WallpaperTargetDiscoveryOptions {
+  currentDisplayId?: string;
 }
 
 export interface WallpaperBatchItem {
@@ -23,16 +48,26 @@ export interface WallpaperBatchItem {
 export interface WallpaperController {
   setWallpaper(filePath: string, options?: WallpaperControllerOptions): Promise<WallpaperApplyDiagnostics>;
   setWallpapers?(items: WallpaperBatchItem[], options?: WallpaperControllerOptions): Promise<WallpaperTargetResult[]>;
-  getTargets?(): Promise<WallpaperTarget[]>;
+  getTargets?(options?: WallpaperTargetDiscoveryOptions): Promise<WallpaperTarget[]>;
+  getMacOSDiagnostic?(options?: WallpaperTargetDiscoveryOptions): Promise<MacOSWallpaperDiagnosticReport>;
+  getReferencedWallpaperPaths?(options?: WallpaperTargetDiscoveryOptions): Promise<string[]>;
+  stopSpaceObserver?(): void;
+  dispose?(): void;
 }
 
 function runNativeCommand(method: string, command: string, args: string[], timeout = 8000): Promise<NativeCommandResult> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: NativeCommandResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     const child = execFile(command, args, { timeout }, (error, stdout, stderr) => {
       const timedOut = Boolean(error && "killed" in error && error.killed);
       const exitCode = error && "code" in error && typeof error.code === "number" ? error.code : error ? 1 : 0;
       const signal = error && "signal" in error && typeof error.signal === "string" ? error.signal : undefined;
-      resolve({
+      finish({
         method,
         command,
         args,
@@ -45,16 +80,7 @@ function runNativeCommand(method: string, command: string, args: string[], timeo
       });
     });
     child.on("error", (error) => {
-      resolve({
-        method,
-        command,
-        args,
-        stdout: "",
-        stderr: "",
-        exitCode: 1,
-        timedOut: false,
-        error: error.message
-      });
+      finish({ method, command, args, stdout: "", stderr: "", exitCode: 1, timedOut: false, error: error.message });
     });
   });
 }
@@ -63,627 +89,437 @@ function commandSucceeded(result: NativeCommandResult) {
   return !result.timedOut && result.exitCode === 0 && !result.error;
 }
 
-function escapeSql(value: string) {
-  return value.replace(/'/g, "''");
-}
-
-function normalizeWallpaperPath(value: string) {
-  const trimmed = value.trim();
-  const expanded = trimmed.startsWith("~/") ? path.join(os.homedir(), trimmed.slice(2)) : trimmed;
+function normalizeWallpaperPath(value: string | undefined) {
+  if (!value) return undefined;
   try {
-    return realpathSync.native(expanded);
+    return realpathSync.native(value);
   } catch {
-    return expanded;
+    return path.resolve(value);
   }
 }
 
-function targetIndexFromId(targetId?: string) {
-  const match = targetId?.match(/^desktop-(\d+)$/);
-  return match ? Number(match[1]) : undefined;
+interface MacScreenInfo {
+  displayId: string;
+  name: string;
+  index: number;
+  primary: boolean;
+  currentPath?: string;
+  bounds: { x: number; y: number; width: number; height: number };
 }
 
-function dockPictureIdFromTargetId(targetId?: string) {
-  const match = targetId?.match(/^picture-(\d+)$/);
-  return match ? Number(match[1]) : undefined;
+interface MacApplyResponse {
+  displayId: string;
+  requestedPath: string;
+  reportedPath?: string;
+  ok: boolean;
+  error?: string;
 }
 
-function dockWallpaperDatabasePath() {
-  return path.join(os.homedir(), "Library/Application Support/Dock/desktoppicture.db");
-}
-
-
-async function applyVisibleScreensWithAppKit(
-  filePath: string,
-  nativeResults: NativeCommandResult[],
-  allScreens: boolean
-) {
-  const script = String.raw`
+const macScreenDiscoveryScript = String.raw`
 ObjC.import('AppKit');
-function run(argv) {
-  const imagePath = argv[0];
-  const allScreens = argv[1] === 'all';
+function unwrap(value) {
+  try { return ObjC.unwrap(value); } catch (_) { return String(value || ''); }
+}
+function displayNumber(screen, fallback) {
+  try {
+    const value = screen.deviceDescription.objectForKey('NSScreenNumber');
+    return String(unwrap(value));
+  } catch (_) { return String(fallback); }
+}
+function run() {
   const workspace = $.NSWorkspace.sharedWorkspace;
-  const url = $.NSURL.fileURLWithPath($(imagePath));
   const screens = $.NSScreen.screens.js;
-  const targets = allScreens ? screens : screens.slice(0, 1);
-  const output = [];
-  targets.forEach((screen, index) => {
-    const error = Ref();
-    const ok = workspace.setDesktopImageURLForScreenOptionsError(url, screen, $({}), error);
-    output.push((ok ? 'ok' : 'failed') + ':' + (index + 1));
-    if (!ok && error[0]) output.push(ObjC.unwrap(error[0].localizedDescription));
+  const output = screens.map((screen, index) => {
+    const frame = screen.frame;
+    const imageURL = workspace.desktopImageURLForScreen(screen);
+    return {
+      displayId: displayNumber(screen, index + 1),
+      name: unwrap(screen.localizedName) || ('Display ' + (index + 1)),
+      index: index + 1,
+      primary: index === 0,
+      currentPath: imageURL ? unwrap(imageURL.path) : '',
+      bounds: {
+        x: Number(frame.origin.x),
+        y: Number(frame.origin.y),
+        width: Number(frame.size.width),
+        height: Number(frame.size.height)
+      }
+    };
   });
-  return output.join('\\n');
+  return JSON.stringify(output);
 }`;
-  const result = await runNativeCommand(
-    allScreens ? "macos-appkit-all-visible-screens" : "macos-appkit-current-screen",
-    "/usr/bin/osascript",
-    ["-l", "JavaScript", "-e", script, filePath, allScreens ? "all" : "current"],
-    8000
-  );
-  nativeResults.push(result);
-  return result;
-}
 
-
-async function applyVisibleScreensBatchWithAppKit(
-  filePaths: string[],
-  nativeResults: NativeCommandResult[]
-) {
-  if (!filePaths.length) return undefined;
-  const script = String.raw`
+const macScreenApplyScript = String.raw`
 ObjC.import('AppKit');
+function unwrap(value) {
+  try { return ObjC.unwrap(value); } catch (_) { return String(value || ''); }
+}
+function displayNumber(screen, fallback) {
+  try {
+    const value = screen.deviceDescription.objectForKey('NSScreenNumber');
+    return String(unwrap(value));
+  } catch (_) { return String(fallback); }
+}
 function run(argv) {
+  const assignments = JSON.parse(argv[0] || '[]');
+  const byDisplay = {};
+  assignments.forEach((item) => { byDisplay[String(item.displayId)] = item.filePath; });
   const workspace = $.NSWorkspace.sharedWorkspace;
   const screens = $.NSScreen.screens.js;
   const output = [];
   screens.forEach((screen, index) => {
-    const imagePath = argv[Math.min(index, argv.length - 1)];
-    if (!imagePath) return;
-    const url = $.NSURL.fileURLWithPath($(imagePath));
+    const displayId = displayNumber(screen, index + 1);
+    const requestedPath = byDisplay[displayId];
+    if (!requestedPath) return;
+    const url = $.NSURL.fileURLWithPath($(requestedPath));
     const error = Ref();
     const ok = workspace.setDesktopImageURLForScreenOptionsError(url, screen, $({}), error);
-    output.push((ok ? 'ok' : 'failed') + ':' + (index + 1) + ':' + imagePath);
-    if (!ok && error[0]) output.push(ObjC.unwrap(error[0].localizedDescription));
+    const reportedURL = workspace.desktopImageURLForScreen(screen);
+    output.push({
+      displayId,
+      requestedPath,
+      reportedPath: reportedURL ? unwrap(reportedURL.path) : '',
+      ok: Boolean(ok),
+      error: !ok && error[0] ? unwrap(error[0].localizedDescription) : ''
+    });
   });
-  return output.join('\n');
+  return JSON.stringify(output);
 }`;
+
+async function discoverMacScreens(nativeResults: NativeCommandResult[]) {
   const result = await runNativeCommand(
-    "macos-appkit-visible-screen-batch",
+    "macos-appkit-list-visible-displays",
     "/usr/bin/osascript",
-    ["-l", "JavaScript", "-e", script, ...filePaths],
-    10000
+    ["-l", "JavaScript", "-e", macScreenDiscoveryScript],
+    8000
   );
   nativeResults.push(result);
-  return result;
-}
-
-async function readVisibleDesktopPaths(nativeResults: NativeCommandResult[]) {
-  const read = await runNativeCommand("macos-visible-desktop-paths", "/usr/bin/osascript", [
-    "-e",
-    'tell application "System Events" to get picture of every desktop'
-  ], 5000);
-  nativeResults.push(read);
-  if (!commandSucceeded(read)) return [] as string[];
-  return read.stdout.split(",").map(normalizeWallpaperPath).filter(Boolean);
-}
-
-type DockPictureRow = {
-  pictureId: number;
-  spaceId?: string;
-  displayId?: string;
-  currentPath?: string;
-};
-
-type MacOSVerification = {
-  verifiedPaths: string[];
-  verificationMethod?: string;
-  permissionStatus: WallpaperApplyDiagnostics["permissionStatus"];
-  changed: boolean;
-  reportedPath?: string;
-};
-
-async function readDockPictureRows(nativeResults: NativeCommandResult[] = []) {
-  const sql = [
-    "select p.ROWID, coalesce(s.space_uuid,''), coalesce(di.display_uuid,''), coalesce(d.value,'')",
-    "from pictures p",
-    "left join spaces s on s.ROWID = p.space_id",
-    "left join displays di on di.ROWID = p.display_id",
-    "left join preferences pr on pr.picture_id = p.ROWID and pr.key = 1",
-    "left join data d on d.ROWID = pr.data_id",
-    "where coalesce(s.space_uuid,'') <> '' or coalesce(di.display_uuid,'') <> ''",
-    "order by p.ROWID desc",
-    "limit 120;"
-  ].join("\n");
-  const read = await runNativeCommand("macos-dock-targets-read", "/usr/bin/sqlite3", ["-separator", "\t", dockWallpaperDatabasePath(), sql], 5000);
-  nativeResults.push(read);
-  if (!commandSucceeded(read)) return [];
-  const unique = new Map<string, DockPictureRow>();
-  for (const row of read.stdout.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
-    const [rawId, rawSpaceId = "", rawDisplayId = "", rawPath = ""] = row.split("\t");
-    const pictureId = Number(rawId);
-    if (!Number.isFinite(pictureId)) continue;
-    const spaceId = rawSpaceId || undefined;
-    const displayId = rawDisplayId || undefined;
-    const key = `${spaceId ?? "no-space"}:${displayId ?? "no-display"}`;
-    if (unique.has(key)) continue;
-    const currentPath = rawPath ? normalizeWallpaperPath(rawPath) : undefined;
-    if (currentPath && !existsSync(currentPath)) continue;
-    unique.set(key, {
-      pictureId,
-      spaceId,
-      displayId,
-      currentPath
-    });
+  if (!commandSucceeded(result)) return [] as MacScreenInfo[];
+  try {
+    const parsed = JSON.parse(result.stdout.trim()) as MacScreenInfo[];
+    return parsed.map((item, index) => ({
+      ...item,
+      index: item.index || index + 1,
+      displayId: String(item.displayId),
+      currentPath: normalizeWallpaperPath(item.currentPath),
+      bounds: item.bounds ?? { x: 0, y: 0, width: 0, height: 0 }
+    }));
+  } catch {
+    return [] as MacScreenInfo[];
   }
-  return [...unique.values()].sort((a, b) => a.pictureId - b.pictureId);
 }
 
-function dockAssignmentsSql(assignments: Array<{ pictureId: number; filePath: string }>) {
-  const statements = ["begin immediate;"];
-  for (const assignment of assignments) {
-    const escapedPath = escapeSql(assignment.filePath);
-    statements.push(
-      `insert or ignore into data(value) values ('${escapedPath}');`,
-      `update preferences set data_id = (select ROWID from data where value = '${escapedPath}' order by ROWID desc limit 1) where picture_id = ${assignment.pictureId} and key = 1;`,
-      `insert into preferences(picture_id,key,data_id) select ${assignment.pictureId}, 1, (select ROWID from data where value = '${escapedPath}' order by ROWID desc limit 1) where not exists (select 1 from preferences where picture_id = ${assignment.pictureId} and key = 1);`
-    );
-  }
-  statements.push("commit;");
-  return statements.join("\n");
-}
-
-async function applyDockAssignments(
-  assignments: Array<{ pictureId: number; filePath: string }>,
-  nativeResults: NativeCommandResult[],
-  method = "macos-dock-database-batch-apply"
+async function applyMacScreens(
+  assignments: Array<{ displayId: string; filePath: string }>,
+  nativeResults: NativeCommandResult[]
 ) {
-  if (!assignments.length) return undefined;
-  const apply = await runNativeCommand(method, "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), dockAssignmentsSql(assignments)], 8000);
-  nativeResults.push(apply);
-  if (commandSucceeded(apply)) {
-    // Do not restart Dock here. Restarting Dock causes a visible black flash and
-    // invalidates Mission Control thumbnails for inactive Spaces. The database
-    // rows point at persistent, uniquely named files and macOS loads them when
-    // each Space becomes active. Visible desktops are refreshed separately via
-    // System Events where available.
-    await new Promise((resolve) => setTimeout(resolve, 180));
+  const result = await runNativeCommand(
+    "macos-appkit-apply-visible-displays",
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", macScreenApplyScript, JSON.stringify(assignments)],
+    12000
+  );
+  nativeResults.push(result);
+  if (!commandSucceeded(result)) return { result, responses: [] as MacApplyResponse[] };
+  try {
+    const responses = JSON.parse(result.stdout.trim()) as MacApplyResponse[];
+    return {
+      result,
+      responses: responses.map((item) => ({
+        ...item,
+        displayId: String(item.displayId),
+        requestedPath: normalizeWallpaperPath(item.requestedPath) ?? item.requestedPath,
+        reportedPath: normalizeWallpaperPath(item.reportedPath)
+      }))
+    };
+  } catch {
+    return { result, responses: [] as MacApplyResponse[] };
   }
-  return apply;
 }
 
-async function verifyMacOSWallpaper(
-  filePath: string,
-  nativeResults: NativeCommandResult[],
-  options: { targetIndex?: number; dockPictureId?: number; requireEveryDesktop?: boolean } = {}
-): Promise<MacOSVerification> {
-  const targetPath = normalizeWallpaperPath(filePath);
-  const verifiedPaths: string[] = [];
-  let verificationMethod: string | undefined;
-  let permissionStatus: WallpaperApplyDiagnostics["permissionStatus"] = "not-checked";
+function successfulMacApplyCount(
+  assignments: Array<{ displayId: string; filePath: string }>,
+  responses: MacApplyResponse[]
+) {
+  const expected = new Map(assignments.map((item) => [item.displayId, normalizeWallpaperPath(item.filePath) ?? item.filePath]));
+  return responses.filter((response) => response.ok && response.reportedPath === expected.get(response.displayId)).length;
+}
 
-  const systemEventsRead = await runNativeCommand("macos-system-events-read", "/usr/bin/osascript", [
-    "-e",
-    'tell application "System Events" to get picture of every desktop'
-  ], 5000);
-  nativeResults.push(systemEventsRead);
-  if (commandSucceeded(systemEventsRead)) {
-    verifiedPaths.push(...systemEventsRead.stdout.split(",").map(normalizeWallpaperPath).filter(Boolean));
-    verificationMethod = "System Events";
-    permissionStatus = "verified";
-  } else if (systemEventsRead.timedOut) {
-    permissionStatus = "automation-timeout";
-  } else if (/not authorized|not allowed|permission|denied/i.test(`${systemEventsRead.stderr}\n${systemEventsRead.error ?? ""}`)) {
-    permissionStatus = "automation-denied";
-  }
+async function applyMacScreensWithRetry(
+  assignments: Array<{ displayId: string; filePath: string }>,
+  nativeResults: NativeCommandResult[]
+) {
+  const first = await applyMacScreens(assignments, nativeResults);
+  if (successfulMacApplyCount(assignments, first.responses) === assignments.length) return first;
 
-  if (!verifiedPaths.includes(targetPath)) {
-    const sql = [
-      "select value from data where value in (",
-      `'${escapeSql(filePath)}',`,
-      `'${escapeSql(targetPath)}',`,
-      `'${escapeSql(filePath.replace(os.homedir(), "~"))}',`,
-      `'${escapeSql(targetPath.replace(os.homedir(), "~"))}'`,
-      ") limit 10;"
-    ].join("");
-    const databaseRead = await runNativeCommand("macos-dock-database-read", "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), sql], 5000);
-    nativeResults.push(databaseRead);
-    if (commandSucceeded(databaseRead)) {
-      const paths = databaseRead.stdout.split(/\r?\n/).map(normalizeWallpaperPath).filter(Boolean);
-      verifiedPaths.push(...paths);
-        if (paths.includes(targetPath)) {
-        verificationMethod = "Dock wallpaper database";
-        permissionStatus = "verified";
-      }
-    }
-  }
+  // WallpaperAgent occasionally drops back-to-back changes. Give it a full
+  // second to catch up, then perform one bounded verification retry.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const second = await applyMacScreens(assignments, nativeResults);
+  return successfulMacApplyCount(assignments, second.responses) >= successfulMacApplyCount(assignments, first.responses)
+    ? second
+    : first;
+}
 
-  let dockReportedPath: string | undefined;
-  if (options.dockPictureId) {
-    const sql = [
-      "select coalesce(d.value,'')",
-      "from pictures p",
-      "left join preferences pr on pr.picture_id = p.ROWID and pr.key = 1",
-      "left join data d on d.ROWID = pr.data_id",
-      `where p.ROWID = ${options.dockPictureId}`,
-      "limit 1;"
-    ].join(" ");
-    const dockTargetRead = await runNativeCommand("macos-dock-target-read", "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), sql], 5000);
-    nativeResults.push(dockTargetRead);
-    if (commandSucceeded(dockTargetRead)) {
-      dockReportedPath = dockTargetRead.stdout.trim() ? normalizeWallpaperPath(dockTargetRead.stdout) : undefined;
-      if (dockReportedPath) verifiedPaths.push(dockReportedPath);
-      if (dockReportedPath === targetPath) {
-        verificationMethod = "Dock wallpaper database target";
-        permissionStatus = "verified";
-      }
-    }
-  }
-
-  const indexedPath = options.targetIndex ? verifiedPaths[options.targetIndex - 1] : undefined;
-  const changed = options.requireEveryDesktop
-    ? verifiedPaths.length > 0 && verifiedPaths.every((item) => item === targetPath)
-    : options.dockPictureId
-      ? dockReportedPath === targetPath
-    : options.targetIndex
-      ? indexedPath === targetPath
-      : verifiedPaths.includes(targetPath);
-
+function targetFromScreen(screen: MacScreenInfo, currentDisplayId?: string): WallpaperTarget {
+  const isCurrent = currentDisplayId ? String(currentDisplayId) === screen.displayId : screen.primary;
   return {
-    verifiedPaths,
-    verificationMethod,
-    permissionStatus,
-    changed,
-    reportedPath: options.dockPictureId ? dockReportedPath : indexedPath ?? (verifiedPaths.includes(targetPath) ? targetPath : verifiedPaths[0])
+    id: `display-${screen.displayId}`,
+    label: `${screen.name} (${Math.round(screen.bounds.width)}×${Math.round(screen.bounds.height)})`,
+    index: screen.index,
+    displayId: screen.displayId,
+    displayName: screen.name,
+    current: isCurrent,
+    visible: true,
+    primary: screen.primary,
+    targetType: "physical-display",
+    reliable: true,
+    limitation: "This target identifies a physical display. Current-Space modes use AppKit; All Desktops modes additionally use the macOS wallpaper Store and an active-Space observer.",
+    currentPath: screen.currentPath,
+    bounds: screen.bounds
   };
 }
 
+function legacyTargetMode(options: WallpaperControllerOptions): WallpaperTargetMode {
+  if (options.targetMode) return options.targetMode;
+  if (options.scope === "current-desktop") return "current-desktop";
+  if (options.monitorMode === "primary") return "current-monitor";
+  return "all-visible-monitors";
+}
+
+function resultPermissionStatus(responses: MacApplyResponse[]): WallpaperApplyDiagnostics["permissionStatus"] {
+  if (responses.length && responses.every((item) => item.ok && item.reportedPath === item.requestedPath)) return "verified";
+  const errorText = responses.map((item) => item.error ?? "").join(" ").toLowerCase();
+  if (errorText.includes("not authorized") || errorText.includes("permission") || errorText.includes("denied")) return "automation-denied";
+  return "verification-failed";
+}
+
 export class MacOSWallpaperController implements WallpaperController {
-  async getTargets() {
-    const nativeResults: NativeCommandResult[] = [];
-    const dockRows = await readDockPictureRows(nativeResults);
-    const read = await runNativeCommand("macos-system-events-targets", "/usr/bin/osascript", [
-      "-e",
-      'tell application "System Events"',
-      "-e",
-      "set output to {}",
-      "-e",
-      "set desktopItems to every desktop",
-      "-e",
-      "repeat with i from 1 to count desktopItems",
-      "-e",
-      "set desktopItem to item i of desktopItems",
-      "-e",
-      "set end of output to ((i as text) & tab & (picture of desktopItem as text))",
-      "-e",
-      "end repeat",
-      "-e",
-      "end tell",
-      "-e",
-      "return output"
-    ], 5000);
-    nativeResults.push(read);
+  private readonly spaceObserver = new MacOSActiveSpaceWallpaperObserver();
 
-    const visibleRows = commandSucceeded(read)
-      ? read.stdout
-          .split(", ")
-          .flatMap((entry) => entry.split(/\r?\n/))
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-          .map((row, fallbackIndex) => {
-            const [rawIndex, rawPath = ""] = row.split("\t");
-            return {
-              index: Number(rawIndex) || fallbackIndex + 1,
-              currentPath: rawPath ? normalizeWallpaperPath(rawPath) : undefined
-            };
-          })
-      : [];
-
-    return buildMacOSWallpaperTargets(
-      dockRows,
-      visibleRows,
-      read.timedOut
-        ? "macOS Automation timed out while listing desktops."
-        : read.error || read.stderr || "macOS did not expose desktop targets."
-    );
+  dispose() {
+    this.spaceObserver.stop();
   }
 
-  async setWallpapers(items: WallpaperBatchItem[], options: WallpaperControllerOptions = {}) {
+  stopSpaceObserver() {
+    this.spaceObserver.stop();
+  }
+
+  getMacOSDiagnostic(options: WallpaperTargetDiscoveryOptions = {}) {
+    return diagnoseMacOSWallpaperEnvironment(options.currentDisplayId);
+  }
+
+  getReferencedWallpaperPaths(options: WallpaperTargetDiscoveryOptions = {}) {
+    return getMacOSReferencedWallpaperPaths(options.currentDisplayId);
+  }
+
+  async getTargets(options: WallpaperTargetDiscoveryOptions = {}) {
     const nativeResults: NativeCommandResult[] = [];
-    const dockItems = items
-      .map((item) => ({ item, pictureId: dockPictureIdFromTargetId(item.targetId) }))
-      .filter((entry): entry is { item: WallpaperBatchItem; pictureId: number } => Boolean(entry.pictureId));
-    const fallbackItems = items.filter((item) => !dockPictureIdFromTargetId(item.targetId));
-    const results: WallpaperTargetResult[] = [];
-    const previousRows = dockItems.length ? await readDockPictureRows(nativeResults) : [];
-    const previousById = new Map(previousRows.map((row) => [row.pictureId, row.currentPath]));
-    const rowById = new Map(previousRows.map((row) => [row.pictureId, row]));
-    const visibleBeforeApply = dockItems.length ? await readVisibleDesktopPaths(nativeResults) : [];
-    const classifications = classifyMacOSDockRows(
-      previousRows,
-      visibleBeforeApply.map((currentPath, index) => ({ index: index + 1, currentPath }))
-    );
-    const classificationById = new Map(classifications.map((item) => [item.pictureId, item]));
-
-    if (dockItems.length) {
-      const apply = await applyDockAssignments(
-        dockItems.map(({ item, pictureId }) => ({ pictureId, filePath: item.filePath })),
-        nativeResults
-      );
-      // Refresh the currently visible screen(s) through AppKit so the active
-      // desktop changes without restarting Dock or showing a black frame.
-      const visibleDockItems = dockItems
-        .filter(({ pictureId }) => classificationById.get(pictureId)?.visible)
-        .sort((a, b) => (classificationById.get(a.pictureId)?.visibleIndex ?? 999) - (classificationById.get(b.pictureId)?.visibleIndex ?? 999));
-      if (visibleDockItems.length) {
-        await applyVisibleScreensBatchWithAppKit(visibleDockItems.map(({ item }) => item.filePath), nativeResults);
-      }
-      for (const { item, pictureId } of dockItems) {
-        const itemResults = [...nativeResults];
-        const verification = commandSucceeded(apply ?? { method: "", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false })
-          ? await verifyMacOSWallpaper(item.filePath, itemResults, { dockPictureId: pictureId })
-          : { verifiedPaths: [] as string[], verificationMethod: undefined, permissionStatus: "not-checked" as const, changed: false };
-        const row = rowById.get(pictureId);
-        const classification = classificationById.get(pictureId);
-        const visuallyVerifiable = Boolean(classification?.visible);
-        const diagnostics: WallpaperApplyDiagnostics = {
-          renderedPath: item.filePath,
-          fileSize: item.fileSize,
-          validImage: true,
-          nativeResults: itemResults,
-          verifiedPaths: verification.verifiedPaths,
-          verificationMethod: visuallyVerifiable
-            ? verification.verificationMethod
-            : verification.changed ? "Dock assignment recorded; inactive Space cannot be visually verified until activated" : verification.verificationMethod,
-          permissionStatus: visuallyVerifiable && verification.changed
-            ? "verified"
-            : verification.permissionStatus === "not-checked" && visuallyVerifiable ? "verification-failed" : verification.permissionStatus,
-          changed: verification.changed,
-          lastError: verification.changed ? undefined : apply?.error || apply?.stderr || "macOS Dock database did not report the requested wallpaper for this Space.",
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          targetIndex: pictureId,
-          displayId: row?.displayId,
-          spaceId: row?.spaceId,
-          targetType: classification?.targetType ?? "inactive-space",
-          visible: classification?.visible ?? false,
-          requestedPath: item.filePath,
-          reportedPath: verification.reportedPath,
-          verificationResult: visuallyVerifiable
-            ? verification.changed ? "matched" : verification.reportedPath ? "mismatched" : "unavailable"
-            : "unavailable"
-        };
-        results.push({
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          filePath: item.filePath,
-          fileSize: item.fileSize,
-          diagnostics,
-          ok: diagnostics.changed,
-          error: diagnostics.lastError
-        });
-      }
+    const screens = await discoverMacScreens(nativeResults);
+    if (!screens.length) {
+      const error = nativeResults.at(-1);
+      return [{
+        id: "display-unavailable",
+        label: "Current display",
+        index: 1,
+        current: true,
+        visible: true,
+        targetType: "physical-display" as const,
+        reliable: false,
+        limitation: error?.timedOut
+          ? "macOS timed out while listing physical displays."
+          : error?.error || error?.stderr || "macOS did not expose any physical displays."
+      }];
     }
-
-    const dockResults = results.filter((result) => Boolean(dockPictureIdFromTargetId(result.targetId)));
-    const dockBatchFailed = dockResults.some((result) => !result.ok);
-    if (dockBatchFailed) {
-      const rollbackItems = dockItems.map(({ pictureId }) => ({
-        pictureId,
-        filePath: previousById.get(pictureId)
-      })).filter((item): item is { pictureId: number; filePath: string } => Boolean(item.filePath));
-      if (rollbackItems.length) {
-        await applyDockAssignments(rollbackItems, nativeResults, "macos-dock-database-rollback");
-        const visibleRollbackItems = rollbackItems
-          .filter(({ pictureId }) => classificationById.get(pictureId)?.visible)
-          .sort((a, b) => (classificationById.get(a.pictureId)?.visibleIndex ?? 999) - (classificationById.get(b.pictureId)?.visibleIndex ?? 999));
-        if (visibleRollbackItems.length) {
-          await applyVisibleScreensBatchWithAppKit(visibleRollbackItems.map((item) => item.filePath), nativeResults);
-        }
-      }
-      for (const result of dockResults) {
-        if (result.ok) {
-          result.ok = false;
-          result.error = "Wallpaper batch was rolled back because another desktop target failed.";
-          result.diagnostics.changed = false;
-          result.diagnostics.lastError = result.error;
-          result.diagnostics.verificationResult = "unavailable";
-        }
-      }
-    }
-
-    for (const item of fallbackItems) {
-      try {
-        const diagnostics = await this.setWallpaper(item.filePath, { ...options, scope: "different-per-desktop", targetId: item.targetId });
-        diagnostics.fileSize = item.fileSize;
-        diagnostics.validImage = true;
-        diagnostics.targetLabel = item.targetLabel;
-        results.push({
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          filePath: item.filePath,
-          fileSize: item.fileSize,
-          diagnostics,
-          ok: diagnostics.changed,
-          error: diagnostics.lastError
-        });
-      } catch (error) {
-        const diagnostics = error && typeof error === "object" && "diagnostics" in error
-          ? error.diagnostics as WallpaperApplyDiagnostics
-          : { nativeResults: [], verifiedPaths: [], changed: false, lastError: error instanceof Error ? error.message : "Unable to set wallpaper target." };
-        results.push({
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          filePath: item.filePath,
-          fileSize: item.fileSize,
-          diagnostics,
-          ok: false,
-          error: diagnostics.lastError
-        });
-      }
-    }
-
-    return items.map((item) => results.find((result) => result.targetId === item.targetId)!).filter(Boolean);
+    return screens.map((screen) => targetFromScreen(screen, options.currentDisplayId));
   }
 
   async setWallpaper(filePath: string, options: WallpaperControllerOptions = {}): Promise<WallpaperApplyDiagnostics> {
     const nativeResults: NativeCommandResult[] = [];
-    const scope = options.scope ?? "same-all-desktops";
-    const targetIndex = targetIndexFromId(options.targetId);
-    const dockPictureId = dockPictureIdFromTargetId(options.targetId);
-    const dockTargets = dockPictureId ? await readDockPictureRows(nativeResults) : [];
-    const dockTarget = dockTargets.find((target) => target.pictureId === dockPictureId);
-    const scriptLines = dockPictureId
-      ? []
-      : scope === "current-desktop"
-      ? [
-          'tell application "Finder" to set desktop picture to imageFile'
-        ]
-      : targetIndex && !dockPictureId
-        ? [
-            'tell application "System Events"',
-            "set desktopItems to every desktop",
-            `if (count desktopItems) < ${targetIndex} then error "Desktop target ${targetIndex} is unavailable."`,
-            `set picture of item ${targetIndex} of desktopItems to imageFile`,
-            "end tell"
-          ]
-        : [
-            'tell application "System Events"',
-            "repeat with desktopItem in every desktop",
-            "set picture of desktopItem to imageFile",
-            "end repeat",
-            "end tell"
-          ];
-    const appKitApply = !dockPictureId
-      ? await applyVisibleScreensWithAppKit(filePath, nativeResults, scope === "same-all-desktops")
+    const mode = legacyTargetMode(options);
+
+    const screens = await discoverMacScreens(nativeResults);
+    const targets = screens.map((screen) => targetFromScreen(screen, options.currentDisplayId));
+    let selected: WallpaperTarget[];
+    if (options.targetId) selected = targets.filter((target) => target.id === options.targetId || target.displayId === options.targetId);
+    else selected = selectWallpaperTargets(targets, mode, options.monitorId);
+
+    if (!selected.length) {
+      return {
+        renderedPath: filePath,
+        nativeResults,
+        verifiedPaths: [],
+        permissionStatus: "verification-failed",
+        changed: false,
+        lastError: "The selected physical display is not currently connected or visible.",
+        targetMode: mode,
+        verificationResult: "unavailable",
+        requestedTargetCount: 0,
+        appliedTargetCount: 0
+      };
+    }
+
+    const normalizedPath = normalizeWallpaperPath(filePath) ?? filePath;
+    const assignments = selected.map((target) => ({ displayId: target.displayId!, filePath: normalizedPath }));
+    let advancedError: string | undefined;
+    let advancedImmediate = false;
+    let allSpacesStatus: WallpaperApplyDiagnostics["macOSAllSpaces"];
+    if (wallpaperTargetModeNeedsInactiveSpaces(mode)) {
+      const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
+      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
+      nativeResults.push(...advanced.commands);
+      advancedImmediate = Boolean(advanced.summary?.ok);
+      const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
+      if (advanced.summary) {
+        advanced.summary.observerStarted = observerStarted;
+        advanced.summary.observerFallback = !advanced.summary.ok && observerStarted;
+        allSpacesStatus = advanced.summary;
+      }
+      if (!advancedImmediate) {
+        advancedError = advanced.summary?.error
+          || advanced.summary?.warning
+          || advanced.command.error
+          || advanced.command.stderr
+          || `${wallpaperTargetModeLabel(mode)} could not be configured immediately.`;
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+    } else {
+      this.spaceObserver.stop();
+    }
+
+    const { result, responses } = await applyMacScreensWithRetry(assignments, nativeResults);
+    const responseByDisplay = new Map(responses.map((item) => [item.displayId, item]));
+    const matched = selected.filter((target) => {
+      const response = responseByDisplay.get(target.displayId!);
+      return Boolean(response?.ok && response.reportedPath === normalizedPath);
+    });
+    const changed = matched.length === selected.length;
+    const partial = (matched.length > 0 && !changed) || Boolean(advancedError);
+    const firstResponse = selected.length === 1 ? responseByDisplay.get(selected[0].displayId!) : undefined;
+    const lastError = !changed
+      ? responses.find((item) => item.error)?.error
+        || result.error
+        || result.stderr
+        || (matched.length > 0 ? `Wallpaper changed on ${matched.length} of ${selected.length} visible displays.` : "macOS did not confirm the wallpaper changed on the selected display target(s).")
       : undefined;
-    const systemEventsApply = await runNativeCommand("macos-system-events-apply", "/usr/bin/osascript", [
-      "-e",
-      "on run argv",
-      "-e",
-      "set imagePath to item 1 of argv",
-      "-e",
-      "set imageFile to POSIX file imagePath",
-      ...scriptLines.flatMap((line) => ["-e", line]),
-      "-e",
-      'return "applied-system-events:" & imagePath',
-      "-e",
-      "end run",
-      filePath
-    ]);
-    nativeResults.push(systemEventsApply);
-
-    let applyResult = appKitApply && commandSucceeded(appKitApply) ? appKitApply : systemEventsApply;
-    if (!dockPictureId && scope === "same-all-desktops") {
-      const rows = await readDockPictureRows(nativeResults);
-      if (rows.length) {
-        const ids = rows.map((row) => row.pictureId).filter(Number.isFinite).join(",");
-        const sql = [
-          "insert or ignore into data(value) values",
-          `('${escapeSql(filePath)}');`,
-          "update preferences set data_id = (select ROWID from data where value =",
-          `'${escapeSql(filePath)}' order by ROWID desc limit 1)`,
-          `where picture_id in (${ids}) and key = 1;`,
-          "insert into preferences(picture_id,key,data_id)",
-          `select p.ROWID, 1, (select ROWID from data where value = '${escapeSql(filePath)}' order by ROWID desc limit 1)`,
-          "from pictures p",
-          `where p.ROWID in (${ids})`,
-          "and not exists (select 1 from preferences pr where pr.picture_id = p.ROWID and pr.key = 1);"
-        ].join(" ");
-        const dockAllApply = await runNativeCommand("macos-dock-database-all-apply", "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), sql], 5000);
-        nativeResults.push(dockAllApply);
-        if (commandSucceeded(dockAllApply)) {
-          applyResult = dockAllApply;
-          await new Promise((resolve) => setTimeout(resolve, 180));
-        }
-      }
-    }
-    if (dockPictureId) {
-      const sql = [
-        "insert or ignore into data(value) values",
-        `('${escapeSql(filePath)}');`,
-        "update preferences set data_id = (select ROWID from data where value =",
-        `'${escapeSql(filePath)}' order by ROWID desc limit 1)`,
-        `where picture_id = ${dockPictureId} and key = 1;`,
-        "insert into preferences(picture_id,key,data_id)",
-        `select ${dockPictureId}, 1, (select ROWID from data where value = '${escapeSql(filePath)}' order by ROWID desc limit 1)`,
-        `where not exists (select 1 from preferences where picture_id = ${dockPictureId} and key = 1);`
-      ].join(" ");
-      const dockApply = await runNativeCommand("macos-dock-database-target-apply", "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), sql], 5000);
-      nativeResults.push(dockApply);
-      applyResult = dockApply;
-      if (commandSucceeded(dockApply)) {
-        await new Promise((resolve) => setTimeout(resolve, 180));
-      }
-    }
-    let verification: MacOSVerification = commandSucceeded(applyResult)
-      ? await verifyMacOSWallpaper(filePath, nativeResults, {
-          targetIndex,
-          dockPictureId,
-          requireEveryDesktop: scope === "same-all-desktops" && !targetIndex
-        })
-      : { verifiedPaths: [] as string[], verificationMethod: undefined, permissionStatus: "not-checked" as const, changed: false };
-
-    if (!verification.changed && !dockPictureId) {
-      const finderApply = await runNativeCommand("macos-finder-apply", "/usr/bin/osascript", [
-        "-e",
-        "on run argv",
-        "-e",
-        "set imagePath to item 1 of argv",
-        "-e",
-        'tell application "Finder" to set desktop picture to POSIX file imagePath',
-        "-e",
-        'return "applied-finder:" & imagePath',
-        "-e",
-        "end run",
-        filePath
-      ]);
-      nativeResults.push(finderApply);
-      applyResult = finderApply;
-      if (commandSucceeded(finderApply)) {
-        verification = await verifyMacOSWallpaper(filePath, nativeResults, {
-          targetIndex,
-          dockPictureId,
-          requireEveryDesktop: scope === "same-all-desktops" && !targetIndex
-        });
-      }
-    }
-
-    const { verifiedPaths, verificationMethod, permissionStatus, changed } = verification;
-    const lastError = !commandSucceeded(applyResult)
-      ? applyResult.error || applyResult.stderr || "macOS native wallpaper command failed."
-      : changed
-        ? undefined
-        : "macOS did not report the rendered file as the active desktop picture.";
-
-    const finalPermissionStatus: WallpaperApplyDiagnostics["permissionStatus"] = changed
-      ? "verified"
-      : permissionStatus === "not-checked"
-        ? "verification-failed"
-        : permissionStatus;
-    const verificationResult: WallpaperApplyDiagnostics["verificationResult"] = changed
-      ? "matched"
-      : verification.reportedPath
-        ? "mismatched"
-        : "unavailable";
 
     return {
-      renderedPath: filePath,
+      renderedPath: normalizedPath,
       nativeResults,
-      verifiedPaths,
-      verificationMethod,
-      permissionStatus: finalPermissionStatus,
+      verifiedPaths: matched.map(() => normalizedPath),
+      verificationMethod: wallpaperTargetModeNeedsInactiveSpaces(mode)
+        ? advancedImmediate
+          ? "Transactional macOS wallpaper Store update for inactive Spaces, active-Space observer, and NSWorkspace verification on each visible NSScreen"
+          : "Active-Space observer fallback plus NSWorkspace verification on each visible NSScreen"
+        : "NSWorkspace desktopImageURL(for:) on each visible NSScreen",
+      permissionStatus: resultPermissionStatus(responses),
       changed,
+      partial,
       lastError,
-      targetId: options.targetId,
-      targetLabel: targetIndex ? `Desktop ${targetIndex}` : dockPictureId ? `Desktop target ${dockPictureId}` : scope === "current-desktop" ? "Current desktop" : "All desktops",
-      targetIndex: targetIndex ?? dockTarget?.pictureId,
-      displayId: dockTarget?.displayId,
-      spaceId: dockTarget?.spaceId,
-      requestedPath: filePath,
-      reportedPath: verification.reportedPath,
-      verificationResult
+      targetId: selected.length === 1 ? selected[0].id : undefined,
+      targetLabel: selected.length === 1 ? selected[0].label : wallpaperTargetModeLabel(mode),
+      displayId: selected.length === 1 ? selected[0].displayId : undefined,
+      displayName: selected.length === 1 ? selected[0].displayName : undefined,
+      targetType: "physical-display",
+      visible: true,
+      requestedPath: normalizedPath,
+      reportedPath: firstResponse?.reportedPath,
+      verificationResult: changed ? "matched" : firstResponse?.reportedPath ? "mismatched" : "unavailable",
+      targetMode: mode,
+      requestedTargetCount: selected.length,
+      appliedTargetCount: matched.length,
+      macOSAllSpaces: allSpacesStatus,
+      limitation: wallpaperTargetModeNeedsInactiveSpaces(mode)
+        ? advancedError
+          ? `${advancedError} Connected visible Spaces were applied now; other Spaces will be re-applied automatically when they become active while the app is running.`
+          : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active for newly created or externally changed Spaces.` : "All-desktop status was unavailable."
+        : undefined
     };
+  }
+
+  async setWallpapers(items: WallpaperBatchItem[], options: WallpaperControllerOptions = {}) {
+    const nativeResults: NativeCommandResult[] = [];
+    const mode = legacyTargetMode(options);
+
+    const screens = await discoverMacScreens(nativeResults);
+    const screenById = new Map(screens.map((screen) => [screen.displayId, screen]));
+    const assignments = items.flatMap((item) => {
+      const displayId = item.displayId ?? item.targetId.replace(/^display-/, "");
+      return screenById.has(displayId) ? [{ displayId, filePath: normalizeWallpaperPath(item.filePath) ?? item.filePath }] : [];
+    });
+    let advancedError: string | undefined;
+    let advancedImmediate = false;
+    let allSpacesStatus: WallpaperApplyDiagnostics["macOSAllSpaces"];
+    if (assignments.length && wallpaperTargetModeNeedsInactiveSpaces(mode)) {
+      const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
+      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
+      nativeResults.push(...advanced.commands);
+      advancedImmediate = Boolean(advanced.summary?.ok);
+      const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
+      if (advanced.summary) {
+        advanced.summary.observerStarted = observerStarted;
+        advanced.summary.observerFallback = !advanced.summary.ok && observerStarted;
+        allSpacesStatus = advanced.summary;
+      }
+      if (!advancedImmediate) {
+        advancedError = advanced.summary?.error || advanced.summary?.warning || advanced.command.error || advanced.command.stderr || `${wallpaperTargetModeLabel(mode)} could not be configured immediately.`;
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+    } else {
+      this.spaceObserver.stop();
+    }
+    const { result, responses } = assignments.length
+      ? await applyMacScreensWithRetry(assignments, nativeResults)
+      : { result: { method: "macos-appkit-apply-visible-displays", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false, error: "No matching visible displays." } as NativeCommandResult, responses: [] as MacApplyResponse[] };
+    const responseByDisplay = new Map(responses.map((item) => [item.displayId, item]));
+
+    return items.map((item) => {
+      const displayId = item.displayId ?? item.targetId.replace(/^display-/, "");
+      const requestedPath = normalizeWallpaperPath(item.filePath) ?? item.filePath;
+      const response = responseByDisplay.get(displayId);
+      const ok = Boolean(response?.ok && response.reportedPath === requestedPath);
+      const screen = screenById.get(displayId);
+      const error = ok
+        ? undefined
+        : response?.error || result.error || result.stderr || advancedError || `Display ${item.targetLabel} is not currently connected or visible.`;
+      const diagnostics: WallpaperApplyDiagnostics = {
+        renderedPath: requestedPath,
+        fileSize: item.fileSize,
+        validImage: true,
+        nativeResults: [...nativeResults],
+        verifiedPaths: ok ? [requestedPath] : [],
+        verificationMethod: wallpaperTargetModeNeedsInactiveSpaces(mode)
+          ? advancedImmediate
+            ? "Transactional macOS wallpaper Store update, active-Space observer, and NSWorkspace verification on the requested visible NSScreen"
+            : "Active-Space observer fallback plus NSWorkspace verification on the requested visible NSScreen"
+          : "NSWorkspace desktopImageURL(for:) on the requested visible NSScreen",
+        permissionStatus: ok ? "verified" : resultPermissionStatus(response ? [response] : []),
+        changed: ok,
+        partial: Boolean(advancedError),
+        lastError: error,
+        targetId: item.targetId,
+        targetLabel: item.targetLabel,
+        displayId,
+        displayName: screen?.name,
+        targetType: "physical-display",
+        visible: Boolean(screen),
+        requestedPath,
+        reportedPath: response?.reportedPath,
+        verificationResult: ok ? "matched" : response?.reportedPath ? "mismatched" : "unavailable",
+        targetMode: mode,
+        requestedTargetCount: 1,
+        appliedTargetCount: ok ? 1 : 0,
+        macOSAllSpaces: allSpacesStatus,
+        limitation: wallpaperTargetModeNeedsInactiveSpaces(mode)
+          ? advancedError
+            ? `${advancedError} This display's visible Space was applied now; other Spaces will be synchronized when activated while the app is running.`
+            : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active for maintenance.` : "All-desktop status was unavailable."
+          : undefined
+      };
+      return { targetId: item.targetId, targetLabel: item.targetLabel, filePath: item.filePath, fileSize: item.fileSize, diagnostics, ok, error };
+    });
   }
 }
 
@@ -762,7 +598,7 @@ export class UnsupportedWallpaperController implements WallpaperController {
   async setWallpaper(filePath: string): Promise<WallpaperApplyDiagnostics> {
     const diagnostics = emptyDiagnostics(filePath, false);
     diagnostics.lastError = "Setting the desktop wallpaper is not supported on this platform yet.";
-    throw Object.assign(new Error("Setting the desktop wallpaper is not supported on this platform yet."), { diagnostics });
+    throw Object.assign(new Error(diagnostics.lastError), { diagnostics });
   }
 }
 

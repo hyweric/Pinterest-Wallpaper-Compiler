@@ -27,7 +27,7 @@ import type {
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
 import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
-import { planFadeOverlayAssignments } from "../shared/wallpaper.js";
+import { planFadeOverlayAssignments, selectWallpaperTargets } from "../shared/wallpaper.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
 const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -38,6 +38,7 @@ let tray: Tray | undefined;
 let isQuitting = false;
 let trayRuntimeState: TrayRuntimeState = { enabled: false, paused: false };
 const pinterestJobs = new Map<string, AbortController>();
+const wallpaperController = createWallpaperController();
 
 // Full-screen BrowserWindow crossfade overlays could remain visible after an
 // interrupted scheduled run and look like a blank/white screen. Keep native
@@ -96,6 +97,17 @@ function showWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   mainWindow?.show();
   mainWindow?.focus();
+}
+
+function currentPhysicalDisplayId() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      return String(screen.getDisplayMatching(mainWindow.getBounds()).id);
+    }
+    return String(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id);
+  } catch {
+    return undefined;
+  }
 }
 
 function updateTrayMenu() {
@@ -397,6 +409,10 @@ async function writeRenderedWallpaper(imageData: ArrayBuffer, suggestedName: str
   return { cacheDir, filePath, file };
 }
 
+async function cleanupGeneratedWallpaperCache(cacheDir: string, currentFilePath: string) {
+  const referenced = await wallpaperController.getReferencedWallpaperPaths?.({ currentDisplayId: currentPhysicalDisplayId() }).catch(() => [] as string[]) ?? [];
+  return cleanupGeneratedWallpapers(cacheDir, 160, [currentFilePath, ...referenced]);
+}
 
 type FadeOverlayItem = { filePath: string; displayId?: string; current?: boolean; oldFilePath?: string };
 
@@ -547,20 +563,21 @@ async function applyWallpaperFilePath(
   payload: Omit<WallpaperApplyFilePayload, "filePath"> = {}
 ): Promise<WallpaperApplyResult> {
   const generatedFile = await validateRenderedWallpaperImage(filePath);
-  const controller = createWallpaperController();
-  const knownTargets = await controller.getTargets?.().catch(() => []) ?? [];
+  const controller = wallpaperController;
+  const currentDisplayId = currentPhysicalDisplayId();
+  const knownTargets = await controller.getTargets?.({ currentDisplayId }).catch(() => []) ?? [];
+  const targetMode = payload.targetMode
+    ?? (payload.scope === "current-desktop" ? "current-desktop" : payload.monitorMode === "primary" ? "current-monitor" : "all-visible-monitors");
   const requestedTargets = payload.targetId
-    ? knownTargets.filter((target) => target.id === payload.targetId)
-    : payload.monitorMode === "primary" || payload.scope === "current-desktop"
-      ? knownTargets.filter((target) => target.current).slice(0, 1)
-      : knownTargets.filter((target) => target.current);
+    ? knownTargets.filter((target) => target.id === payload.targetId || target.displayId === payload.targetId)
+    : selectWallpaperTargets(knownTargets, targetMode, payload.monitorId);
   const fadeItems = requestedTargets.length
     ? requestedTargets.map((target) => ({ filePath, displayId: target.displayId, current: target.current, oldFilePath: target.currentPath }))
     : [{ filePath }];
   const transition = await startFadeTransition(fadeItems, {
     enabled: payload.transitionEnabled,
     durationMs: payload.transitionDurationMs,
-    allDisplays: payload.monitorMode !== "primary"
+    allDisplays: targetMode === "all-visible-monitors" || targetMode === "all-desktops-all-monitors"
   });
   const transitionAnimation = transition?.begin();
   let diagnostics: WallpaperApplyDiagnostics;
@@ -569,7 +586,10 @@ async function applyWallpaperFilePath(
       monitorMode: payload.monitorMode,
       displayMode: payload.displayMode,
       scope: payload.scope,
-      targetId: payload.targetId
+      targetMode,
+      monitorId: payload.monitorId,
+      targetId: payload.targetId,
+      currentDisplayId
     });
     await transitionAnimation;
     diagnostics.transitionDiagnostics = transition?.diagnostics;
@@ -843,7 +863,7 @@ ipcMain.handle("texture:reveal", async (_event, texturePath: string) => {
 ipcMain.handle("wallpaper:generate", async (_event, payload: WallpaperGeneratePayload): Promise<WallpaperGenerateResult> => {
   try {
     const { cacheDir, filePath, file } = await writeRenderedWallpaper(payload.imageData, payload.suggestedName);
-    void cleanupGeneratedWallpapers(cacheDir, 120, [filePath]).catch((error) => {
+    void cleanupGeneratedWallpaperCache(cacheDir, filePath).catch((error) => {
       console.warn("Generated wallpaper cleanup failed", error);
     });
     return {
@@ -865,7 +885,7 @@ ipcMain.handle("wallpaper:apply", async (_event, payload: WallpaperApplyPayload)
   try {
     const { cacheDir, filePath } = await writeRenderedWallpaper(payload.imageData, payload.suggestedName);
     const result = await applyWallpaperFilePath(filePath, payload);
-    void cleanupGeneratedWallpapers(cacheDir, 120, [filePath]).catch((error) => {
+    void cleanupGeneratedWallpaperCache(cacheDir, filePath).catch((error) => {
       console.warn("Generated wallpaper cleanup failed", error);
     });
     return result;
@@ -896,7 +916,8 @@ ipcMain.handle("wallpaper:apply-file", async (_event, payload: WallpaperApplyFil
 });
 
 ipcMain.handle("wallpaper:targets", async () => {
-  const controller = createWallpaperController();
+  const controller = wallpaperController;
+  const currentDisplayId = currentPhysicalDisplayId();
   if (!controller.getTargets) {
     return [{
       id: "desktop-1",
@@ -907,7 +928,28 @@ ipcMain.handle("wallpaper:targets", async () => {
       limitation: "This platform does not expose individual desktop targets."
     }];
   }
-  return controller.getTargets();
+  return controller.getTargets({ currentDisplayId });
+});
+
+ipcMain.handle("wallpaper:macos-diagnostic", async () => {
+  if (!wallpaperController.getMacOSDiagnostic) {
+    return {
+      ok: false,
+      generatedAt: new Date().toISOString(),
+      platform: process.platform,
+      activeSpaceUUIDs: [],
+      displays: [],
+      totalSpaceCount: 0,
+      wallpaperAgentRunning: false,
+      dockRunning: false,
+      store: { path: "", exists: false, readable: false, writable: false, schema: "missing", compatible: false, topLevelKeys: [], displayRecordCount: 0, spaceRecordCount: 0, desktopRecordCount: 0, references: [] },
+      legacyDatabase: { path: "", exists: false, readable: false, writable: false, compatible: false, tables: [], pictureRecordCount: 0, targetRecordCount: 0, references: [] },
+      recommendedStrategy: "unsupported",
+      warnings: [],
+      errors: ["macOS wallpaper diagnostics are unavailable on this platform."]
+    };
+  }
+  return wallpaperController.getMacOSDiagnostic({ currentDisplayId: currentPhysicalDisplayId() });
 });
 
 ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApplyTargetsPayload) => {
@@ -945,8 +987,9 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
     }
   }
 
-  const controller = createWallpaperController();
-  const knownTargets = await controller.getTargets?.().catch(() => []) ?? [];
+  const controller = wallpaperController;
+  const currentDisplayId = currentPhysicalDisplayId();
+  const knownTargets = await controller.getTargets?.({ currentDisplayId }).catch(() => []) ?? [];
   const transition = await startFadeTransition(
     writtenItems.map((item) => ({
       filePath: item.filePath,
@@ -957,7 +1000,7 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
     {
       enabled: payload.transitionEnabled,
       durationMs: payload.transitionDurationMs,
-      allDisplays: payload.scope === "same-all-desktops"
+      allDisplays: payload.targetMode === "all-visible-monitors" || payload.targetMode === "all-desktops-all-monitors"
     }
   );
   const transitionAnimation = transition?.begin();
@@ -965,7 +1008,10 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
   if (writtenItems.length && controller.setWallpapers) {
     appliedResults = await controller.setWallpapers(writtenItems, {
       displayMode: payload.displayMode,
-      scope: payload.scope ?? "different-per-desktop"
+      scope: payload.scope ?? "different-per-desktop",
+      targetMode: payload.targetMode,
+      monitorId: payload.monitorId,
+      currentDisplayId
     });
   } else {
     for (const item of writtenItems) {
@@ -973,7 +1019,10 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
         const diagnostics = await controller.setWallpaper(item.filePath, {
           displayMode: payload.displayMode,
           scope: payload.scope ?? "different-per-desktop",
-          targetId: item.targetId
+          targetMode: payload.targetMode,
+          monitorId: payload.monitorId,
+          targetId: item.targetId,
+          currentDisplayId
         });
         diagnostics.renderedPath = item.filePath;
         diagnostics.fileSize = item.fileSize;
@@ -1016,6 +1065,8 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
   for (const result of targetResults) result.diagnostics.transitionDiagnostics = transition?.diagnostics;
   await cleanupGeneratedWallpapers(cacheDir, 120, writtenItems.map((item) => item.filePath));
   const ok = targetResults.length === payload.items.length && targetResults.every((result) => result.ok);
+  const appliedTargetCount = targetResults.filter((result) => result.ok).length;
+  const partial = appliedTargetCount > 0 && !ok;
   await transition?.complete(ok);
   const lastError = targetResults.find((result) => !result.ok)?.error;
   return {
@@ -1027,6 +1078,10 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
       nativeResults: targetResults.flatMap((result) => result.diagnostics.nativeResults),
       verifiedPaths: targetResults.flatMap((result) => result.diagnostics.verifiedPaths),
       changed: ok,
+      partial,
+      targetMode: payload.targetMode,
+      requestedTargetCount: payload.items.length,
+      appliedTargetCount,
       targetResults,
       lastError
     },
@@ -1036,6 +1091,7 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
 
 ipcMain.handle("tray:set-state", (_event, state: TrayRuntimeState) => {
   trayRuntimeState = state;
+  if (!state.enabled || state.paused) wallpaperController.stopSpaceObserver?.();
   updateTrayMenu();
   return trayRuntimeState;
 });
@@ -1066,4 +1122,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  wallpaperController.dispose?.();
 });

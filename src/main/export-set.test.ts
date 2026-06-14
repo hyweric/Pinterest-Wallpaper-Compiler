@@ -43,6 +43,7 @@ function project(index: number): WallpaperProject {
       startMinimized: false,
       monitorMode: "all",
       scope: "same-all-desktops",
+      targetMode: "all-visible-monitors",
       targetTemplateMode: "single-template",
       targetTemplateIds: {},
       targetPlaylistIds: {},

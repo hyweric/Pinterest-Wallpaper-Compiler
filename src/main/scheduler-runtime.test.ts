@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SingleRunScheduler } from "../shared/scheduler.js";
+import { SingleFlightWallpaperOperation, SingleRunScheduler } from "../shared/scheduler.js";
 import { formatWallpaperCountdown } from "../shared/wallpaper.js";
 
 type FakeTimer = { callback: () => void; delay: number; cleared: boolean };
@@ -60,4 +60,31 @@ test("replacement, duplicate, and cancellation behavior is single-run", () => {
   assert.equal(replacement.cleared, true);
   replacement.callback();
   assert.equal(runs, 0);
+});
+
+
+test("manual and scheduled wallpaper work cannot overlap", () => {
+  let now = 1_000;
+  const guard = new SingleFlightWallpaperOperation(() => now);
+  const manual = guard.begin("manual");
+  assert.ok(manual);
+  assert.equal(guard.begin("scheduled"), undefined);
+  assert.equal(guard.finish(manual.token), true);
+  assert.ok(guard.begin("scheduled"));
+});
+
+test("stale wallpaper operation can be recovered and old completion cannot unlock the replacement", () => {
+  let now = 1_000;
+  const guard = new SingleFlightWallpaperOperation(() => now);
+  const stale = guard.begin("scheduled", 5_000);
+  assert.ok(stale);
+
+  now = 7_000;
+  const replacement = guard.begin("manual", 5_000);
+  assert.ok(replacement);
+  assert.equal(replacement.recoveredStale, true);
+  assert.equal(guard.finish(stale.token), false);
+  assert.equal(guard.active()?.token, replacement.token);
+  assert.equal(guard.finish(replacement.token), true);
+  assert.equal(guard.active(), undefined);
 });

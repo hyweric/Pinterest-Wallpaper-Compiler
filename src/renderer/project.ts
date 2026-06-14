@@ -41,6 +41,7 @@ export function createDefaultWallpaperSettings(): WallpaperSettings {
     transitionDurationMs: 650,
     monitorMode: "all",
     scope: "same-all-desktops",
+    targetMode: "all-visible-monitors",
     targetTemplateMode: "single-template",
     targetTemplateIds: {},
     targetPlaylistIds: {},
@@ -487,6 +488,9 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
   };
   const wallpaper = { ...createDefaultWallpaperSettings(), ...(raw.wallpaper ?? {}) };
   wallpaper.scope = wallpaper.scope ?? "same-all-desktops";
+  wallpaper.targetMode = wallpaper.targetMode ?? (wallpaper.scope === "current-desktop" || wallpaper.monitorMode === "primary"
+    ? "current-desktop"
+    : "all-visible-monitors");
   wallpaper.targetTemplateMode = wallpaper.targetTemplateMode ?? "single-template";
   wallpaper.targetTemplateIds = wallpaper.targetTemplateIds ?? {};
   wallpaper.targetPlaylistIds = wallpaper.targetPlaylistIds ?? {};

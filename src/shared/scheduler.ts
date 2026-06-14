@@ -45,3 +45,54 @@ export class SingleRunScheduler {
     return this.dueAt;
   }
 }
+
+export interface WallpaperOperationLease {
+  token: number;
+  kind: "manual" | "scheduled" | "history" | "source-change";
+  startedAt: number;
+  recoveredStale: boolean;
+}
+
+/**
+ * Guards wallpaper work so scheduled and manual runs cannot overlap. A stale
+ * lease can be recovered by the next user action instead of leaving the UI
+ * permanently locked after a renderer/native-process interruption.
+ */
+export class SingleFlightWallpaperOperation {
+  private lease: WallpaperOperationLease | undefined;
+  private sequence = 0;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  begin(
+    kind: WallpaperOperationLease["kind"],
+    staleAfterMs = 180_000
+  ): WallpaperOperationLease | undefined {
+    const current = this.lease;
+    const currentAge = current ? Math.max(0, this.now() - current.startedAt) : 0;
+    if (current && currentAge < staleAfterMs) return undefined;
+
+    const lease: WallpaperOperationLease = {
+      token: ++this.sequence,
+      kind,
+      startedAt: this.now(),
+      recoveredStale: Boolean(current)
+    };
+    this.lease = lease;
+    return lease;
+  }
+
+  finish(token: number) {
+    if (!this.lease || this.lease.token !== token) return false;
+    this.lease = undefined;
+    return true;
+  }
+
+  active() {
+    return this.lease;
+  }
+
+  clear() {
+    this.lease = undefined;
+  }
+}

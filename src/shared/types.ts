@@ -27,7 +27,109 @@ export type TemplateRotationMode = "sequential" | "random" | "shuffle";
 
 export type WallpaperDisplayMode = "fill" | "fit" | "stretch" | "tile" | "center" | "span";
 export type WallpaperScope = "same-all-desktops" | "different-per-desktop" | "current-desktop";
+export type WallpaperTargetMode =
+  | "current-desktop"
+  | "current-monitor"
+  | "all-visible-monitors"
+  | "all-desktops-current-monitor"
+  | "all-desktops-all-monitors";
 export type WallpaperTargetTemplateMode = "single-template" | "different-template" | "playlist";
+
+export type MacOSWallpaperStrategy =
+  | "modern-store"
+  | "legacy-dock"
+  | "modern-store+legacy-dock"
+  | "observer-only"
+  | "unsupported";
+
+export interface MacOSWallpaperDisplayDiagnostic {
+  displayId: string;
+  displayUUID?: string;
+  name: string;
+  primary: boolean;
+  bounds: { x: number; y: number; width: number; height: number };
+  currentPath?: string;
+  currentSpaceUUID?: string;
+  spaceUUIDs: string[];
+}
+
+export interface MacOSWallpaperFileReferenceDiagnostic {
+  source: string;
+  path: string;
+  exists: boolean;
+  readable: boolean;
+}
+
+export interface MacOSWallpaperStoreDiagnostic {
+  path: string;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  schema: "modern-index-v1" | "unknown" | "missing" | "corrupt";
+  compatible: boolean;
+  topLevelKeys: string[];
+  displayRecordCount: number;
+  spaceRecordCount: number;
+  desktopRecordCount: number;
+  references: MacOSWallpaperFileReferenceDiagnostic[];
+  error?: string;
+}
+
+export interface MacOSLegacyWallpaperDatabaseDiagnostic {
+  path: string;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  compatible: boolean;
+  tables: string[];
+  pictureRecordCount: number;
+  targetRecordCount: number;
+  references: MacOSWallpaperFileReferenceDiagnostic[];
+  error?: string;
+}
+
+export interface MacOSWallpaperDiagnosticReport {
+  ok: boolean;
+  generatedAt: string;
+  platform: string;
+  macOSVersion?: string;
+  macOSBuild?: string;
+  displaysHaveSeparateSpaces?: boolean;
+  activeDisplayId?: string;
+  activeSpaceUUIDs: string[];
+  displays: MacOSWallpaperDisplayDiagnostic[];
+  totalSpaceCount: number;
+  wallpaperAgentRunning: boolean;
+  dockRunning: boolean;
+  store: MacOSWallpaperStoreDiagnostic;
+  legacyDatabase: MacOSLegacyWallpaperDatabaseDiagnostic;
+  recommendedStrategy: MacOSWallpaperStrategy;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface MacOSAllSpacesApplyStatus {
+  attempted: boolean;
+  strategy: MacOSWallpaperStrategy;
+  targetDisplayCount: number;
+  updatedDisplayCount: number;
+  verifiedDisplayCount: number;
+  targetSpaceCount: number;
+  updatedSpaceCount: number;
+  verifiedSpaceCount: number;
+  modernStoreWritten: boolean;
+  modernStoreVerified: boolean;
+  legacyDatabaseWritten: boolean;
+  legacyDatabaseVerified: boolean;
+  wallpaperAgentReloaded: boolean;
+  dockReloaded: boolean;
+  observerStarted: boolean;
+  observerFallback: boolean;
+  rollbackPerformed: boolean;
+  backupPaths: string[];
+  warning?: string;
+  error?: string;
+}
 export type WallpaperRuntimeStatus =
   | "idle"
   | "scheduled"
@@ -262,6 +364,7 @@ export interface WallpaperSettings {
   startMinimized: boolean;
   monitorMode: "primary" | "all" | "span";
   scope: WallpaperScope;
+  targetMode: WallpaperTargetMode;
   targetTemplateMode: WallpaperTargetTemplateMode;
   targetTemplateIds: Record<string, string | undefined>;
   targetPlaylistIds: Record<string, string[]>;
@@ -419,6 +522,8 @@ export interface WallpaperApplyPayload extends WallpaperGeneratePayload {
   transitionDurationMs?: number;
   displayMode?: WallpaperDisplayMode;
   scope?: WallpaperScope;
+  targetMode?: WallpaperTargetMode;
+  monitorId?: string;
   targetId?: string;
 }
 
@@ -427,6 +532,8 @@ export interface WallpaperApplyFilePayload {
   monitorMode?: WallpaperSettings["monitorMode"];
   displayMode?: WallpaperDisplayMode;
   scope?: WallpaperScope;
+  targetMode?: WallpaperTargetMode;
+  monitorId?: string;
   targetId?: string;
   transitionEnabled?: boolean;
   transitionDurationMs?: number;
@@ -448,6 +555,8 @@ export interface WallpaperApplyTargetsPayload {
   transitionEnabled?: boolean;
   transitionDurationMs?: number;
   scope?: WallpaperScope;
+  targetMode?: WallpaperTargetMode;
+  monitorId?: string;
 }
 
 export interface NativeCommandResult {
@@ -467,6 +576,7 @@ export interface WallpaperTarget {
   label: string;
   index: number;
   displayId?: string;
+  displayName?: string;
   spaceId?: string;
   current: boolean;
   targetType?: WallpaperTargetType;
@@ -474,6 +584,8 @@ export interface WallpaperTarget {
   reliable: boolean;
   limitation?: string;
   currentPath?: string;
+  primary?: boolean;
+  bounds?: { x: number; y: number; width: number; height: number };
 }
 
 export interface WallpaperTransitionDiagnostic {
@@ -520,6 +632,7 @@ export interface WallpaperApplyDiagnostics {
   targetLabel?: string;
   targetIndex?: number;
   displayId?: string;
+  displayName?: string;
   spaceId?: string;
   requestedPath?: string;
   reportedPath?: string;
@@ -528,6 +641,12 @@ export interface WallpaperApplyDiagnostics {
   visible?: boolean;
   transitionDiagnostics?: WallpaperTransitionDiagnostic[];
   targetResults?: WallpaperTargetResult[];
+  targetMode?: WallpaperTargetMode;
+  limitation?: string;
+  partial?: boolean;
+  requestedTargetCount?: number;
+  appliedTargetCount?: number;
+  macOSAllSpaces?: MacOSAllSpacesApplyStatus;
 }
 
 export interface WallpaperApplyResult {
