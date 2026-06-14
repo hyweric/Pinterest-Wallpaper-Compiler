@@ -16,7 +16,6 @@ import {
   Images,
   Layers,
   LayoutTemplate,
-  Link2,
   Lock,
   MoreHorizontal,
   PanelLeft,
@@ -74,7 +73,7 @@ import {
   workspaceFromTemplate
 } from "./project";
 import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
-import { computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
+import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
 import {
   appendAppliedHistory,
   generationStateAfterApplication,
@@ -145,6 +144,12 @@ type LayerMenuState = {
 type AppView = "home" | "editor";
 type TemplateFilter = "all" | "favorites" | "recent" | "rotation";
 type SourceLibraryView = "linked" | "global";
+type LeftPanelTab = "sources" | "layers";
+type InspectorTab = "canvas" | "background" | "template" | "frame" | "image" | "style" | "effects";
+type RenameState =
+  | { kind: "layer"; id: string; value: string }
+  | { kind: "template"; id: string; value: string }
+  | { kind: "source"; id: string; value: string };
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -275,8 +280,11 @@ function App() {
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | undefined>();
   const [layerMenu, setLayerMenu] = useState<LayerMenuState | undefined>();
   const [sourceLibraryView, setSourceLibraryView] = useState<SourceLibraryView>("linked");
+  const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("sources");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("canvas");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [history, setHistory] = useState<{ past: WallpaperProject[]; future: WallpaperProject[] }>({ past: [], future: [] });
   const [pinterestDialog, setPinterestDialog] = useState<PinterestDialogState>({
@@ -290,6 +298,7 @@ function App() {
   });
   const dragRef = useRef<DragState | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
+  const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
   const loginRotationTriggeredRef = useRef(false);
@@ -298,7 +307,6 @@ function App() {
   const linkedSourceIds = activeTemplateSourceIds(project);
   const linkedSources = project.sources.filter((source) => linkedSourceIds.includes(source.id));
   const visibleSources = sourceLibraryView === "linked" ? linkedSources : project.sources;
-  const selectedSource = project.sources.find((source) => source.id === selectedSourceId) ?? linkedSources[0] ?? project.sources[0];
   const visibleTemplates = useMemo(() => {
     const templates = [...project.templates.templates];
     if (templateFilter === "favorites") return templates.filter((template) => template.favorite);
@@ -314,6 +322,15 @@ function App() {
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+
+  useEffect(() => {
+    setInspectorTab((current) => {
+      const layerTabs: InspectorTab[] = ["frame", "image", "style", "effects"];
+      const canvasTabs: InspectorTab[] = ["canvas", "background", "template"];
+      if (selectedLayer) return layerTabs.includes(current) ? current : "frame";
+      return canvasTabs.includes(current) ? current : "canvas";
+    });
+  }, [selectedLayer?.id]);
 
   useEffect(() => {
     void window.wallpaperApi.setTrayState({ enabled: project.wallpaper.enabled, paused: project.wallpaper.paused });
@@ -475,17 +492,17 @@ function App() {
     commitProject(
       (current) => ({
         ...current,
-        layers: current.layers.map((layer) => (selected.has(layer.id) ? { ...layer, ...patch } : layer))
+        layers: current.layers.map((layer) => (selected.has(layer.id) && !layer.locked ? { ...layer, ...patch } : layer))
       }),
       historyEnabled
     );
   }
 
-  function patchLayer(id: string, patch: Partial<PlaceholderLayer>, historyEnabled = true) {
+  function patchLayer(id: string, patch: Partial<PlaceholderLayer>, historyEnabled = true, allowLocked = false) {
     commitProject(
       (current) => ({
         ...current,
-        layers: current.layers.map((layer) => (layer.id === id ? { ...layer, ...patch } : layer))
+        layers: current.layers.map((layer) => (layer.id === id && (allowLocked || !layer.locked) ? { ...layer, ...patch } : layer))
       }),
       historyEnabled
     );
@@ -559,7 +576,7 @@ function App() {
   function duplicateLayers(ids: string[]) {
     const idSet = new Set(ids);
     const copies = project.layers
-      .filter((layer) => idSet.has(layer.id))
+      .filter((layer) => idSet.has(layer.id) && !layer.locked)
       .map((layer) => ({
         ...structuredClone(layer),
         id: uid("placeholder"),
@@ -567,7 +584,10 @@ function App() {
         x: layer.x + 32,
         y: layer.y + 32
       }));
-    if (copies.length === 0) return;
+    if (copies.length === 0) {
+      if (ids.length) setMessage("Unlock the selected layer before duplicating it.");
+      return;
+    }
     commitProject((current) => ({ ...current, layers: [...current.layers, ...copies] }));
     setSelectedLayerIds(copies.map((layer) => layer.id));
     setSelectedLayerId(copies.at(-1)?.id);
@@ -596,10 +616,28 @@ function App() {
   function renameLayer(layerId: string) {
     const layer = project.layers.find((item) => item.id === layerId);
     if (!layer) return;
-    const name = window.prompt("Layer name", layer.name)?.trim();
-    if (!name || name === layer.name) return;
-    patchLayer(layerId, { name });
+    setRenameState({ kind: "layer", id: layer.id, value: layer.name });
     setLayerMenu(undefined);
+  }
+
+  function finishRename(save: boolean) {
+    const state = renameState;
+    if (!state) return;
+    const name = state.value.trim();
+    if (save && !name) {
+      setMessage("Names cannot be empty.");
+      return;
+    }
+    setRenameState(undefined);
+    if (!save) return;
+    if (state.kind === "layer") patchLayer(state.id, { name });
+    if (state.kind === "template") patchTemplate(state.id, { name });
+    if (state.kind === "source") {
+      commitProject((current) => ({
+        ...current,
+        sources: current.sources.map((item) => (item.id === state.id ? { ...item, name, updatedAt: new Date().toISOString() } : item))
+      }));
+    }
   }
 
   function toggleLayerVisibility(layerId: string) {
@@ -609,7 +647,7 @@ function App() {
 
   function toggleLayerLock(layerId: string) {
     const layer = project.layers.find((item) => item.id === layerId);
-    if (layer) patchLayer(layerId, { locked: !layer.locked });
+    if (layer) patchLayer(layerId, { locked: !layer.locked }, true, true);
   }
 
   async function chooseBackground() {
@@ -732,6 +770,10 @@ function App() {
   }
 
   function assignSourceToLayer(source: ImageSource, layer: PlaceholderLayer) {
+    if (layer.locked) {
+      setMessage("Unlock the layer before changing its source.");
+      return;
+    }
     const singleImage = source.images.length === 1;
     patchLayer(layer.id, {
       sourceId: source.id,
@@ -749,6 +791,15 @@ function App() {
     });
     setSelectedSourceId(source.id);
     setMessage(`Assigned ${source.name} to ${layer.name}.`);
+  }
+
+  function handleSourceClick(source: ImageSource) {
+    setSelectedSourceId(source.id);
+    if (!selectedLayer || selectedLayer.locked) return;
+    if (!linkedSourceIds.includes(source.id)) {
+      commitProject((current) => linkSourceToActiveTemplate(current, source.id), true);
+    }
+    assignSourceToLayer(source, selectedLayer);
   }
 
   async function importDroppedPaths(paths: string[]) {
@@ -1208,9 +1259,22 @@ function App() {
     }
 
     if (drag.mode === "crop") {
+      const natural = imageNaturalRef.current[drag.id];
+      const crop = { ...drag.layer.crop, offsetX: drag.layer.crop.offsetX + dx, offsetY: drag.layer.crop.offsetY + dy };
+      const nextCrop = natural
+        ? clampCropTransform(
+            natural.width,
+            natural.height,
+            drag.layer.width,
+            drag.layer.height,
+            drag.layer.cropMode,
+            drag.layer.alignment,
+            crop
+          )
+        : crop;
       patchLayer(
         drag.id,
-        { crop: { ...drag.layer.crop, offsetX: drag.layer.crop.offsetX + dx, offsetY: drag.layer.crop.offsetY + dy } },
+        { crop: nextCrop },
         false
       );
       return;
@@ -1491,9 +1555,7 @@ function App() {
   }
 
   function renameTemplate(template: WallpaperTemplate) {
-    const name = window.prompt("Rename template", template.name)?.trim();
-    if (!name) return;
-    patchTemplate(template.id, { name });
+    setRenameState({ kind: "template", id: template.id, value: template.name });
   }
 
   function patchTemplate(templateId: string, patch: Partial<WallpaperTemplate>) {
@@ -1570,12 +1632,7 @@ function App() {
   }
 
   function renameSource(source: ImageSource) {
-    const name = window.prompt("Rename source", source.name);
-    if (!name?.trim()) return;
-    commitProject((current) => ({
-      ...current,
-      sources: current.sources.map((item) => (item.id === source.id ? { ...item, name: name.trim(), updatedAt: new Date().toISOString() } : item))
-    }));
+    setRenameState({ kind: "source", id: source.id, value: source.name });
   }
 
   async function rescanSource(source: ImageSource) {
@@ -1794,23 +1851,26 @@ function App() {
 
   if (view === "home") {
     return (
-      <TemplateHome
-        project={project}
-        templates={visibleTemplates}
-        filter={templateFilter}
-        message={message}
-        onFilter={setTemplateFilter}
-        onCreate={createBlankTemplate}
-        onOpen={openTemplate}
-        onApply={(template) => void applyTemplate(template)}
-        onDuplicate={duplicateTemplate}
-        onRename={renameTemplate}
-        onDelete={deleteTemplate}
-        onToggleFavorite={(template) => patchTemplate(template.id, { favorite: !template.favorite })}
-        onToggleRotation={(template) => patchTemplate(template.id, { enabledForRotation: !template.enabledForRotation })}
-        onOpenProject={() => void openProject()}
-        onSaveProject={() => void saveProject()}
-      />
+      <>
+        <TemplateHome
+          project={project}
+          templates={visibleTemplates}
+          filter={templateFilter}
+          message={message}
+          onFilter={setTemplateFilter}
+          onCreate={createBlankTemplate}
+          onOpen={openTemplate}
+          onApply={(template) => void applyTemplate(template)}
+          onDuplicate={duplicateTemplate}
+          onRename={renameTemplate}
+          onDelete={deleteTemplate}
+          onToggleFavorite={(template) => patchTemplate(template.id, { favorite: !template.favorite })}
+          onToggleRotation={(template) => patchTemplate(template.id, { enabledForRotation: !template.enabledForRotation })}
+          onOpenProject={() => void openProject()}
+          onSaveProject={() => void saveProject()}
+        />
+        <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
+      </>
     );
   }
 
@@ -1825,8 +1885,13 @@ function App() {
           </div>
         </div>
 
+        <div className="panel-tabs" role="tablist" aria-label="Editor side panel">
+          <button className={leftPanelTab === "sources" ? "active" : ""} onClick={() => setLeftPanelTab("sources")}><Images size={15} /> Sources</button>
+          <button className={leftPanelTab === "layers" ? "active" : ""} onClick={() => setLeftPanelTab("layers")}><Layers size={15} /> Layers</button>
+        </div>
+
         <section
-          className={`source-library drop-zone ${dragActive ? "drag-active" : ""}`}
+          className={`source-library drop-zone ${leftPanelTab === "sources" ? "" : "hidden-panel"} ${dragActive ? "drag-active" : ""}`}
           onDragEnter={(event) => {
             event.preventDefault();
             setDragActive(true);
@@ -1854,19 +1919,13 @@ function App() {
 
           <p className="source-help">
             {sourceLibraryView === "linked"
-              ? "Only collections linked to this template appear here. Assign a whole pool to a placeholder; images cycle automatically."
+              ? selectedLayer && !selectedLayer.locked ? "Click a collection to assign its whole pool to the selected frame." : "Click a collection to inspect it. Select an unlocked frame to assign sources."
               : "Reusable folders, boards, and image collections shared across every template. Individual images are never listed here."}
           </p>
 
           {sourceLibraryView === "linked" && linkedSources.length === 0 && (
             <button className="assign-source-button" onClick={() => setSourceLibraryView("global")}>
               <Plus size={16} /> Add from global sources
-            </button>
-          )}
-
-          {selectedLayer && selectedSource && linkedSourceIds.includes(selectedSource.id) && (
-            <button className="assign-source-button" onClick={() => assignSourceToLayer(selectedSource, selectedLayer)}>
-              <Link2 size={16} /> Assign {selectedSource.name} to {selectedLayer.name}
             </button>
           )}
 
@@ -1900,15 +1959,14 @@ function App() {
                 >
                   <button
                     className="source-row-main"
-                    onClick={() => setSelectedSourceId(source.id)}
-                    onDoubleClick={() => linked && selectedLayer && assignSourceToLayer(source, selectedLayer)}
+                    onClick={() => handleSourceClick(source)}
                   >
                     <span className="source-icon">{source.type === "local-folder" ? <FolderOpen size={17} /> : source.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                     <span className="source-copy">
                       <strong>{source.name}</strong>
                       <span>{sourceKindLabel(source)} · {countLabel} items{source.importStatus === "partial" ? " · partial" : ""}</span>
                     </span>
-                    {assigned && <span className="assigned-dot" title="Assigned to selected placeholder" />}
+                    {selectedLayer && assigned && <span className="assigned-dot" title="Assigned to selected frame" />}
                   </button>
                   <div className="source-row-actions">
                     {sourceLibraryView === "linked" ? (
@@ -1928,7 +1986,7 @@ function App() {
           </div>
 
           <div className="source-footer">
-            <span>{sourceLibraryView === "linked" ? "Double-click to assign the entire pool" : "Link collections to the active template"}</span>
+            <span>{selectedLayer && !selectedLayer.locked ? "One click assigns the selected frame" : "Select a frame to assign a pool"}</span>
             <span>{sourceLibraryView === "linked" ? "Unlink keeps the global source" : "Delete warns about template usage"}</span>
           </div>
 
@@ -1946,6 +2004,85 @@ function App() {
           )}
         </section>
 
+        <section className={`panel layers-panel ${leftPanelTab === "layers" ? "" : "hidden-panel"}`}>
+          <div className="panel-title-row">
+            <h2><Layers size={17} /> Layers</h2>
+            <button className="icon-button" title="Add placeholder" onClick={addPlaceholder}><Plus size={16} /></button>
+          </div>
+          <div className="layers-list" aria-label="Layers from front to back">
+            {[...project.layers].reverse().map((layer) => {
+              const selected = selectedLayerIds.includes(layer.id);
+              return (
+                <div
+                  className={`layer-row ${selected ? "active" : ""} ${layer.hidden ? "hidden" : ""}`}
+                  key={layer.id}
+                  draggable={!layer.locked}
+                  onDragStart={(event) => {
+                    const ids = (selected ? selectedLayerIds : [layer.id]).filter((id) => !project.layers.find((item) => item.id === id)?.locked);
+                    if (!selected) selectOnlyLayer(layer.id);
+                    event.dataTransfer.setData("application/x-pwc-layer-ids", JSON.stringify(ids));
+                    event.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const raw = event.dataTransfer.getData("application/x-pwc-layer-ids");
+                    let ids: string[] = [];
+                    try { ids = JSON.parse(raw) as string[]; } catch { ids = []; }
+                    if (!ids.length || ids.includes(layer.id)) return;
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const beforeInPanel = event.clientY < rect.top + rect.height / 2;
+                    commitProject((current) => ({
+                      ...current,
+                      layers: moveLayerBlockToTarget(current.layers, ids, layer.id, beforeInPanel)
+                    }));
+                    setSelectedLayerIds(ids);
+                    setSelectedLayerId(ids.at(-1));
+                  }}
+                >
+                  <span className="layer-drag-handle" title="Drag to reorder"><GripVertical size={15} /></span>
+                  <button className="layer-main" onClick={(event) => selectLayerFromPanel(layer.id, event)}>
+                    <span className="layer-type-icon"><ImagePlus size={14} /></span>
+                    <span className="layer-name">{layer.name}</span>
+                  </button>
+                  <button className="layer-icon-button" title={layer.hidden ? "Show layer" : "Hide layer"} onClick={() => toggleLayerVisibility(layer.id)}>
+                    {layer.hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                  <button className="layer-icon-button" title={layer.locked ? "Unlock layer" : "Lock layer"} onClick={() => toggleLayerLock(layer.id)}>
+                    {layer.locked ? <Lock size={15} /> : <Unlock size={15} />}
+                  </button>
+                  <button
+                    className="layer-icon-button"
+                    title="Layer actions"
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      if (!selected) selectOnlyLayer(layer.id);
+                      setLayerMenu({ layerId: layer.id, x: Math.max(8, rect.right - 190), y: rect.bottom + 6 });
+                    }}
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+        {layerMenu && (
+          <LayerContextMenu
+            state={layerMenu}
+            layer={project.layers.find((item) => item.id === layerMenu.layerId)}
+            selectionCount={actionLayerIds(layerMenu.layerId).length}
+            onClose={() => setLayerMenu(undefined)}
+            onRename={() => renameLayer(layerMenu.layerId)}
+            onDuplicate={() => duplicateLayers(actionLayerIds(layerMenu.layerId))}
+            onDelete={() => deleteLayers(actionLayerIds(layerMenu.layerId))}
+            onOrder={(action) => reorderLayers(actionLayerIds(layerMenu.layerId), action)}
+          />
+        )}
+
         <section className="sidebar-bottom-actions">
           <button onClick={saveAsTemplate}><LayoutTemplate size={16} /> Save template</button>
           <button onClick={() => setRightPanelOpen(true)}><SlidersHorizontal size={16} /> Edit details</button>
@@ -1956,9 +2093,6 @@ function App() {
         <header className="toolbar minimal-toolbar">
           <div className="toolbar-cluster">
             <button className="icon-button" title="Back to templates" onClick={() => void goHome()}><Home size={17} /></button>
-            <button className="icon-button" title="Toggle sources panel" onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={17} /></button>
-            <button className="icon-button" title="Open" onClick={openProject}><FolderOpen size={17} /></button>
-            <button className="icon-button" title="Save" onClick={saveProject}><Save size={17} /></button>
             <button className="icon-button" title="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
             <button className="icon-button" title="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
           </div>
@@ -1967,23 +2101,25 @@ function App() {
             <span>{project.canvas.width} x {project.canvas.height}</span>
           </div>
           <div className="toolbar-cluster">
-            <button className="icon-button" title="Toggle layers panel" onClick={() => setRightPanelOpen((value) => !value)}><Layers size={17} /></button>
-            <button onClick={addPlaceholder}><Plus size={17} /> Placeholder</button>
-            <button className="primary-action" onClick={() => void generateAndApply()}><Wallpaper size={17} /> Apply</button>
+            <button onClick={refreshPreview}><Eye size={16} /> Preview</button>
+            <button className="primary-action" onClick={() => void generateAndApply()}><Wallpaper size={17} /> Generate and Apply</button>
             <div className="overflow-wrap">
               <button className="icon-button" title="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
               {toolbarMenuOpen && (
                 <div className="popover-menu toolbar-overflow">
+                  <button onClick={openProject}><FolderOpen size={16} /> Open</button>
+                  <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
+                  <button onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
                   <button onClick={generate}><RefreshCcw size={16} /> Generate Preview</button>
                   <button onClick={() => void applyCurrentDesignAsWallpaper()}><Wallpaper size={16} /> Set Current</button>
-                  <button onClick={refreshPreview}><Eye size={16} /> Preview</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   <button onClick={() => exportWallpaper("jpeg")}><Download size={16} /> Export JPEG</button>
+                  <button onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={16} /> Toggle Left Panel</button>
+                  <button onClick={() => setRightPanelOpen((value) => !value)}><SlidersHorizontal size={16} /> Toggle Inspector</button>
                 </div>
               )}
             </div>
-            <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
           </div>
         </header>
 
@@ -1999,7 +2135,11 @@ function App() {
           onDrop={(event) => void handleCanvasDrop(event)}
           onWheel={onCanvasWheel}
         >
-          {selectedLayer && (
+          <div className={`floating-canvas-status ${cropModeLayerId ? "cropping" : ""}`}>
+            <span>{Math.round(zoom * 100)}%</span>
+            {cropModeLayerId && <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>}
+          </div>
+          {selectedLayer && !selectedLayer.locked && (
             <ContextToolbar
               layer={selectedLayer}
               cropMode={cropModeLayerId === selectedLayer.id}
@@ -2078,6 +2218,9 @@ function App() {
                       crop={layer.crop}
                       zoom={zoom}
                       filter={cssFilter(layer.effects.filters)}
+                      onNatural={(natural) => {
+                        imageNaturalRef.current[layer.id] = natural;
+                      }}
                     />
                   ) : (
                     <span><ImagePlus size={22} /> Assign source</span>
@@ -2093,101 +2236,48 @@ function App() {
       </section>
 
       <aside className={`sidebar right ${rightPanelOpen ? "" : "collapsed"}`}>
-        <section className="panel">
-          <h2><Layers size={17} /> Layers</h2>
-          <div className="layers-list" aria-label="Layers from front to back">
-            {[...project.layers].reverse().map((layer) => {
-              const selected = selectedLayerIds.includes(layer.id);
-              return (
-                <div
-                  className={`layer-row ${selected ? "active" : ""} ${layer.hidden ? "hidden" : ""}`}
-                  key={layer.id}
-                  draggable={!layer.locked}
-                  onDragStart={(event) => {
-                    const ids = (selected ? selectedLayerIds : [layer.id]).filter((id) => !project.layers.find((item) => item.id === id)?.locked);
-                    if (!selected) selectOnlyLayer(layer.id);
-                    event.dataTransfer.setData("application/x-pwc-layer-ids", JSON.stringify(ids));
-                    event.dataTransfer.effectAllowed = "move";
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const raw = event.dataTransfer.getData("application/x-pwc-layer-ids");
-                    let ids: string[] = [];
-                    try { ids = JSON.parse(raw) as string[]; } catch { ids = []; }
-                    if (!ids.length || ids.includes(layer.id)) return;
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    const beforeInPanel = event.clientY < rect.top + rect.height / 2;
-                    commitProject((current) => ({
-                      ...current,
-                      layers: moveLayerBlockToTarget(current.layers, ids, layer.id, beforeInPanel)
-                    }));
-                    setSelectedLayerIds(ids);
-                    setSelectedLayerId(ids.at(-1));
-                  }}
-                >
-                  <span className="layer-drag-handle" title="Drag to reorder"><GripVertical size={15} /></span>
-                  <button className="layer-main" onClick={(event) => selectLayerFromPanel(layer.id, event)}>
-                    <span className="layer-type-icon"><ImagePlus size={14} /></span>
-                    <span className="layer-name">{layer.name}</span>
-                  </button>
-                  <button className="layer-icon-button" title={layer.hidden ? "Show layer" : "Hide layer"} onClick={() => toggleLayerVisibility(layer.id)}>
-                    {layer.hidden ? <EyeOff size={15} /> : <Eye size={15} />}
-                  </button>
-                  <button className="layer-icon-button" title={layer.locked ? "Unlock layer" : "Lock layer"} onClick={() => toggleLayerLock(layer.id)}>
-                    {layer.locked ? <Lock size={15} /> : <Unlock size={15} />}
-                  </button>
-                  <button
-                    className="layer-icon-button"
-                    title="Layer actions"
-                    onClick={(event) => {
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      if (!selected) selectOnlyLayer(layer.id);
-                      setLayerMenu({ layerId: layer.id, x: Math.max(8, rect.right - 190), y: rect.bottom + 6 });
-                    }}
-                  >
-                    <MoreHorizontal size={16} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          {layerMenu && (
-            <LayerContextMenu
-              state={layerMenu}
-              layer={project.layers.find((item) => item.id === layerMenu.layerId)}
-              selectionCount={actionLayerIds(layerMenu.layerId).length}
-              onClose={() => setLayerMenu(undefined)}
-              onRename={() => renameLayer(layerMenu.layerId)}
-              onDuplicate={() => duplicateLayers(actionLayerIds(layerMenu.layerId))}
-              onDelete={() => deleteLayers(actionLayerIds(layerMenu.layerId))}
-              onOrder={(action) => reorderLayers(actionLayerIds(layerMenu.layerId), action)}
-            />
-          )}
-        </section>
-        <CanvasDesignPanel
-          canvas={project.canvas}
-          onPatch={patchCanvas}
-          onChooseBackground={() => void chooseBackground()}
-          onClearBackground={clearBackgroundImage}
-          onResize={resizeCanvas}
-          onPreset={setPreset}
-        />
-        <WallpaperPanel
-          project={project}
-          onPatch={patchWallpaper}
-          onGenerateApply={() => void generateAndApply()}
-          onApplyCurrent={() => void applyCurrentDesignAsWallpaper()}
-          onPrevious={() => void applyPreviousWallpaper()}
-          onNext={() => void applyNextWallpaper()}
-          onGenerate={() => generate()}
-          busy={wallpaperBusy}
-        />
+        <div className="panel-tabs inspector-tabs" role="tablist" aria-label="Inspector">
+          {((selectedLayer
+            ? [
+                ["frame", "Frame"],
+                ["image", "Image"],
+                ["style", "Style"],
+                ["effects", "Effects"]
+              ]
+            : [
+                ["canvas", "Canvas"],
+                ["background", "Background"],
+                ["template", "Template"]
+              ]) as Array<[InspectorTab, string]>).map(([id, label]) => (
+            <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
+          ))}
+        </div>
+        {!selectedLayer && (inspectorTab === "canvas" || inspectorTab === "background") && (
+          <CanvasDesignPanel
+            canvas={project.canvas}
+            activeTab={inspectorTab}
+            onPatch={patchCanvas}
+            onChooseBackground={() => void chooseBackground()}
+            onClearBackground={clearBackgroundImage}
+            onResize={resizeCanvas}
+            onPreset={setPreset}
+          />
+        )}
+        {!selectedLayer && inspectorTab === "template" && (
+          <WallpaperPanel
+            project={project}
+            onPatch={patchWallpaper}
+            onGenerateApply={() => void generateAndApply()}
+            onApplyCurrent={() => void applyCurrentDesignAsWallpaper()}
+            onPrevious={() => void applyPreviousWallpaper()}
+            onNext={() => void applyNextWallpaper()}
+            onGenerate={() => generate()}
+            busy={wallpaperBusy}
+          />
+        )}
         <Properties
           layer={selectedLayer}
+          activeTab={inspectorTab}
           sources={project.sources}
           cropMode={cropModeLayerId === selectedLayer?.id}
           onPatch={(patch) => patchSelectedLayer(patch)}
@@ -2201,10 +2291,10 @@ function App() {
             patchLayer(layer.id, selection.layer);
           }}
         />
-        <section className="panel preview-panel">
+        {!selectedLayer && inspectorTab === "template" && <section className="panel preview-panel">
           <h2>Preview</h2>
           {previewUrl ? <img src={previewUrl} /> : <div className="empty-preview">No preview rendered</div>}
-        </section>
+        </section>}
       </aside>
 
       {pinterestDialog.open && (
@@ -2217,6 +2307,7 @@ function App() {
           onClose={() => setPinterestDialog((current) => ({ ...current, open: false }))}
         />
       )}
+      <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
     </main>
   );
 }
@@ -2394,7 +2485,8 @@ function FramedImage({
   alignment,
   crop,
   zoom,
-  filter
+  filter,
+  onNatural
 }: {
   src: string;
   frameWidth: number;
@@ -2404,8 +2496,14 @@ function FramedImage({
   crop: PlaceholderLayer["crop"];
   zoom: number;
   filter?: string;
+  onNatural?: (natural: { width: number; height: number }) => void;
 }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
+  function rememberNatural(image: HTMLImageElement) {
+    const next = { width: image.naturalWidth, height: image.naturalHeight };
+    setNatural(next);
+    onNatural?.(next);
+  }
   const placement = natural.width
     ? computeImagePlacement(natural.width, natural.height, frameWidth, frameHeight, mode, alignment, crop)
     : undefined;
@@ -2422,7 +2520,7 @@ function FramedImage({
           filter
         }}
       >
-        <img className="image-dimension-probe" src={src} onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />
+        <img className="image-dimension-probe" src={src} onLoad={(event) => rememberNatural(event.currentTarget)} />
       </div>
     );
   }
@@ -2431,7 +2529,7 @@ function FramedImage({
     <img
       src={src}
       className="framed-image"
-      onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+      onLoad={(event) => rememberNatural(event.currentTarget)}
       style={placement ? {
         left: placement.x * zoom,
         top: placement.y * zoom,
@@ -2501,9 +2599,30 @@ function backgroundTextureStyle(canvas: CanvasSettings): React.CSSProperties {
   return {
     opacity: Math.max(paper.opacity, paper.intensity / 100),
     mixBlendMode: paper.blendMode,
+    backgroundImage: paperTextureBackground(paper),
     backgroundSize: `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
     transform: `rotate(${paper.rotation}deg)`
   };
+}
+
+function paperTextureBackground(paper: PaperTextureEffect) {
+  if (paper.type === "none") return undefined;
+  if (paper.type === "canvas") {
+    return "linear-gradient(90deg, rgba(36,31,25,.18) 1px, transparent 1px), linear-gradient(0deg, rgba(255,255,255,.34) 1px, transparent 1px)";
+  }
+  if (paper.type === "newspaper") {
+    return "radial-gradient(circle, rgba(36,31,25,.24) 0 1px, transparent 1px)";
+  }
+  if (paper.type === "recycled") {
+    return "linear-gradient(12deg, rgba(86,74,56,.18) 0 2px, transparent 2px 12px), radial-gradient(circle, rgba(255,255,255,.35) 0 1px, transparent 1px)";
+  }
+  if (paper.type === "matte-photo") {
+    return "linear-gradient(90deg, rgba(255,255,255,.32), rgba(36,31,25,.08), rgba(255,255,255,.2))";
+  }
+  if (paper.type === "fold-marks") {
+    return "linear-gradient(88deg, transparent 0 48%, rgba(255,255,255,.5) 49%, rgba(36,31,25,.12) 51%, transparent 52%), radial-gradient(circle, rgba(36,31,25,.18) 0 1px, transparent 1px)";
+  }
+  return "radial-gradient(circle, rgba(255,255,255,.8) 0 1px, transparent 1px), radial-gradient(circle, rgba(40,32,26,.28) 0 1px, transparent 1px)";
 }
 
 function cssFilter(filters: ImageFilters) {
@@ -2523,6 +2642,7 @@ function textureStyle(layer: PlaceholderLayer): React.CSSProperties {
   return {
     opacity: Math.max(paper.opacity, layer.effects.filters.grain / 100),
     mixBlendMode: paper.blendMode,
+    backgroundImage: paperTextureBackground(paper),
     backgroundSize: `${28 / Math.max(0.4, paper.scale)}px ${28 / Math.max(0.4, paper.scale)}px`,
     transform: `rotate(${paper.rotation}deg)`
   };
@@ -2562,7 +2682,7 @@ function ContextToolbar({
       <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
       <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
       <button disabled={layer.locked} onClick={() => onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, cropMode: "original", alignment: "center" })}>Original</button>
-      <button disabled={layer.locked} className={cropMode ? "active" : ""} onClick={onCrop}>Crop</button>
+      <button disabled={layer.locked} className={cropMode ? "active" : ""} onClick={onCrop}>{cropMode ? "Done" : "Crop"}</button>
       <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
       <button onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
       <button onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
@@ -2643,6 +2763,44 @@ function SourceContextMenu({
         <button className="danger" onClick={() => onRemove(source)}>Remove Source</button>
       </div>
     </>
+  );
+}
+
+function RenameDialog({
+  state,
+  onChange,
+  onFinish
+}: {
+  state?: RenameState;
+  onChange: React.Dispatch<React.SetStateAction<RenameState | undefined>>;
+  onFinish: (save: boolean) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!state) return;
+    window.setTimeout(() => inputRef.current?.select(), 0);
+  }, [state?.kind, state?.id]);
+  if (!state) return null;
+  const label = state.kind === "template" ? "Rename template" : state.kind === "source" ? "Rename source" : "Rename layer";
+  return (
+    <div className="modal-backdrop rename-backdrop" onMouseDown={() => onFinish(true)}>
+      <section className="modal rename-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <h2>{label}</h2>
+        <input
+          ref={inputRef}
+          value={state.value}
+          onChange={(event) => onChange({ ...state, value: event.target.value })}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onFinish(true);
+            if (event.key === "Escape") onFinish(false);
+          }}
+        />
+        <div className="dialog-actions">
+          <button className="pill-button primary" onClick={() => onFinish(true)}>Save</button>
+          <button className="pill-button" onClick={() => onFinish(false)}>Cancel</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2806,6 +2964,7 @@ function WallpaperPanel({
 
 function CanvasDesignPanel({
   canvas,
+  activeTab,
   onPatch,
   onChooseBackground,
   onClearBackground,
@@ -2813,6 +2972,7 @@ function CanvasDesignPanel({
   onPreset
 }: {
   canvas: CanvasSettings;
+  activeTab: InspectorTab;
   onPatch: (patch: Partial<CanvasSettings>) => void;
   onChooseBackground: () => void;
   onClearBackground: () => void;
@@ -2848,8 +3008,8 @@ function CanvasDesignPanel({
 
   return (
     <section className="panel canvas-design-panel">
-      <h2>Canvas + Background</h2>
-      <details open>
+      <h2>{activeTab === "canvas" ? "Canvas" : "Background"}</h2>
+      {activeTab === "canvas" && <details open>
         <summary>Canvas Dimensions <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
         <div className="two-col">
@@ -2867,9 +3027,9 @@ function CanvasDesignPanel({
           }}>Current monitor</button>
         </div>
         <button className="pill-button primary" onClick={() => onResize(draftWidth, draftHeight, resizeMode)}>Apply dimensions</button>
-      </details>
+      </details>}
 
-      <details open>
+      {activeTab === "background" && <details open>
         <summary>Background <ChevronDown size={15} /></summary>
         <div className="two-col">
           <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>
@@ -2889,15 +3049,18 @@ function CanvasDesignPanel({
         <FilterSlider label="Opacity" value={canvas.backgroundOpacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ backgroundOpacity: value })} />
         <FilterSlider label="Brightness" value={canvas.backgroundBrightness} min={0} max={200} onChange={(value) => onPatch({ backgroundBrightness: value })} />
         <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={0.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
-      </details>
+      </details>}
 
-      <details>
+      {activeTab === "background" && <details open>
         <summary>Background Paper <ChevronDown size={15} /></summary>
-        <label>Texture<select value={canvas.backgroundPaper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper grain</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte photo</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="fold-marks">Fold marks</option><option value="dust-scratches">Dust and scratches</option><option value="halftone">Halftone</option></select></label>
+        <label>Texture<select value={canvas.backgroundPaper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="dust-scratches">Grain</option><option value="fold-marks">Folded paper</option></select></label>
         <FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
         <FilterSlider label="Opacity" value={canvas.backgroundPaper.opacity} min={0} max={1} step={0.05} onChange={(value) => patchPaper({ opacity: value })} />
         <FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={0.4} max={3} step={0.1} onChange={(value) => patchPaper({ scale: value })} />
-      </details>
+        <FilterSlider label="Rotation" value={canvas.backgroundPaper.rotation} min={-180} max={180} onChange={(value) => patchPaper({ rotation: value })} />
+        <label>Blend mode<select value={canvas.backgroundPaper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
+        <label>Random seed<input type="number" value={canvas.backgroundPaper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
+      </details>}
     </section>
   );
 }
@@ -2909,6 +3072,7 @@ const alignmentOptions: Array<[ImageAlignment, string]> = [
 
 function Properties({
   layer,
+  activeTab,
   sources,
   cropMode,
   onPatch,
@@ -2919,6 +3083,7 @@ function Properties({
   onMatchAspect
 }: {
   layer?: PlaceholderLayer;
+  activeTab: InspectorTab;
   sources: ImageSource[];
   cropMode: boolean;
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
@@ -2931,9 +3096,17 @@ function Properties({
   const sourceId = layer?.sourceState.sourceIds[0] ?? layer?.sourceId;
   const source = sources.find((item) => item.id === sourceId);
   if (!layer) {
-    return <section className="panel muted-panel"><h2>Layer Properties</h2><p>Select an image frame to edit its frame, fit, crop, border, and effects.</p></section>;
+    return null;
   }
   const activeLayer = layer;
+  if (layer.locked) {
+    return (
+      <section className="panel muted-panel">
+        <h2>{layer.name}</h2>
+        <p>This layer is locked. Use the Layers tab to unlock it before editing frame, crop, source, style, or effects.</p>
+      </section>
+    );
+  }
 
   function numeric<K extends keyof PlaceholderLayer>(key: K) {
     return (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PlaceholderLayer>);
@@ -2955,7 +3128,7 @@ function Properties({
         <button className="icon-button danger" onClick={onDelete} title="Delete layer"><Trash2 size={17} /></button>
       </div>
 
-      <details open>
+      {activeTab === "frame" && <details open>
         <summary>Position + Frame <ChevronDown size={15} /></summary>
         <label>Name<input value={layer.name} onChange={(event) => onPatch({ name: event.target.value })} /></label>
         <div className="two-col">
@@ -2970,9 +3143,9 @@ function Properties({
           <button className="toggle" onClick={() => onMatchAspect(layer)}>Match image ratio</button>
           <button className="toggle" onClick={() => onResetFrame(layer)}>Reset frame</button>
         </div>
-      </details>
+      </details>}
 
-      <details open>
+      {activeTab === "image" && <details open>
         <summary>Image Fit + Crop <ChevronDown size={15} /></summary>
         <div className="pool-card">
           <div className="pool-card-heading"><span>Assigned pool</span><strong>{source?.name ?? "None"}</strong></div>
@@ -3008,9 +3181,9 @@ function Properties({
           <button className="toggle" onClick={resetCrop}>Reset crop</button>
           <button className="toggle" disabled={!source} onClick={() => onRegenerate(layer)}>Next image</button>
         </div>
-      </details>
+      </details>}
 
-      <details>
+      {activeTab === "style" && <details open>
         <summary>Border + Shape <ChevronDown size={15} /></summary>
         <label>Mask<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle / ellipse</option></select></label>
         <div className="two-col">
@@ -3021,18 +3194,18 @@ function Properties({
         </div>
         <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ opacity: value })} />
         <label>Blend mode<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
-      </details>
+      </details>}
 
-      <details>
+      {activeTab === "style" && <details>
         <summary>Shadow <ChevronDown size={15} /></summary>
         <div className="toggle-row">
           <button className={layer.shadow ? "toggle active" : "toggle"} onClick={() => onPatch({ shadow: !layer.shadow })}>Outer shadow</button>
           <button className={layer.effects.innerShadow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, innerShadow: !layer.effects.innerShadow } })}>Inner shadow</button>
           <button className={layer.effects.glow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, glow: !layer.effects.glow } })}>Glow</button>
         </div>
-      </details>
+      </details>}
 
-      <details>
+      {activeTab === "effects" && <details open>
         <summary>Image Adjustments <ChevronDown size={15} /></summary>
         <PresetButtons onPick={(filters) => patchFilters(filters)} />
         <FilterSlider label="Brightness" value={layer.effects.filters.brightness} min={0} max={200} onChange={(value) => patchFilters({ brightness: value })} />
@@ -3045,21 +3218,24 @@ function Properties({
         <FilterSlider label="Grayscale" value={layer.effects.filters.grayscale} min={0} max={100} onChange={(value) => patchFilters({ grayscale: value })} />
         <FilterSlider label="Fade" value={layer.effects.filters.fade} min={0} max={80} onChange={(value) => patchFilters({ fade: value })} />
         <FilterSlider label="Vignette" value={layer.effects.filters.vignette} min={0} max={100} onChange={(value) => patchFilters({ vignette: value })} />
-      </details>
+      </details>}
 
-      <details>
+      {activeTab === "effects" && <details>
         <summary>Paper + Texture <ChevronDown size={15} /></summary>
-        <label>Texture<select value={layer.effects.paper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper grain</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte photo</option><option value="canvas">Canvas texture</option><option value="newspaper">Newspaper print</option><option value="fold-marks">Fold marks</option><option value="dust-scratches">Dust and scratches</option><option value="halftone">Halftone</option></select></label>
+        <label>Texture<select value={layer.effects.paper.type} onChange={(event) => patchPaper({ type: event.target.value as PaperTextureEffect["type"] })}><option value="none">None</option><option value="fine-grain">Fine paper</option><option value="recycled">Recycled paper</option><option value="matte-photo">Matte</option><option value="canvas">Canvas</option><option value="newspaper">Newspaper</option><option value="dust-scratches">Grain</option><option value="fold-marks">Folded paper</option></select></label>
         <FilterSlider label="Grain" value={layer.effects.filters.grain} min={0} max={100} onChange={(value) => patchFilters({ grain: value })} />
         <FilterSlider label="Texture intensity" value={layer.effects.paper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
         <FilterSlider label="Texture opacity" value={layer.effects.paper.opacity} min={0} max={1} step={0.05} onChange={(value) => patchPaper({ opacity: value })} />
         <FilterSlider label="Texture scale" value={layer.effects.paper.scale} min={0.4} max={3} step={0.1} onChange={(value) => patchPaper({ scale: value })} />
-      </details>
+        <FilterSlider label="Texture rotation" value={layer.effects.paper.rotation} min={-180} max={180} onChange={(value) => patchPaper({ rotation: value })} />
+        <label>Blend mode<select value={layer.effects.paper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft light</option></select></label>
+        <label>Random seed<input type="number" value={layer.effects.paper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
+      </details>}
 
-      <div className="toggle-row">
+      {activeTab === "frame" && <div className="toggle-row">
         <button className={layer.locked ? "toggle active" : "toggle"} onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />} Lock</button>
         <button className={layer.hidden ? "toggle active" : "toggle"} onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />} Hide</button>
-      </div>
+      </div>}
     </section>
   );
 }

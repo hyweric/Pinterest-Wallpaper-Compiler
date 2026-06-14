@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers, resolveMaskGeometry } from "../shared/geometry.js";
+import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers, resolveMaskGeometry } from "../shared/geometry.js";
 import type { CanvasSettings, PlaceholderLayer } from "../shared/types.js";
 
 const paper = { type: "none", intensity: 0, scale: 1, rotation: 0, opacity: 0, blendMode: "multiply", seed: 1 } as const;
@@ -61,7 +61,11 @@ const layer = {
 
 test("fit modes preserve or change aspect ratio as requested", () => {
   assert.deepEqual(computeImagePlacement(400, 200, 200, 200, "contain", "center"), { x: 0, y: 50, width: 200, height: 100, tile: false });
-  assert.deepEqual(computeImagePlacement(400, 200, 200, 200, "cover", "center"), { x: -100, y: 0, width: 400, height: 200, tile: false });
+  const cover = computeImagePlacement(400, 200, 200, 200, "cover", "center");
+  assert.equal(cover.tile, false);
+  assert.equal(cover.width / cover.height, 2);
+  assert.ok(cover.x <= 0 && cover.y <= 0);
+  assert.ok(cover.x + cover.width >= 200 && cover.y + cover.height >= 200);
   assert.deepEqual(computeImagePlacement(400, 200, 200, 200, "stretch", "center"), { x: 0, y: 0, width: 200, height: 200, tile: false });
   assert.deepEqual(computeImagePlacement(400, 200, 200, 200, "original", "center"), { x: -100, y: 0, width: 400, height: 200, tile: false });
 });
@@ -82,7 +86,37 @@ test("canvas resize can scale or center layers", () => {
 
 test("crop offsets and zoom use the same deterministic placement engine", () => {
   const placement = computeImagePlacement(400, 200, 200, 200, "cover", "center", { offsetX: 12, offsetY: -8, zoom: 1.5 });
-  assert.deepEqual(placement, { x: -188, y: -58, width: 600, height: 300, tile: false });
+  assert.deepEqual(placement, { x: -191, y: -59.5, width: 606, height: 303, tile: false });
+});
+
+test("fill placement covers extreme aspect ratios with overscan", () => {
+  for (const [imageWidth, imageHeight, frameWidth, frameHeight] of [
+    [8000, 400, 320, 640],
+    [400, 8000, 640, 320],
+    [3840, 2160, 307, 503],
+    [2160, 3840, 503, 307]
+  ]) {
+    const placement = computeImagePlacement(imageWidth, imageHeight, frameWidth, frameHeight, "cover", "center", {
+      offsetX: 99999,
+      offsetY: -99999,
+      zoom: 1
+    });
+    assert.ok(placement.x <= 0, "left edge covers frame");
+    assert.ok(placement.y <= 0, "top edge covers frame");
+    assert.ok(placement.x + placement.width >= frameWidth, "right edge covers frame");
+    assert.ok(placement.y + placement.height >= frameHeight, "bottom edge covers frame");
+    assert.equal(Math.round((placement.width / placement.height) * 1_000_000), Math.round((imageWidth / imageHeight) * 1_000_000));
+  }
+});
+
+test("crop clamping prevents blank areas after rotation-safe and rounded-frame sizing", () => {
+  const crop = clampCropTransform(1200, 300, 333.3, 777.7, "cover", "center", { offsetX: -5000, offsetY: 5000, zoom: 0.6 });
+  assert.equal(crop.zoom, 1);
+  const placement = computeImagePlacement(1200, 300, 333.3, 777.7, "cover", "center", crop);
+  assert.ok(placement.x <= 0);
+  assert.ok(placement.y <= 0);
+  assert.ok(placement.x + placement.width >= 333.3);
+  assert.ok(placement.y + placement.height >= 777.7);
 });
 
 test("mask geometry clamps rounded corners and distinguishes circles", () => {

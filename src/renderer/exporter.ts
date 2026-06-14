@@ -97,18 +97,40 @@ function drawPaperTexture(
   context.globalAlpha = Math.max(paper.opacity, amount / 100) * 0.38;
   context.globalCompositeOperation = paper.blendMode === "normal" ? "source-over" : paper.blendMode;
   const step = Math.max(6, 18 / Math.max(0.5, paper.scale));
+  context.translate(width / 2, height / 2);
+  context.rotate((paper.rotation * Math.PI) / 180);
+  context.translate(-width / 2, -height / 2);
   let seed = paper.seed || 1;
   for (let y = 0; y < height; y += step) {
     for (let x = 0; x < width; x += step) {
       seed = (seed * 9301 + 49297) % 233280;
       const value = seed / 233280;
-      context.fillStyle = value > 0.5 ? "rgba(255,255,255,0.45)" : "rgba(36,31,25,0.35)";
-      context.fillRect(x, y, Math.max(1, step * 0.18), Math.max(1, step * 0.18));
+      if (paper.type === "newspaper") {
+        context.fillStyle = value > 0.48 ? "rgba(36,31,25,0.22)" : "rgba(255,255,255,0.18)";
+        context.beginPath();
+        context.arc(x, y, Math.max(0.8, step * 0.12), 0, Math.PI * 2);
+        context.fill();
+      } else if (paper.type === "canvas") {
+        context.strokeStyle = value > 0.5 ? "rgba(255,255,255,0.24)" : "rgba(36,31,25,0.16)";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(x, y);
+        context.lineTo(x + step * 0.8, y);
+        context.moveTo(x, y);
+        context.lineTo(x, y + step * 0.8);
+        context.stroke();
+      } else if (paper.type === "recycled") {
+        context.fillStyle = value > 0.6 ? "rgba(92,79,60,0.22)" : "rgba(255,255,255,0.24)";
+        context.fillRect(x, y, Math.max(1, step * 0.35), Math.max(1, step * 0.08));
+      } else {
+        context.fillStyle = value > 0.5 ? "rgba(255,255,255,0.45)" : "rgba(36,31,25,0.35)";
+        context.fillRect(x, y, Math.max(1, step * 0.18), Math.max(1, step * 0.18));
+      }
     }
   }
-  if (paper.type === "fold-marks") {
+  if (paper.type === "fold-marks" || paper.type === "matte-photo") {
     context.strokeStyle = "rgba(255,255,255,0.5)";
-    context.lineWidth = 2;
+    context.lineWidth = paper.type === "fold-marks" ? 2 : 1;
     context.beginPath();
     context.moveTo(width * 0.5, 0);
     context.lineTo(width * 0.52, height);

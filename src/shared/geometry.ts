@@ -18,6 +18,8 @@ export interface ImagePlacement {
   tile: boolean;
 }
 
+const coverOverscanPx = 1;
+
 function alignedOffset(frame: number, content: number, axis: "x" | "y", alignment: ImageAlignment) {
   if (axis === "x") {
     if (alignment.includes("left")) return 0;
@@ -29,25 +31,28 @@ function alignedOffset(frame: number, content: number, axis: "x" | "y", alignmen
   return (frame - content) / 2;
 }
 
-export function computeImagePlacement(
+function clampPlacementOffset(frame: number, content: number, offset: number) {
+  if (content <= frame) return (frame - content) / 2;
+  return Math.min(0, Math.max(frame - content, offset));
+}
+
+function computeBaseImageSize(
   imageWidth: number,
   imageHeight: number,
   frameWidth: number,
   frameHeight: number,
-  mode: CropMode | BackgroundFitMode,
-  alignment: ImageAlignment,
-  crop: CropTransform = { offsetX: 0, offsetY: 0, zoom: 1 }
-): ImagePlacement {
+  mode: CropMode | BackgroundFitMode
+) {
   const safeImageWidth = Math.max(1, imageWidth);
   const safeImageHeight = Math.max(1, imageHeight);
   const safeFrameWidth = Math.max(1, frameWidth);
   const safeFrameHeight = Math.max(1, frameHeight);
   const imageRatio = safeImageWidth / safeImageHeight;
   const frameRatio = safeFrameWidth / safeFrameHeight;
+  const normalizedMode = mode === "center" ? "original" : mode;
 
   let width: number;
   let height: number;
-  const normalizedMode = mode === "center" ? "original" : mode;
 
   if (normalizedMode === "stretch") {
     width = safeFrameWidth;
@@ -60,17 +65,81 @@ export function computeImagePlacement(
     const useFrameWidth = cover ? imageRatio < frameRatio : imageRatio > frameRatio;
     width = useFrameWidth ? safeFrameWidth : safeFrameHeight * imageRatio;
     height = width / imageRatio;
+    if (cover) {
+      const overscanScale = Math.max(
+        1,
+        (safeFrameWidth + coverOverscanPx * 2) / width,
+        (safeFrameHeight + coverOverscanPx * 2) / height
+      );
+      width *= overscanScale;
+      height *= overscanScale;
+    }
   }
 
-  const zoom = Math.max(0.01, crop.zoom || 1);
-  const baseX = alignedOffset(safeFrameWidth, width, "x", alignment);
-  const baseY = alignedOffset(safeFrameHeight, height, "y", alignment);
+  return { width, height, normalizedMode, safeFrameWidth, safeFrameHeight };
+}
+
+export function clampCropTransform(
+  imageWidth: number,
+  imageHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+  mode: CropMode | BackgroundFitMode,
+  alignment: ImageAlignment,
+  crop: CropTransform = { offsetX: 0, offsetY: 0, zoom: 1 }
+): CropTransform {
+  const { width, height, normalizedMode, safeFrameWidth, safeFrameHeight } = computeBaseImageSize(
+    imageWidth,
+    imageHeight,
+    frameWidth,
+    frameHeight,
+    mode
+  );
+  if (normalizedMode === "tile" || normalizedMode === "stretch") {
+    return { ...crop, zoom: Math.max(0.01, crop.zoom || 1) };
+  }
+
+  const zoom = Math.max(normalizedMode === "cover" ? 1 : 0.01, crop.zoom || 1);
   const scaledWidth = width * zoom;
   const scaledHeight = height * zoom;
+  const alignedX = alignedOffset(safeFrameWidth, scaledWidth, "x", alignment);
+  const alignedY = alignedOffset(safeFrameHeight, scaledHeight, "y", alignment);
+  const clampedX = clampPlacementOffset(safeFrameWidth, scaledWidth, alignedX + crop.offsetX);
+  const clampedY = clampPlacementOffset(safeFrameHeight, scaledHeight, alignedY + crop.offsetY);
 
   return {
-    x: baseX + crop.offsetX - (scaledWidth - width) / 2,
-    y: baseY + crop.offsetY - (scaledHeight - height) / 2,
+    offsetX: clampedX - alignedX,
+    offsetY: clampedY - alignedY,
+    zoom
+  };
+}
+
+export function computeImagePlacement(
+  imageWidth: number,
+  imageHeight: number,
+  frameWidth: number,
+  frameHeight: number,
+  mode: CropMode | BackgroundFitMode,
+  alignment: ImageAlignment,
+  crop: CropTransform = { offsetX: 0, offsetY: 0, zoom: 1 }
+): ImagePlacement {
+  const { width, height, normalizedMode, safeFrameWidth, safeFrameHeight } = computeBaseImageSize(
+    imageWidth,
+    imageHeight,
+    frameWidth,
+    frameHeight,
+    mode
+  );
+  const clampedCrop = clampCropTransform(imageWidth, imageHeight, frameWidth, frameHeight, mode, alignment, crop);
+  const zoom = clampedCrop.zoom;
+  const scaledWidth = width * zoom;
+  const scaledHeight = height * zoom;
+  const alignedX = alignedOffset(safeFrameWidth, scaledWidth, "x", alignment);
+  const alignedY = alignedOffset(safeFrameHeight, scaledHeight, "y", alignment);
+
+  return {
+    x: normalizedMode === "tile" ? alignedOffset(safeFrameWidth, scaledWidth, "x", alignment) + crop.offsetX : alignedX + clampedCrop.offsetX,
+    y: normalizedMode === "tile" ? alignedOffset(safeFrameHeight, scaledHeight, "y", alignment) + crop.offsetY : alignedY + clampedCrop.offsetY,
     width: scaledWidth,
     height: scaledHeight,
     tile: normalizedMode === "tile"
