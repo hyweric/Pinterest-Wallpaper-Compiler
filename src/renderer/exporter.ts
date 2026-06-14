@@ -271,7 +271,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.fill();
     context.shadowColor = "transparent";
     if (paperFrame.textureIntensity > 0) {
-      await drawPaperTexture(context, layer.width, layer.height, { ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, 0, customTexture(project, layer.effects.paper));
+      await drawPaperTexture(context, layer.width, layer.height, { ...layer.effects.paper, type: paperFrame.type === "newsprint" ? "newspaper" : layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, 0, customTexture(project, layer.effects.paper));
     }
   }
 

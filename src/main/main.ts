@@ -25,9 +25,7 @@ import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./provi
 import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
 import { planFadeOverlayAssignments } from "../shared/wallpaper.js";
-
-const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
-const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
+import { classifyLocalMediaPath, imageExtensions, mediaCounts, videoExtensions } from "../shared/media.js";
 
 const isDev = process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
 let mainWindow: BrowserWindow | undefined;
@@ -149,9 +147,10 @@ async function loadPublicPinterestBoard(
     await scraper.loadURL(boardUrl, { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36" });
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
+    type BrowserPin = { id: string; imageUrl: string; mediaType?: "image" | "video" | "unknown" };
     let stableRounds = 0;
     let previousCount = 0;
-    let latest: { pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>; atBottom: boolean; bodyText: string } = {
+    let latest: { pins: BrowserPin[]; atBottom: boolean; bodyText: string } = {
       pins: [],
       atBottom: false,
       bodyText: ""
@@ -204,7 +203,7 @@ async function loadPublicPinterestBoard(
         }
       })()`, true) as {
         ok: boolean;
-        pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>;
+        pins: BrowserPin[];
         atBottom: boolean;
         bodyText: string;
         pageUrl?: string;
@@ -264,7 +263,7 @@ async function readImagesFromFolder(folderPath: string, includeSubfolders = fals
       url: pathToFileURL(filePath).toString(),
       modifiedAt: fileStat.mtime.toISOString(),
       size: fileStat.size,
-      mediaType: videoExtensions.has(extension) ? "video" : "image",
+      mediaType: classifyLocalMediaPath(filePath),
       videoThumbnail: videoExtensions.has(extension) ? false : undefined
     });
   }
@@ -282,7 +281,7 @@ async function sourceFromFolder(folderPath: string): Promise<ImageSource> {
     path: folderPath,
     images,
     mediaPolicy: "images-only",
-    mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+    mediaCounts: mediaCounts(images),
     importStatus: "ready",
     importLog: [`Scanned ${images.length} supported images.`],
     lastScannedAt: new Date().toISOString(),
@@ -300,7 +299,7 @@ async function imageFromFilePath(filePath: string): Promise<LocalImageRef> {
     url: pathToFileURL(filePath).toString(),
     modifiedAt: fileStat.mtime.toISOString(),
     size: fileStat.size,
-    mediaType: videoExtensions.has(extension) ? "video" : "image",
+    mediaType: classifyLocalMediaPath(filePath),
     videoThumbnail: videoExtensions.has(extension) ? false : undefined
   };
 }

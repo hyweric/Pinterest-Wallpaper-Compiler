@@ -52,7 +52,7 @@ export type ImageAlignment =
   | "bottom-right";
 
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "soft-light";
-export type MediaType = "image" | "video";
+export type MediaType = "image" | "video" | "unknown";
 export type SourceMediaPolicy = "images-only" | "images-and-video-thumbnails";
 export type BackgroundBaseMode = "color" | "transparent" | "image";
 export type PaperFrameType = "none" | "clean" | "polaroid" | "torn" | "deckle" | "newsprint";
@@ -184,7 +184,7 @@ export interface ImageSource {
   lastScannedAt?: string;
   missing?: boolean;
   mediaPolicy: SourceMediaPolicy;
-  mediaCounts?: { total: number; images: number; videos: number };
+  mediaCounts?: { total: number; images: number; videos: number; unknown?: number };
   updatedAt: string;
 }
 

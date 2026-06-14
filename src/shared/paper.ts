@@ -1,4 +1,4 @@
-import type { PaperFrameEffect } from "./types.js";
+import type { PaperFrameEffect, PaperFrameType } from "./types.js";
 
 export interface PaperInsets {
   top: number;
@@ -14,6 +14,26 @@ export function paperFrameInsets(effect: PaperFrameEffect, width: number, height
   if (effect.type === "newsprint") return { top: base * 0.75, right: base * 0.75, bottom: base * 0.75, left: base * 0.75 };
   if (effect.type === "clean") return { top: base * 0.65, right: base * 0.65, bottom: base * 0.65, left: base * 0.65 };
   return { top: base, right: base, bottom: base, left: base };
+}
+
+export function paperFrameDefaults(type: PaperFrameType, current?: PaperFrameEffect): PaperFrameEffect {
+  const base: PaperFrameEffect = {
+    type,
+    borderWidth: current?.borderWidth ?? 20,
+    paperColor: current?.paperColor ?? "#fffdf8",
+    edgeRoughness: current?.edgeRoughness ?? 35,
+    shadowStrength: current?.shadowStrength ?? 35,
+    innerPadding: current?.innerPadding ?? 0,
+    rotationVariation: current?.rotationVariation ?? 0,
+    textureIntensity: current?.textureIntensity ?? 20,
+    seed: current?.seed ?? 1
+  };
+  if (type === "none") return { ...base, borderWidth: 0, edgeRoughness: 0, shadowStrength: 0, innerPadding: 0, textureIntensity: 0 };
+  if (type === "clean") return { ...base, borderWidth: 18, paperColor: "#fffdf8", edgeRoughness: 0, shadowStrength: 24, innerPadding: 4, textureIntensity: 14 };
+  if (type === "polaroid") return { ...base, borderWidth: 24, paperColor: "#fffef9", edgeRoughness: 0, shadowStrength: 34, innerPadding: 6, textureIntensity: 10 };
+  if (type === "torn") return { ...base, borderWidth: 28, paperColor: "#f8f0df", edgeRoughness: 78, shadowStrength: 56, innerPadding: 0, textureIntensity: 34 };
+  if (type === "deckle") return { ...base, borderWidth: 24, paperColor: "#fbf6ea", edgeRoughness: 42, shadowStrength: 38, innerPadding: 0, textureIntensity: 30 };
+  return { ...base, borderWidth: 18, paperColor: "#e9e6dc", edgeRoughness: 8, shadowStrength: 28, innerPadding: 0, textureIntensity: 44 };
 }
 
 export function paperFrameRotation(effect: PaperFrameEffect) {

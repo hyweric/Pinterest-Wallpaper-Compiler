@@ -83,11 +83,12 @@ import {
 import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
 import { placeTooltip } from "../shared/ui";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
-import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
+import { paperFrameClipPath, paperFrameDefaults, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { projectAfterExportSet } from "../shared/export-set";
+import { mediaCounts } from "../shared/media";
 import {
   appendAppliedHistory,
-  generationStateAfterApplication,
+  mergeAppliedWallpaperState,
   nextHistoryIndex,
   nextScheduledAt,
   planTemplateRotation,
@@ -101,8 +102,11 @@ import "./styles.css";
 const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
 const backgroundAdvancedKey = "pwc.backgroundAdvanced.v1";
+const accordionStateKey = "pwc.accordionState.v1";
 const historyLimit = 80;
 const snapDistance = 8;
+const minZoom = 0.08;
+const maxZoom = 2.4;
 
 type DragMode =
   | "move"
@@ -469,6 +473,9 @@ function App() {
   const exportCancelRef = useRef(false);
   const sourceApplyTimerRef = useRef<number | undefined>(undefined);
   const sourceApplyVersionRef = useRef(0);
+  const zoomRef = useRef(zoom);
+  const zoomFrameRef = useRef<number | undefined>(undefined);
+  const pendingZoomRef = useRef<{ zoom: number; clientX: number; clientY: number } | undefined>(undefined);
   const selectedLayers = project.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId) ?? selectedLayers.at(-1);
   const linkedSourceIds = activeTemplateSourceIds(project);
@@ -511,6 +518,10 @@ function App() {
   }, [project]);
 
   useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
     setInspectorTab((current) => {
       if (selectedLayer) return current === "effects" ? "effects" : "image";
       return "settings";
@@ -519,6 +530,7 @@ function App() {
 
   useEffect(() => () => {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
+    if (zoomFrameRef.current !== undefined) window.cancelAnimationFrame(zoomFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -559,6 +571,47 @@ function App() {
     const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    function readState() {
+      try {
+        return JSON.parse(localStorage.getItem(accordionStateKey) ?? "{}") as Record<string, string>;
+      } catch {
+        return {};
+      }
+    }
+    const state = readState();
+    const details = Array.from(document.querySelectorAll<HTMLDetailsElement>("details[data-accordion-category][data-accordion-id]"));
+    const defaultOpen = new Map<string, string>();
+    for (const detail of details) {
+      const category = detail.dataset.accordionCategory;
+      const id = detail.dataset.accordionId;
+      if (!category || !id) continue;
+      if (detail.open && !defaultOpen.has(category)) defaultOpen.set(category, id);
+    }
+    for (const detail of details) {
+      const category = detail.dataset.accordionCategory;
+      const id = detail.dataset.accordionId;
+      if (!category || !id || detail.dataset.accordionReady === "true") continue;
+      const activeId = state[category] ?? defaultOpen.get(category);
+      detail.open = activeId ? id === activeId : detail.open;
+      detail.dataset.accordionReady = "true";
+    }
+    function onToggle(event: Event) {
+      const detail = event.target;
+      if (!(detail instanceof HTMLDetailsElement) || !detail.open) return;
+      const category = detail.dataset.accordionCategory;
+      const id = detail.dataset.accordionId;
+      if (!category || !id) return;
+      const next = { ...readState(), [category]: id };
+      localStorage.setItem(accordionStateKey, JSON.stringify(next));
+      for (const other of document.querySelectorAll<HTMLDetailsElement>(`details[data-accordion-category="${category}"][data-accordion-id]`)) {
+        if (other !== detail) other.open = false;
+      }
+    }
+    document.addEventListener("toggle", onToggle, true);
+    return () => document.removeEventListener("toggle", onToggle, true);
+  });
 
   useEffect(() => {
     return window.wallpaperApi.onTrayCommand((command) => {
@@ -1050,7 +1103,7 @@ function App() {
       images: result.images,
       importStatus: "ready",
       mediaPolicy: "images-only",
-      mediaCounts: { total: result.images.length, images: result.images.filter((image) => image.mediaType !== "video").length, videos: result.images.filter((image) => image.mediaType === "video").length },
+      mediaCounts: mediaCounts(result.images),
       importLog: [`Imported ${result.images.length} local items from ${result.path}.`],
       updatedAt: new Date().toISOString()
     };
@@ -1073,7 +1126,7 @@ function App() {
             images,
             importStatus: "ready",
             mediaPolicy: "images-only",
-            mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+            mediaCounts: mediaCounts(images),
             importLog: [`Imported ${images.length} local files as one collection.`],
             updatedAt: new Date().toISOString()
           }
@@ -1181,9 +1234,13 @@ function App() {
       const combination = createCombination(assignments, candidate.templates.activeTemplateId);
       const applied = await applyCandidate(candidate, combination, { label: `Applied ${source.name}` });
       if (!applied && version === sourceApplyVersionRef.current) {
-        projectRef.current = before;
-        setProject(before);
-        setMessage(`Could not apply ${source.name}; restored the previous source.`);
+        if (projectRef.current.updatedAt === candidate.updatedAt) {
+          projectRef.current = before;
+          setProject(before);
+          setMessage(`Could not apply ${source.name}; restored the previous source.`);
+        } else {
+          setMessage(`Could not apply ${source.name}; kept newer editor changes.`);
+        }
       } else if (applied && activeLayer) {
         setSelectedSourceId(source.id);
       }
@@ -1229,7 +1286,7 @@ function App() {
       images,
       importStatus: "ready",
       mediaPolicy: "images-only",
-      mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+      mediaCounts: mediaCounts(images),
       importLog: [`Imported ${images.length} individual local files.`],
       updatedAt: new Date().toISOString()
     };
@@ -1377,22 +1434,19 @@ function App() {
         templateName,
         monitorMode: candidate.wallpaper.monitorMode
       };
-      const committedCandidate = generationStateAfterApplication(projectRef.current, candidate, true);
-      const finalProject = touchProject(updateActiveTemplateSnapshot({
-        ...committedCandidate,
-        wallpaper: {
-          ...candidate.wallpaper,
-          lastUpdatedAt: appliedAt,
-          lastAppliedFilePath: result.filePath,
-          lastAppliedTemplateId: templateId,
-          lastError: undefined,
-          consecutiveFailures: 0,
-          nextScheduledAt: candidate.wallpaper.enabled && !candidate.wallpaper.paused
-            ? scheduleFor(candidate.wallpaper, new Date(appliedAt))
+      const finalProject = touchProject(updateActiveTemplateSnapshot(normalizeProject(mergeAppliedWallpaperState(
+        projectRef.current,
+        candidate,
+        historyEntry,
+        {
+          appliedAt,
+          filePath: result.filePath,
+          templateId,
+          nextScheduledAt: projectRef.current.wallpaper.enabled && !projectRef.current.wallpaper.paused
+            ? scheduleFor(projectRef.current.wallpaper, new Date(appliedAt))
             : undefined
-        },
-        recentCombinations: appendAppliedHistory(candidate.recentCombinations, historyEntry)
-      }));
+        }
+      ))));
       projectRef.current = finalProject;
       setProject(finalProject);
       setWallpaperHistoryIndex(0);
@@ -1499,19 +1553,21 @@ function App() {
           monitorMode: working.wallpaper.monitorMode
         } satisfies GeneratedCombination;
       });
-      const finalProject = touchProject(updateActiveTemplateSnapshot({
-        ...generationStateAfterApplication(projectRef.current, working, true),
-        wallpaper: {
-          ...working.wallpaper,
-          lastUpdatedAt: appliedAt,
-          lastError: undefined,
-          consecutiveFailures: 0,
-          nextScheduledAt: working.wallpaper.enabled && !working.wallpaper.paused
-            ? scheduleFor(working.wallpaper, new Date(appliedAt))
-            : undefined
-        },
-        recentCombinations: entries.reduce((history, entry) => appendAppliedHistory(history, entry), working.recentCombinations)
-      }));
+      const [firstEntry, ...restEntries] = entries;
+      const merged = firstEntry
+        ? mergeAppliedWallpaperState(projectRef.current, working, firstEntry, {
+            appliedAt,
+            filePath: firstEntry.filePath ?? "",
+            templateId: firstEntry.templateId,
+            nextScheduledAt: projectRef.current.wallpaper.enabled && !projectRef.current.wallpaper.paused
+              ? scheduleFor(projectRef.current.wallpaper, new Date(appliedAt))
+              : undefined
+          })
+        : projectRef.current;
+      const finalProject = touchProject(updateActiveTemplateSnapshot(normalizeProject({
+        ...merged,
+        recentCombinations: restEntries.reduce((history, entry) => appendAppliedHistory(history, entry), merged.recentCombinations)
+      })));
       projectRef.current = finalProject;
       setProject(finalProject);
       setWallpaperHistoryIndex(0);
@@ -2013,31 +2069,52 @@ function App() {
   }
 
   function fitCanvas() {
-    setZoom(0.36);
+    const stage = stageRef.current;
+    if (!stage) {
+      setZoom(0.36);
+      return;
+    }
+    const availableWidth = Math.max(1, stage.clientWidth - 96);
+    const availableHeight = Math.max(1, stage.clientHeight - 96);
+    const nextZoom = clamp(Math.min(availableWidth / projectRef.current.canvas.width, availableHeight / projectRef.current.canvas.height), minZoom, maxZoom);
+    zoomAtPoint(nextZoom, stage.getBoundingClientRect().left + stage.clientWidth / 2, stage.getBoundingClientRect().top + stage.clientHeight / 2);
   }
 
   function zoomAtPoint(nextZoom: number, clientX: number, clientY: number) {
     const stage = stageRef.current;
     if (!stage) {
-      setZoom(nextZoom);
+      const clamped = clamp(nextZoom, minZoom, maxZoom);
+      zoomRef.current = clamped;
+      setZoom(clamped);
       return;
     }
-    const rect = stage.getBoundingClientRect();
-    const contentX = stage.scrollLeft + clientX - rect.left;
-    const contentY = stage.scrollTop + clientY - rect.top;
-    const ratio = nextZoom / zoom;
-    setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      stage.scrollLeft = contentX * ratio - (clientX - rect.left);
-      stage.scrollTop = contentY * ratio - (clientY - rect.top);
+    pendingZoomRef.current = { zoom: clamp(nextZoom, minZoom, maxZoom), clientX, clientY };
+    if (zoomFrameRef.current !== undefined) return;
+    zoomFrameRef.current = window.requestAnimationFrame(() => {
+      zoomFrameRef.current = undefined;
+      const pending = pendingZoomRef.current;
+      pendingZoomRef.current = undefined;
+      if (!pending) return;
+      const rect = stage.getBoundingClientRect();
+      const previousZoom = Math.max(minZoom, zoomRef.current);
+      const contentX = stage.scrollLeft + pending.clientX - rect.left;
+      const contentY = stage.scrollTop + pending.clientY - rect.top;
+      const ratio = pending.zoom / previousZoom;
+      zoomRef.current = pending.zoom;
+      setZoom(pending.zoom);
+      window.requestAnimationFrame(() => {
+        stage.scrollLeft = contentX * ratio - (pending.clientX - rect.left);
+        stage.scrollTop = contentY * ratio - (pending.clientY - rect.top);
+      });
     });
   }
 
   function onCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (!event.metaKey && !event.ctrlKey) return;
     event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
-    zoomAtPoint(clamp(zoom + direction * 0.06, 0.12, 1.6), event.clientX, event.clientY);
+    const currentZoom = pendingZoomRef.current?.zoom ?? zoomRef.current;
+    const multiplier = Math.exp(-event.deltaY * 0.0025);
+    zoomAtPoint(currentZoom * multiplier, event.clientX, event.clientY);
   }
 
   async function handleSourceDrop(event: React.DragEvent) {
@@ -2432,7 +2509,7 @@ function App() {
       const delta = scale - lastGestureScale;
       lastGestureScale = scale;
       zoomAtPoint(
-        clamp(zoom + delta * 0.25, 0.12, 1.6),
+        (pendingZoomRef.current?.zoom ?? zoomRef.current) * (1 + delta * 0.9),
         gesture.clientX ?? window.innerWidth / 2,
         gesture.clientY ?? window.innerHeight / 2
       );
@@ -2442,16 +2519,16 @@ function App() {
       if (isTypingTarget(event.target) && !(command && event.key.toLowerCase() === "s")) return;
       if (command && (event.key === "=" || event.key === "+")) {
         event.preventDefault();
-        zoomAtPoint(clamp(zoom + 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
+        zoomAtPoint((pendingZoomRef.current?.zoom ?? zoomRef.current) * 1.16, window.innerWidth / 2, window.innerHeight / 2);
       } else if (command && event.key === "-") {
         event.preventDefault();
-        zoomAtPoint(clamp(zoom - 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
+        zoomAtPoint((pendingZoomRef.current?.zoom ?? zoomRef.current) / 1.16, window.innerWidth / 2, window.innerHeight / 2);
       } else if (command && event.key === "0") {
         event.preventDefault();
         fitCanvas();
       } else if (command && event.key === "1") {
         event.preventDefault();
-        setZoom(1);
+        zoomAtPoint(1, window.innerWidth / 2, window.innerHeight / 2);
       } else if (command && event.key.toLowerCase() === "z" && event.shiftKey) {
         event.preventDefault();
         redo();
@@ -2626,17 +2703,36 @@ function App() {
               </div>
               <label className="source-media-policy">Media<select value={selectedSource.mediaPolicy} onChange={(event) => {
                 const mediaPolicy = event.target.value as SourceMediaPolicy;
-                commitProject((current) => ({ ...current, sources: current.sources.map((source) => source.id === selectedSource.id ? { ...source, mediaPolicy } : source) }));
+                commitProject((current) => ({
+                  ...current,
+                  sources: current.sources.map((source) => source.id === selectedSource.id ? { ...source, mediaPolicy } : source),
+                  layers: current.layers.map((layer) => layer.sourceId === selectedSource.id || layer.sourceState.sourceIds.includes(selectedSource.id)
+                    ? { ...layer, generatedImageId: undefined, selectedImageId: undefined, sourceState: { ...layer.sourceState, currentIndex: 0, shuffleQueue: [], usedImageIds: [] } }
+                    : layer),
+                  templates: {
+                    ...current.templates,
+                    templates: current.templates.templates.map((template) => ({
+                      ...template,
+                      project: {
+                        ...template.project,
+                        layers: template.project.layers.map((layer) => layer.sourceId === selectedSource.id || layer.sourceState.sourceIds.includes(selectedSource.id)
+                          ? { ...layer, generatedImageId: undefined, selectedImageId: undefined, sourceState: { ...layer.sourceState, currentIndex: 0, shuffleQueue: [], usedImageIds: [] } }
+                          : layer)
+                      }
+                    }))
+                  }
+                }));
                 setMessage(`Updated ${selectedSource.name}: ${mediaPolicy.replace(/-/g, " ")}.`);
               }}><option value="images-only">Images only</option><option value="images-and-video-thumbnails">Images + video thumbnails</option></select></label>
-              <details className="source-technical-details">
+              <details className="source-technical-details" data-accordion-category="sources" data-accordion-id="source-details">
                 <summary>Details <ChevronDown size={14} /></summary>
                 <dl>
                   <div><dt>Total</dt><dd>{selectedSource.mediaCounts?.total ?? selectedSource.images.length}{selectedSource.expectedItemCount ? ` / ${selectedSource.expectedItemCount}` : ""}</dd></div>
-                  <div><dt>Images</dt><dd>{selectedSource.mediaCounts?.images ?? selectedSource.images.filter((image) => image.mediaType !== "video").length}</dd></div>
-                  <div><dt>Videos</dt><dd>{selectedSource.mediaCounts?.videos ?? selectedSource.images.filter((image) => image.mediaType === "video").length}</dd></div>
+                  <div><dt>Images</dt><dd>{selectedSource.mediaCounts?.images ?? mediaCounts(selectedSource.images).images}</dd></div>
+                  <div><dt>Videos</dt><dd>{selectedSource.mediaCounts?.videos ?? mediaCounts(selectedSource.images).videos}</dd></div>
+                  {(selectedSource.mediaCounts?.unknown ?? mediaCounts(selectedSource.images).unknown ?? 0) > 0 && <div><dt>Unknown</dt><dd>{selectedSource.mediaCounts?.unknown ?? mediaCounts(selectedSource.images).unknown}</dd></div>}
                   <div><dt>Available</dt><dd>{sourceImagesForPolicy(selectedSource).length}</dd></div>
-                  <div><dt>Location</dt><dd title={sourceLocationLabel(selectedSource)}>{sourceLocationLabel(selectedSource)}</dd></div>
+                  <div><dt>Location</dt><dd className="tooltip-anchor" data-tooltip={sourceLocationLabel(selectedSource)}>{sourceLocationLabel(selectedSource)}</dd></div>
                   <div><dt>Status</dt><dd>{selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}</dd></div>
                   <div><dt>Updated</dt><dd>{selectedSource.lastImportCompletedAt ? new Date(selectedSource.lastImportCompletedAt).toLocaleString() : selectedSource.lastScannedAt ? new Date(selectedSource.lastScannedAt).toLocaleString() : "Not scanned"}</dd></div>
                 </dl>
@@ -2688,18 +2784,18 @@ function App() {
                       <strong>{source.name}</strong>
                       <span>{sourceKindLabel(source)} · {countLabel} items{source.importStatus === "partial" ? " · partial" : ""}</span>
                     </span>
-                    {selectedLayer && assigned && <span className="assigned-dot" title="Assigned to selected frame" />}
+                    {selectedLayer && assigned && <span className="assigned-dot tooltip-anchor" data-tooltip="Assigned to selected frame" />}
                   </button>
                   <div className="source-row-actions">
                     {sourceLibraryView === "linked" ? (
-                      <button className="source-mini-action" title="Unlink from this template" onClick={() => unlinkSourceFromTemplate(source)}>Unlink</button>
+                      <button className="source-mini-action tooltip-anchor" data-tooltip="Unlink from this template" onClick={() => unlinkSourceFromTemplate(source)}>Unlink</button>
                     ) : linked ? (
                       <span className="source-linked-badge">Linked</span>
                     ) : (
-                      <button className="source-mini-action" title="Link to this template" onClick={() => linkSourceToTemplate(source)}>Link</button>
+                      <button className="source-mini-action tooltip-anchor" data-tooltip="Link to this template" onClick={() => linkSourceToTemplate(source)}>Link</button>
                     )}
                     {sourceLibraryView === "global" && (
-                      <button className="icon-button source-delete" title="Delete global source" onClick={() => removeSource(source)}><Trash2 size={14} /></button>
+                      <button className="icon-button source-delete tooltip-anchor" data-tooltip="Delete global source" aria-label="Delete global source" onClick={() => removeSource(source)}><Trash2 size={14} /></button>
                     )}
                   </div>
                 </div>
@@ -2730,7 +2826,7 @@ function App() {
             <button className="icon-button tooltip-anchor" data-tooltip="Add placeholder" aria-label="Add placeholder" onClick={addPlaceholder}><Plus size={16} /></button>
           </div>
           {project.layers.some((layer) => layer.hidden) && (
-            <details className="hidden-layers-menu">
+            <details className="hidden-layers-menu" data-accordion-category="layers" data-accordion-id="hidden-layers">
               <summary><EyeOff size={14} /> Hidden Layers <span>{project.layers.filter((layer) => layer.hidden).length}</span></summary>
               <div>
                 {project.layers.filter((layer) => layer.hidden).map((layer) => (
@@ -2965,7 +3061,7 @@ function App() {
                       ><EyeOff size={14} /></button>
                     </div>
                   )}
-                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type }, project.customTextures) }} />}
+                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: paperFrame.type === "newsprint" ? "newspaper" : layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type }, project.customTextures) }} />}
                   <div
                     className="placeholder-image-area"
                     style={{
@@ -3143,8 +3239,8 @@ function TemplateHome({
           </div>
         </div>
         <div className="home-header-actions">
-          <button className="icon-button" title="Open project" onClick={onOpenProject}><FolderOpen size={17} /></button>
-          <button className="icon-button" title="Save project" onClick={onSaveProject}><Save size={17} /></button>
+          <button className="icon-button tooltip-anchor" data-tooltip="Open project" aria-label="Open project" onClick={onOpenProject}><FolderOpen size={17} /></button>
+          <button className="icon-button tooltip-anchor" data-tooltip="Save project" aria-label="Save project" onClick={onSaveProject}><Save size={17} /></button>
           <button className="home-new-button" onClick={onCreate}><Plus size={17} /> New Template</button>
         </div>
       </header>
@@ -3182,7 +3278,8 @@ function TemplateHome({
               <TemplatePreview template={template} sources={project.sources} />
               <button
                 className={`template-favorite ${template.favorite ? "active" : ""}`}
-                title={template.favorite ? "Remove from favorites" : "Add to favorites"}
+                data-tooltip={template.favorite ? "Remove from favorites" : "Add to favorites"}
+                aria-label={template.favorite ? "Remove from favorites" : "Add to favorites"}
                 onClick={(event) => {
                   event.stopPropagation();
                   onToggleFavorite(template);
@@ -3456,12 +3553,12 @@ function ContextToolbar({
       <button disabled={layer.locked} onClick={() => onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, cropMode: "original", alignment: "center" })}>Original</button>
       <button disabled={layer.locked} onClick={onCrop}>Crop</button>
       <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
-      <button onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
-      <button onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-      <button onClick={onDuplicate}><Copy size={16} /></button>
-      <button disabled={layer.locked} onClick={() => onOrder("front")}><BringToFront size={16} /></button>
-      <button disabled={layer.locked} onClick={() => onOrder("back")}><SendToBack size={16} /></button>
-      <button disabled={layer.locked} className="danger" onClick={onDelete}><Trash2 size={16} /></button>
+      <button className="tooltip-anchor" data-tooltip={layer.locked ? "Unlock layer" : "Lock layer"} onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
+      <button className="tooltip-anchor" data-tooltip={layer.hidden ? "Show layer" : "Hide layer"} onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+      <button className="tooltip-anchor" data-tooltip="Duplicate layer" data-shortcut="⌘D" onClick={onDuplicate}><Copy size={16} /></button>
+      <button className="tooltip-anchor" data-tooltip="Bring to front" disabled={layer.locked} onClick={() => onOrder("front")}><BringToFront size={16} /></button>
+      <button className="tooltip-anchor" data-tooltip="Send to back" disabled={layer.locked} onClick={() => onOrder("back")}><SendToBack size={16} /></button>
+      <button disabled={layer.locked} className="danger tooltip-anchor" data-tooltip="Delete layer" onClick={onDelete}><Trash2 size={16} /></button>
     </div>
   );
 }
@@ -3514,10 +3611,10 @@ function LayerContextMenu({
       <div className="layer-context-menu popover-menu" style={{ left: state.x, top: state.y }}>
         <span className="context-menu-label">{label}</span>
         <button onClick={onRename} disabled={selectionCount > 1}><PencilLine size={15} /> Rename</button>
-        <button onClick={() => onOrder("front")}><BringToFront size={15} /> Bring to Front</button>
-        <button onClick={() => onOrder("forward")}><ChevronUp size={15} /> Bring Forward</button>
-        <button onClick={() => onOrder("backward")}><ChevronDown size={15} /> Send Backward</button>
-        <button onClick={() => onOrder("back")}><SendToBack size={15} /> Send to Back</button>
+        <button className="tooltip-anchor" data-tooltip="Move above every layer" onClick={() => onOrder("front")}><BringToFront size={15} /> Bring to Front</button>
+        <button className="tooltip-anchor" data-tooltip="Move up one layer" onClick={() => onOrder("forward")}><ChevronUp size={15} /> Bring Forward</button>
+        <button className="tooltip-anchor" data-tooltip="Move down one layer" onClick={() => onOrder("backward")}><ChevronDown size={15} /> Send Backward</button>
+        <button className="tooltip-anchor" data-tooltip="Move below every layer" onClick={() => onOrder("back")}><SendToBack size={15} /> Send to Back</button>
         <button onClick={onDuplicate}><Copy size={15} /> Duplicate</button>
         <button className="danger" onClick={onDelete} disabled={layer.locked && selectionCount === 1}><Trash2 size={15} /> Delete</button>
       </div>
@@ -3627,7 +3724,7 @@ function ExportSetDialog({
           <label>Format<select value={state.format} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, format: event.target.value as "png" | "jpeg" }))}><option value="png">PNG</option><option value="jpeg">JPEG</option></select></label>
           {state.format === "jpeg" && <label>JPEG quality<input type="range" min="0.4" max="1" step="0.02" value={state.quality} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, quality: Number(event.target.value) }))} /><span>{Math.round(state.quality * 100)}%</span></label>}
         </div>
-        <div className="destination-row"><span title={state.destinationPath}>{state.destinationPath ?? "Choose a destination folder"}</span><button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose Folder</button></div>
+        <div className="destination-row"><span className="tooltip-anchor" data-tooltip={state.destinationPath}>{state.destinationPath ?? "Choose a destination folder"}</span><button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose Folder</button></div>
         <div className="export-options">
           <label><input type="checkbox" checked={state.includeTemplateName} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTemplateName: event.target.checked }))} /> Include template name</label>
           <label><input type="checkbox" checked={state.includeTimestamp} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTimestamp: event.target.checked }))} /> Include timestamp</label>
@@ -3732,8 +3829,6 @@ function WallpaperPanel({
   countdownLabel: string;
 }) {
   const rotationActive = project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval !== "manual";
-  const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
-
   function toggleRotation() {
     if (rotationActive) {
       onPatch({ paused: true });
@@ -3748,7 +3843,7 @@ function WallpaperPanel({
 
   return (
     <section className="panel wallpaper-panel settings-section">
-      <details>
+      <details data-accordion-category="settings" data-accordion-id="wallpaper-targets">
         <summary>Wallpaper Targets <ChevronDown size={15} /></summary>
         <label>
           Apply to
@@ -3792,7 +3887,7 @@ function WallpaperPanel({
         )}
       </details>
 
-      <details open>
+      <details open data-accordion-category="settings" data-accordion-id="wallpaper-schedule">
         <summary>Schedule <ChevronDown size={15} /></summary>
         <div className="rotation-control-row">
           <button className={`button ${rotationActive ? "secondary" : "primary"}`} onClick={toggleRotation}>
@@ -3820,21 +3915,7 @@ function WallpaperPanel({
         <button className="button ghost" disabled={busy} onClick={onPrevious}>Previous</button>
         <button className="button ghost" disabled={busy} onClick={onNext}>Next</button>
       </div>
-
-      <details>
-        <summary>Advanced <ChevronDown size={15} /></summary>
-        <label className="toggle-setting"><input type="checkbox" checked={project.wallpaper.transitionEnabled} onChange={(event) => onPatch({ transitionEnabled: event.target.checked })} /> Fade transition</label>
-        {project.wallpaper.transitionEnabled && <FilterSlider label="Fade duration" value={project.wallpaper.transitionDurationMs} min={200} max={1600} step={50} onChange={(value) => onPatch({ transitionDurationMs: value })} />}
-        <p className="settings-hint">Active monitors fade smoothly. Inactive Mission Control Spaces update without animation.</p>
-      </details>
-
-      <div className="wallpaper-status-card">
-        <div><span>Template</span><strong>{currentTemplate?.name ?? project.name}</strong></div>
-        <div><span>Status</span><strong>{runtimeStatus}</strong></div>
-        {project.wallpaper.lastUpdatedAt && <div><span>Last applied</span><strong>{new Date(project.wallpaper.lastUpdatedAt).toLocaleTimeString()}</strong></div>}
-        {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
-      </div>
-      {diagnostics && <details className="diagnostics"><summary>Diagnostics <ChevronDown size={14} /></summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
+      <label className="toggle-setting subtle-toggle"><input type="checkbox" checked={project.wallpaper.transitionEnabled} onChange={(event) => onPatch({ transitionEnabled: event.target.checked })} /> Fade transition</label>
     </section>
   );
 }
@@ -3882,7 +3963,7 @@ function CanvasDesignPanel({
   return (
     <section className="panel canvas-design-panel settings-section">
       <h2>Settings</h2>
-      <details>
+      <details data-accordion-category="settings" data-accordion-id="canvas">
         <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
         <div className="two-col"><label>Width<input type="number" min="64" value={draftWidth} onChange={(event) => changeWidth(Number(event.target.value))} /></label><label>Height<input type="number" min="64" value={draftHeight} onChange={(event) => changeHeight(Number(event.target.value))} /></label></div>
@@ -3895,7 +3976,7 @@ function CanvasDesignPanel({
         <button className="button primary full-width" onClick={() => onResize(draftWidth, draftHeight, resizeMode)}>Apply Size</button>
       </details>
 
-      <details open>
+      <details open data-accordion-category="settings" data-accordion-id="background">
         <summary>Background <ChevronDown size={15} /></summary>
         <div className="segmented-control three-options" role="group" aria-label="Background base">
           <button className={canvas.backgroundBaseMode === "color" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "color", backgroundTransparent: false })}>Color</button>
@@ -3911,7 +3992,7 @@ function CanvasDesignPanel({
         </>}
       </details>
 
-      <details>
+      <details data-accordion-category="settings" data-accordion-id="surface">
         <summary>Surface <ChevronDown size={15} /></summary>
         <div className="texture-picker-grid compact-texture-grid">
           {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(24, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.22, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: surface.thumbnailUrl ? `url(${surface.thumbnailUrl})` : undefined }} /><span>{surface.label}</span></button>)}
@@ -3921,7 +4002,7 @@ function CanvasDesignPanel({
         {canvas.backgroundPaper.type !== "none" && <><FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value, opacity: Math.max(.05, value / 100) })} /><FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={.4} max={3} step={.1} onChange={(value) => patchPaper({ scale: value })} /></>}
       </details>
 
-      <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
+      <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)} data-accordion-category="settings" data-accordion-id="canvas-advanced">
         <summary>Advanced <ChevronDown size={15} /></summary>
         <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
         <FilterSlider label="Brightness" value={canvas.backgroundBrightness} min={0} max={200} onChange={(value) => onPatch({ backgroundBrightness: value })} />
@@ -3987,13 +4068,13 @@ function Properties({
       <div className="panel-title-row"><h2>{layer.name}</h2><button className="icon-button danger tooltip-anchor" data-tooltip="Delete layer" aria-label="Delete layer" onClick={onDelete}><Trash2 size={16} /></button></div>
 
       {activeTab === "image" && <>
-        <details open>
+        <details open data-accordion-category="image" data-accordion-id="source">
           <summary>Source <ChevronDown size={15} /></summary>
           <div className="assigned-source-card"><span>{source ? sourceKindLabel(source) : "No source"}</span><strong>{source?.name ?? "Choose a source from the left panel"}</strong></div>
           <button className="button secondary full-width" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Next Image</button>
         </details>
 
-        <details open>
+        <details open data-accordion-category="image" data-accordion-id="fit-crop">
           <summary>Fit and Crop <ChevronDown size={15} /></summary>
           <label>Fit<select value={layer.cropMode} onChange={(event) => onPatch({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
           <label>Alignment<select value={layer.alignment} onChange={(event) => onPatch({ alignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -4002,7 +4083,7 @@ function Properties({
           <div className="two-col"><label>Offset X<input type="number" value={layer.crop.offsetX} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetX: Number(event.target.value) } })} /></label><label>Offset Y<input type="number" value={layer.crop.offsetY} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetY: Number(event.target.value) } })} /></label></div>
         </details>
 
-        <details>
+        <details data-accordion-category="image" data-accordion-id="adjustments">
           <summary>Adjustments <ChevronDown size={15} /></summary>
           <PresetButtons currentId={layer.effects.filters.presetId ?? "none"} onPick={patchFilters} />
           <FilterSlider label="Brightness" value={layer.effects.filters.brightness} min={0} max={200} onChange={(value) => patchFilters({ brightness: value, presetId: "custom" })} />
@@ -4012,7 +4093,7 @@ function Properties({
           <FilterSlider label="Fade" value={layer.effects.filters.fade} min={0} max={80} onChange={(value) => patchFilters({ fade: value, presetId: "custom" })} />
         </details>
 
-        <details>
+        <details data-accordion-category="image" data-accordion-id="position-size">
           <summary>Frame Position and Size <ChevronDown size={15} /></summary>
           <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<input type="number" min="16" value={Math.round(layer.width)} onChange={numeric("width")} /></label><label>Height<input type="number" min="16" value={Math.round(layer.height)} onChange={numeric("height")} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
@@ -4020,7 +4101,7 @@ function Properties({
           <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button></div>
         </details>
 
-        <details>
+        <details data-accordion-category="image" data-accordion-id="border-shape">
           <summary>Border and Shape <ChevronDown size={15} /></summary>
           <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
           <div className="two-col"><label>Border<input type="number" min="0" value={layer.borderWidth} onChange={numeric("borderWidth")} /></label><label>Radius<input type="number" min="0" disabled={layer.maskShape !== "rounded"} value={layer.borderRadius} onChange={numeric("borderRadius")} /></label><label>Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<input type="number" min="0" max="1" step=".05" value={layer.borderOpacity} onChange={numeric("borderOpacity")} /></label></div>
@@ -4029,26 +4110,28 @@ function Properties({
       </>}
 
       {activeTab === "effects" && <>
-        <details open>
+        <details open data-accordion-category="effects" data-accordion-id="paper-frame">
           <summary>Paper Frame <ChevronDown size={15} /></summary>
-          <label>Style<select value={frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean</option><option value="polaroid">Polaroid</option><option value="torn">Torn</option><option value="deckle">Deckle</option><option value="newsprint">Newsprint</option></select></label>
+          <label>Style<select value={frameType} onChange={(event) => patchPaperFrame(paperFrameDefaults(event.target.value as PaperFrameType, layer.effects.paperFrame))}><option value="none">None</option><option value="clean">Clean</option><option value="polaroid">Polaroid</option><option value="torn">Torn</option><option value="deckle">Deckle</option><option value="newsprint">Newsprint</option></select></label>
           {frameType !== "none" && <>
             <div className="two-col"><label>Paper<input type="color" value={layer.effects.paperFrame.paperColor} onChange={(event) => patchPaperFrame({ paperColor: event.target.value })} /></label><label>Border<input type="number" min="0" max="240" value={layer.effects.paperFrame.borderWidth} onChange={(event) => patchPaperFrame({ borderWidth: Number(event.target.value) })} /></label></div>
-            {(frameType === "polaroid" || frameType === "clean") && <FilterSlider label="Padding" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
+            {frameType === "polaroid" && <FilterSlider label="Caption space" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
+            {frameType === "clean" && <FilterSlider label="Paper margin" value={layer.effects.paperFrame.innerPadding} min={0} max={80} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
             {(frameType === "torn" || frameType === "deckle") && <FilterSlider label={frameType === "torn" ? "Tear size" : "Fiber roughness"} value={layer.effects.paperFrame.edgeRoughness} min={0} max={100} onChange={(value) => patchPaperFrame({ edgeRoughness: value })} />}
+            {frameType === "newsprint" && <FilterSlider label="Ink texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />}
             <FilterSlider label="Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={(value) => patchPaperFrame({ shadowStrength: value })} />
-            <FilterSlider label="Texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />
+            {frameType !== "newsprint" && <FilterSlider label="Paper texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />}
             {(frameType === "torn" || frameType === "deckle") && <button className="button ghost full-width" onClick={() => patchPaperFrame({ seed: Math.floor(Math.random() * 1_000_000) + 1 })}>Randomize Edge</button>}
           </>}
         </details>
 
-        <details>
+        <details data-accordion-category="effects" data-accordion-id="shadow-blend">
           <summary>Shadow and Blend <ChevronDown size={15} /></summary>
           <div className="toggle-row"><button className={layer.shadow ? "toggle active" : "toggle"} onClick={() => onPatch({ shadow: !layer.shadow })}>Outer Shadow</button><button className={layer.effects.innerShadow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, innerShadow: !layer.effects.innerShadow } })}>Inner Shadow</button><button className={layer.effects.glow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, glow: !layer.effects.glow } })}>Glow</button></div>
           <label>Blend<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
         </details>
 
-        <details>
+        <details data-accordion-category="effects" data-accordion-id="advanced-adjustments">
           <summary>Advanced Adjustments <ChevronDown size={15} /></summary>
           <FilterSlider label="Exposure" value={layer.effects.filters.exposure} min={-20} max={20} onChange={(value) => patchFilters({ exposure: value, presetId: "custom" })} />
           <FilterSlider label="Blur" value={layer.effects.filters.blur} min={0} max={16} onChange={(value) => patchFilters({ blur: value, presetId: "custom" })} />

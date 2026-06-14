@@ -1,7 +1,9 @@
 import type {
   GeneratedCombination,
+  PlaceholderLayer,
   TemplateLibrary,
   WallpaperInterval,
+  WallpaperProject,
   WallpaperTemplate,
   WallpaperTarget
 } from "./types.js";
@@ -49,6 +51,60 @@ export function nextScheduledAt(
 
 export function generationStateAfterApplication<T>(current: T, candidate: T, applied: boolean) {
   return applied ? candidate : current;
+}
+
+function layerSourceSignature(layer: PlaceholderLayer) {
+  return JSON.stringify({
+    sourceId: layer.sourceId,
+    sourceIds: layer.sourceState.sourceIds,
+    mode: layer.sourceState.mode,
+    selectedImageId: layer.selectedImageId
+  });
+}
+
+function mergeAppliedLayerState(current: PlaceholderLayer, candidate?: PlaceholderLayer) {
+  if (!candidate) return current;
+  const sameSource = layerSourceSignature(current) === layerSourceSignature(candidate);
+  return {
+    ...current,
+    generatedImageId: sameSource ? candidate.generatedImageId : current.generatedImageId,
+    sourceState: sameSource
+      ? {
+          ...current.sourceState,
+          currentIndex: candidate.sourceState.currentIndex,
+          shuffleQueue: candidate.sourceState.shuffleQueue,
+          usedImageIds: candidate.sourceState.usedImageIds
+        }
+      : current.sourceState
+  };
+}
+
+export function mergeAppliedWallpaperState(
+  current: WallpaperProject,
+  candidate: WallpaperProject,
+  entry: GeneratedCombination,
+  options: {
+    appliedAt: string;
+    filePath: string;
+    templateId?: string;
+    nextScheduledAt?: string;
+  }
+): WallpaperProject {
+  const candidateLayers = new Map(candidate.layers.map((layer) => [layer.id, layer]));
+  return {
+    ...current,
+    layers: current.layers.map((layer) => mergeAppliedLayerState(layer, candidateLayers.get(layer.id))),
+    wallpaper: {
+      ...current.wallpaper,
+      lastUpdatedAt: options.appliedAt,
+      lastAppliedFilePath: options.filePath,
+      lastAppliedTemplateId: options.templateId,
+      lastError: undefined,
+      consecutiveFailures: 0,
+      nextScheduledAt: options.nextScheduledAt
+    },
+    recentCombinations: appendAppliedHistory(current.recentCombinations, entry)
+  };
 }
 
 export function appendAppliedHistory(

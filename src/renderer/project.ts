@@ -14,6 +14,7 @@ import type {
   WallpaperSettings,
   WallpaperTemplate
 } from "../shared/types";
+import { classifyLocalMediaPath, mediaCounts, sourceImagesForMediaPolicy } from "../shared/media";
 
 export const presets = [
   { id: "1920x1080", label: "Desktop HD", width: 1920, height: 1080 },
@@ -217,19 +218,15 @@ export function createDefaultEffects(): PlaceholderEffects {
   };
 }
 
-function mediaCounts(images: ImageSource["images"]) {
-  const videos = images.filter((image) => image.mediaType === "video").length;
-  return { total: images.length, images: images.length - videos, videos };
-}
-
 export function sourceImagesForPolicy(source: ImageSource) {
-  const policy = source.mediaPolicy ?? "images-only";
-  if (policy === "images-and-video-thumbnails") return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
-  return source.images.filter((image) => image.mediaType !== "video");
+  return sourceImagesForMediaPolicy(source);
 }
 
 function normalizeSource(source: ImageSource): ImageSource {
-  const images = (source.images ?? []).map((image) => ({ ...image, mediaType: image.mediaType ?? "image" as const }));
+  const images = (source.images ?? []).map((image) => ({
+    ...image,
+    mediaType: image.mediaType ?? classifyLocalMediaPath(image.path || image.sourceUrl || image.url || image.name)
+  }));
   return {
     ...source,
     images,
@@ -649,7 +646,7 @@ export function getImageForLayer(project: WallpaperProject, layer: PlaceholderLa
   const imageId = layer.generatedImageId || layer.selectedImageId;
   for (const sourceId of sourceIds) {
     const source = project.sources.find((item) => item.id === sourceId);
-    const image = source?.images.find((item) => item.id === imageId);
+    const image = source ? sourceImagesForPolicy(source).find((item) => item.id === imageId) : undefined;
     if (image) return image;
   }
   return undefined;
