@@ -1,0 +1,93 @@
+{
+  "name": "pinterest-wallpaper-compiler",
+  "productName": "Pinterest Wallpaper Compiler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first desktop wallpaper template editor and generator.",
+  "author": "Pinterest Wallpaper Compiler contributors",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && node scripts/start-electron.cjs .\"",
+    "build": "tsc && vite build && node scripts/inline-renderer-assets.cjs && npm run build:electron",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "app:dir": "npm run build && electron-builder --dir",
+    "app:mac": "npm run build && electron-builder --mac dmg zip",
+    "app:win": "npm run build && electron-builder --win nsis portable",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "npm run build:electron && node --test dist/main/*.test.js"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "overrides": {
+    "shell-quote": "^1.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.1",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.1.0",
+    "electron": "^39.8.5",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.7.2",
+    "vite": "^8.0.16",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.progayer.pinterest-wallpaper-compiler",
+    "productName": "Pinterest Wallpaper Compiler",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
