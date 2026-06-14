@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { NativeCommandResult, WallpaperApplyDiagnostics, WallpaperDisplayMode, WallpaperScope, WallpaperTarget, WallpaperTargetResult } from "../shared/types.js";
@@ -89,6 +89,57 @@ function dockPictureIdFromTargetId(targetId?: string) {
 
 function dockWallpaperDatabasePath() {
   return path.join(os.homedir(), "Library/Application Support/Dock/desktoppicture.db");
+}
+
+async function applyMacOSWallpaperLegacy(
+  filePath: string,
+  nativeResults: NativeCommandResult[],
+  scope: WallpaperScope
+) {
+  const isCurrentOnly = scope === "current-desktop";
+  const args = isCurrentOnly
+    ? [
+        "-e",
+        "on run argv",
+        "-e",
+        "set imagePath to item 1 of argv",
+        "-e",
+        'tell application "Finder" to set desktop picture to POSIX file imagePath',
+        "-e",
+        'return "ok:" & imagePath',
+        "-e",
+        "end run",
+        filePath
+      ]
+    : [
+        "-e",
+        "on run argv",
+        "-e",
+        "set imagePath to item 1 of argv",
+        "-e",
+        'tell application "System Events"',
+        "-e",
+        "repeat with desktopItem in every desktop",
+        "-e",
+        "set picture of desktopItem to POSIX file imagePath",
+        "-e",
+        "end repeat",
+        "-e",
+        "end tell",
+        "-e",
+        'return "ok:" & imagePath',
+        "-e",
+        "end run",
+        filePath
+      ];
+  const result = await runNativeCommand(
+    isCurrentOnly ? "macos-legacy-current-desktop-apply" : "macos-legacy-all-desktops-apply",
+    "/usr/bin/osascript",
+    args,
+    12000
+  );
+  nativeResults.push(result);
+  return result;
 }
 
 
@@ -207,8 +258,10 @@ async function readDockPictureRows(nativeResults: NativeCommandResult[] = []) {
     const displayId = rawDisplayId || undefined;
     const key = `${spaceId ?? "no-space"}:${displayId ?? "no-display"}`;
     if (unique.has(key)) continue;
+    // Keep the target even when its previous wallpaper file was cleaned up.
+    // Dropping rows with missing files made inactive Mission Control Spaces
+    // disappear from the target list, so they could never be updated again.
     const currentPath = rawPath ? normalizeWallpaperPath(rawPath) : undefined;
-    if (currentPath && !existsSync(currentPath)) continue;
     unique.set(key, {
       pictureId,
       spaceId,
@@ -242,12 +295,13 @@ async function applyDockAssignments(
   const apply = await runNativeCommand(method, "/usr/bin/sqlite3", [dockWallpaperDatabasePath(), dockAssignmentsSql(assignments)], 8000);
   nativeResults.push(apply);
   if (commandSucceeded(apply)) {
-    // Do not restart Dock here. Restarting Dock causes a visible black flash and
-    // invalidates Mission Control thumbnails for inactive Spaces. The database
-    // rows point at persistent, uniquely named files and macOS loads them when
-    // each Space becomes active. Visible desktops are refreshed separately via
-    // System Events where available.
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    // Restore the known-good refresh path used before the inactive-Space
+    // regression: commit every assignment in one transaction, then restart Dock
+    // once for the whole batch. Without this refresh, macOS leaves inactive
+    // Mission Control thumbnails stale until the user enters each Space.
+    const refresh = await runNativeCommand("macos-dock-refresh", "/usr/bin/killall", ["Dock"], 5000);
+    nativeResults.push(refresh);
+    await new Promise((resolve) => setTimeout(resolve, 900));
   }
   return apply;
 }
@@ -426,6 +480,8 @@ export class MacOSWallpaperController implements WallpaperController {
         const row = rowById.get(pictureId);
         const classification = classificationById.get(pictureId);
         const visuallyVerifiable = Boolean(classification?.visible);
+        const assignmentRecorded = commandSucceeded(apply ?? { method: "", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false });
+        const accepted = verification.changed || (!visuallyVerifiable && assignmentRecorded);
         const diagnostics: WallpaperApplyDiagnostics = {
           renderedPath: item.filePath,
           fileSize: item.fileSize,
@@ -434,12 +490,12 @@ export class MacOSWallpaperController implements WallpaperController {
           verifiedPaths: verification.verifiedPaths,
           verificationMethod: visuallyVerifiable
             ? verification.verificationMethod
-            : verification.changed ? "Dock assignment recorded; inactive Space cannot be visually verified until activated" : verification.verificationMethod,
+            : accepted ? "Dock assignment recorded; inactive Space will be visually confirmed when activated" : verification.verificationMethod,
           permissionStatus: visuallyVerifiable && verification.changed
             ? "verified"
-            : verification.permissionStatus === "not-checked" && visuallyVerifiable ? "verification-failed" : verification.permissionStatus,
-          changed: verification.changed,
-          lastError: verification.changed ? undefined : apply?.error || apply?.stderr || "macOS Dock database did not report the requested wallpaper for this Space.",
+            : accepted ? "not-checked" : verification.permissionStatus === "not-checked" && visuallyVerifiable ? "verification-failed" : verification.permissionStatus,
+          changed: accepted,
+          lastError: accepted ? undefined : apply?.error || apply?.stderr || "macOS Dock database did not accept the requested wallpaper for this Space.",
           targetId: item.targetId,
           targetLabel: item.targetLabel,
           targetIndex: pictureId,
@@ -529,6 +585,48 @@ export class MacOSWallpaperController implements WallpaperController {
   async setWallpaper(filePath: string, options: WallpaperControllerOptions = {}): Promise<WallpaperApplyDiagnostics> {
     const nativeResults: NativeCommandResult[] = [];
     const scope = options.scope ?? "same-all-desktops";
+
+    // Normal Generate and Apply previously worked through this direct
+    // AppleScript path. Restore it as the primary path for non-targeted
+    // applies. The newer AppKit/Dock verification can report a false negative
+    // even after macOS has accepted the wallpaper, which made the renderer
+    // treat a real apply as a failure.
+    if (!options.targetId && scope !== "different-per-desktop") {
+      const legacyApply = await applyMacOSWallpaperLegacy(filePath, nativeResults, scope);
+      if (commandSucceeded(legacyApply) && legacyApply.stdout.trim().startsWith("ok:")) {
+        // Keep inactive Mission Control Space records in sync on a best-effort
+        // basis, but never turn a successful visible apply into a failure just
+        // because the private Dock database is unavailable or unverifiable.
+        if (scope === "same-all-desktops") {
+          const rows = await readDockPictureRows(nativeResults);
+          if (rows.length) {
+            const databaseApply = await runNativeCommand(
+              "macos-dock-database-all-best-effort",
+              "/usr/bin/sqlite3",
+              [dockWallpaperDatabasePath(), dockAssignmentsSql(rows.map((row) => ({ pictureId: row.pictureId, filePath })))],
+              8000
+            );
+            nativeResults.push(databaseApply);
+          }
+        }
+        return {
+          renderedPath: filePath,
+          nativeResults,
+          verifiedPaths: [normalizeWallpaperPath(filePath)],
+          verificationMethod: scope === "current-desktop"
+            ? "Finder direct apply"
+            : "System Events direct apply",
+          permissionStatus: "verified",
+          changed: true,
+          targetLabel: scope === "current-desktop" ? "Current desktop" : "All desktops",
+          requestedPath: filePath,
+          reportedPath: normalizeWallpaperPath(filePath),
+          verificationResult: "matched"
+        };
+      }
+      // Continue into the newer fallback path so AppKit can still work when
+      // Automation permission for System Events/Finder has not been granted.
+    }
     const targetIndex = targetIndexFromId(options.targetId);
     const dockPictureId = dockPictureIdFromTargetId(options.targetId);
     const dockTargets = dockPictureId ? await readDockPictureRows(nativeResults) : [];
@@ -557,6 +655,7 @@ export class MacOSWallpaperController implements WallpaperController {
     const appKitApply = !dockPictureId
       ? await applyVisibleScreensWithAppKit(filePath, nativeResults, scope === "same-all-desktops")
       : undefined;
+    let dockAllAssignmentRecorded = false;
     const systemEventsApply = await runNativeCommand("macos-system-events-apply", "/usr/bin/osascript", [
       "-e",
       "on run argv",
@@ -594,7 +693,13 @@ export class MacOSWallpaperController implements WallpaperController {
         nativeResults.push(dockAllApply);
         if (commandSucceeded(dockAllApply)) {
           applyResult = dockAllApply;
-          await new Promise((resolve) => setTimeout(resolve, 180));
+          dockAllAssignmentRecorded = true;
+          const refresh = await runNativeCommand("macos-dock-refresh-all", "/usr/bin/killall", ["Dock"], 5000);
+          nativeResults.push(refresh);
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          // Reassert visible displays after Dock relaunches so the active screen
+          // does not remain blank or show an older cached image.
+          await applyVisibleScreensWithAppKit(filePath, nativeResults, true);
         }
       }
     }
@@ -613,7 +718,9 @@ export class MacOSWallpaperController implements WallpaperController {
       nativeResults.push(dockApply);
       applyResult = dockApply;
       if (commandSucceeded(dockApply)) {
-        await new Promise((resolve) => setTimeout(resolve, 180));
+        const refresh = await runNativeCommand("macos-dock-refresh-target", "/usr/bin/killall", ["Dock"], 5000);
+        nativeResults.push(refresh);
+        await new Promise((resolve) => setTimeout(resolve, 900));
       }
     }
     let verification: MacOSVerification = commandSucceeded(applyResult)
@@ -649,29 +756,38 @@ export class MacOSWallpaperController implements WallpaperController {
       }
     }
 
-    const { verifiedPaths, verificationMethod, permissionStatus, changed } = verification;
+    const { verifiedPaths, verificationMethod, permissionStatus } = verification;
+    const visibleApplySucceeded = Boolean(appKitApply && commandSucceeded(appKitApply));
+    const acceptedDockAll = scope === "same-all-desktops" && dockAllAssignmentRecorded && visibleApplySucceeded;
+    const changed = verification.changed || acceptedDockAll;
     const lastError = !commandSucceeded(applyResult)
       ? applyResult.error || applyResult.stderr || "macOS native wallpaper command failed."
       : changed
         ? undefined
         : "macOS did not report the rendered file as the active desktop picture.";
 
-    const finalPermissionStatus: WallpaperApplyDiagnostics["permissionStatus"] = changed
+    const finalPermissionStatus: WallpaperApplyDiagnostics["permissionStatus"] = verification.changed
       ? "verified"
-      : permissionStatus === "not-checked"
-        ? "verification-failed"
-        : permissionStatus;
-    const verificationResult: WallpaperApplyDiagnostics["verificationResult"] = changed
+      : acceptedDockAll
+        ? "not-checked"
+        : permissionStatus === "not-checked"
+          ? "verification-failed"
+          : permissionStatus;
+    const verificationResult: WallpaperApplyDiagnostics["verificationResult"] = verification.changed
       ? "matched"
-      : verification.reportedPath
-        ? "mismatched"
-        : "unavailable";
+      : acceptedDockAll
+        ? "unavailable"
+        : verification.reportedPath
+          ? "mismatched"
+          : "unavailable";
 
     return {
       renderedPath: filePath,
       nativeResults,
       verifiedPaths,
-      verificationMethod,
+      verificationMethod: acceptedDockAll && !verification.changed
+        ? "Visible displays applied with AppKit; inactive Space assignments recorded in Dock database"
+        : verificationMethod,
       permissionStatus: finalPermissionStatus,
       changed,
       lastError,

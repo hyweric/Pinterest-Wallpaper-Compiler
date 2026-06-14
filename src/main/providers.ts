@@ -5,13 +5,11 @@ import { pathToFileURL } from "node:url";
 import type {
   ImageSource,
   LocalImageRef,
-  MediaType,
   PinterestImportProgress,
   PinterestImportRequest,
   PinterestImportResult
 } from "../shared/types.js";
 import { collectPinterestPages, PinterestPaginationError } from "./pinterest-pagination.js";
-import { mediaCounts } from "../shared/media.js";
 
 export interface ImageSourceProvider<TRequest, TResult> {
   id: ImageSource["providerId"];
@@ -23,7 +21,7 @@ export interface ImageSourceProvider<TRequest, TResult> {
 export interface PinterestBoardPin {
   id: string;
   imageUrl: string;
-  mediaType?: MediaType;
+  mediaType?: "image" | "video";
 }
 
 export interface PublicPinterestBoardResult {
@@ -363,7 +361,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       expectedCount = numberFromUnknown(json.data.board?.pin_count ?? json.data.board?.pins_count);
       for (const pin of json.data.pins) {
         const imageUrl = bestPinterestImageUrl(pin);
-        if (pin.id && imageUrl) initialPins.push({ id: pin.id, imageUrl, mediaType: classifyPinterestMetadata(pin) });
+        if (pin.id && imageUrl) initialPins.push({ id: pin.id, imageUrl, mediaType: isPinterestVideoPin(pin) ? "video" : "image" });
       }
       log.push(`Initial public endpoint returned ${initialPins.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}.`);
     } catch (error) {
@@ -517,7 +515,11 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       url: input.input.url.trim(),
       images: input.images,
       mediaPolicy: input.existing?.mediaPolicy ?? "images-only",
-      mediaCounts: mediaCounts(input.images),
+      mediaCounts: {
+        total: input.images.length,
+        images: input.images.filter((image) => image.mediaType !== "video").length,
+        videos: input.images.filter((image) => image.mediaType === "video").length
+      },
       cachePath: input.sourceCachePath,
       importStatus: input.importStatus,
       importLog: [...input.log, `Cache contains ${input.images.length} unique Pinterest pins.`],
@@ -548,32 +550,16 @@ interface PinterestPidgetPin {
   id: string;
   type?: string;
   media_type?: string;
-  mediaType?: string;
-  story_pin_type?: string;
   videos?: unknown;
-  video?: unknown;
   story_pin_data?: unknown;
-  story_pin?: unknown;
-  is_video?: boolean;
   images?: Record<string, { url?: string; width?: number; height?: number }>;
-  media?: {
-    media_type?: string;
-    type?: string;
-    video?: unknown;
-    videos?: unknown;
-    images?: Record<string, { url?: string; width?: number; height?: number }>;
-  };
 }
 
 interface OfficialPinterestPin {
   id: string;
   media_type?: string;
-  creative_type?: string;
   media?: {
     media_type?: string;
-    type?: string;
-    video?: unknown;
-    videos?: unknown;
     images?: Record<string, { url?: string; width?: number; height?: number }>;
   };
 }
@@ -586,7 +572,7 @@ function officialPinToBoardPin(pin: OfficialPinterestPin): PinterestBoardPin | u
   const image = Object.values(pin.media?.images ?? {})
     .filter((item) => item.url)
     .sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0];
-  return pin.id && image?.url ? { id: pin.id, imageUrl: image.url, mediaType: classifyPinterestMetadata(pin) } : undefined;
+  return pin.id && image?.url ? { id: pin.id, imageUrl: image.url, mediaType: /video/i.test(`${pin.media_type ?? ""} ${pin.media?.media_type ?? ""}`) ? "video" : "image" } : undefined;
 }
 
 async function fetchOfficialPage<T>(url: URL, headers: Record<string, string>, signal?: AbortSignal) {
@@ -617,22 +603,8 @@ function boardPartsFromUrl(rawUrl: string) {
   return { username, board };
 }
 
-export function classifyPinterestMetadata(pin: Partial<PinterestPidgetPin & OfficialPinterestPin>): MediaType {
-  const metadata = [
-    pin.type,
-    pin.media_type,
-    pin.mediaType,
-    pin.story_pin_type,
-    pin.creative_type,
-    pin.media?.media_type,
-    pin.media?.type
-  ].filter(Boolean).join(" ");
-  if (/video|animated|story|idea/i.test(metadata) || pin.is_video || pin.videos || pin.video || pin.media?.videos || pin.media?.video || pin.story_pin_data || pin.story_pin) {
-    return "video";
-  }
-  if (/image|photo|standard|regular/i.test(metadata)) return "image";
-  if ((pin.images && Object.keys(pin.images).length > 0) || (pin.media?.images && Object.keys(pin.media.images).length > 0)) return "image";
-  return "unknown";
+function isPinterestVideoPin(pin: PinterestPidgetPin) {
+  return /video|story/i.test(`${pin.type ?? ""} ${pin.media_type ?? ""}`) || Boolean(pin.videos || pin.story_pin_data);
 }
 
 function bestPinterestImageUrl(pin: PinterestPidgetPin) {
@@ -682,7 +654,7 @@ export class LocalFileProvider {
       name: images.length === 1 ? images[0].name : `${images.length} local images`,
       images,
       mediaPolicy: "images-only",
-      mediaCounts: mediaCounts(images),
+      mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
       importStatus: "ready",
       updatedAt: new Date().toISOString()
     };

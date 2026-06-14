@@ -14,7 +14,6 @@ import type {
   WallpaperSettings,
   WallpaperTemplate
 } from "../shared/types";
-import { classifyLocalMediaPath, mediaCounts, sourceImagesForMediaPolicy } from "../shared/media";
 
 export const presets = [
   { id: "1920x1080", label: "Desktop HD", width: 1920, height: 1080 },
@@ -218,15 +217,19 @@ export function createDefaultEffects(): PlaceholderEffects {
   };
 }
 
+function mediaCounts(images: ImageSource["images"]) {
+  const videos = images.filter((image) => image.mediaType === "video").length;
+  return { total: images.length, images: images.length - videos, videos };
+}
+
 export function sourceImagesForPolicy(source: ImageSource) {
-  return sourceImagesForMediaPolicy(source);
+  const policy = source.mediaPolicy ?? "images-only";
+  if (policy === "images-and-video-thumbnails") return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
+  return source.images.filter((image) => image.mediaType !== "video");
 }
 
 function normalizeSource(source: ImageSource): ImageSource {
-  const images = (source.images ?? []).map((image) => ({
-    ...image,
-    mediaType: image.mediaType ?? classifyLocalMediaPath(image.path || image.sourceUrl || image.url || image.name)
-  }));
+  const images = (source.images ?? []).map((image) => ({ ...image, mediaType: image.mediaType ?? "image" as const }));
   return {
     ...source,
     images,
@@ -266,7 +269,8 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
     : legacyPaperType === "torn-paper" ? "torn"
       : legacyPaperType === "deckle-edge" ? "deckle"
         : legacyPaperType === "newspaper-cutout" ? "newsprint"
-          : legacyPaperType === "polaroid" ? "polaroid"
+          : legacyPaperType === "clean" || legacyPaperType === "polaroid" || legacyPaperType === "torn" || legacyPaperType === "deckle" || legacyPaperType === "newsprint"
+            ? legacyPaperType
             : "none";
   return {
     ...layer,
@@ -412,12 +416,18 @@ export function createWallpaperTemplate(
 }
 
 export function workspaceFromTemplate(project: WallpaperProject, template: WallpaperTemplate): WallpaperProject {
+  // Wallpaper rotation and target settings are runtime-wide, not template-local.
+  // Older snapshots stored a copy on every template, which meant switching to a
+  // template could silently restore `enabled: false`, `paused: true`, or an old
+  // interval and stop the scheduler after the first rotation. Preserve the
+  // current runtime settings whenever the editable workspace changes templates.
+  const runtimeWallpaper = structuredClone(project.wallpaper);
   return {
     ...project,
     name: template.name,
     canvas: structuredClone(template.project.canvas),
     layers: structuredClone(template.project.layers),
-    wallpaper: { ...createDefaultWallpaperSettings(), ...structuredClone(template.project.wallpaper) },
+    wallpaper: { ...createDefaultWallpaperSettings(), ...structuredClone(template.project.wallpaper), ...runtimeWallpaper },
     templates: {
       ...project.templates,
       activeTemplateId: template.id,
@@ -646,7 +656,7 @@ export function getImageForLayer(project: WallpaperProject, layer: PlaceholderLa
   const imageId = layer.generatedImageId || layer.selectedImageId;
   for (const sourceId of sourceIds) {
     const source = project.sources.find((item) => item.id === sourceId);
-    const image = source ? sourceImagesForPolicy(source).find((item) => item.id === imageId) : undefined;
+    const image = source?.images.find((item) => item.id === imageId);
     if (image) return image;
   }
   return undefined;

@@ -25,7 +25,9 @@ import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./provi
 import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
 import { planFadeOverlayAssignments } from "../shared/wallpaper.js";
-import { classifyLocalMediaPath, imageExtensions, mediaCounts, videoExtensions } from "../shared/media.js";
+
+const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
+const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
 
 const isDev = process.env.VITE_DEV_SERVER_URL || !app.isPackaged;
 let mainWindow: BrowserWindow | undefined;
@@ -33,6 +35,19 @@ let tray: Tray | undefined;
 let isQuitting = false;
 let trayRuntimeState: TrayRuntimeState = { enabled: false, paused: false };
 const pinterestJobs = new Map<string, AbortController>();
+
+// The custom BrowserWindow crossfade experiment is disabled until it can be
+// verified on real macOS displays without leaking black panel windows. Keep
+// wallpaper application stable and immediate in the meantime.
+const fadeOverlayTransitionsEnabled = false;
+const fadeOverlayWindows = new Set<BrowserWindow>();
+
+function destroyFadeOverlayWindows() {
+  for (const overlay of fadeOverlayWindows) {
+    if (!overlay.isDestroyed()) overlay.destroy();
+  }
+  fadeOverlayWindows.clear();
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -147,10 +162,9 @@ async function loadPublicPinterestBoard(
     await scraper.loadURL(boardUrl, { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36" });
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
-    type BrowserPin = { id: string; imageUrl: string; mediaType?: "image" | "video" | "unknown" };
     let stableRounds = 0;
     let previousCount = 0;
-    let latest: { pins: BrowserPin[]; atBottom: boolean; bodyText: string } = {
+    let latest: { pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>; atBottom: boolean; bodyText: string } = {
       pins: [],
       atBottom: false,
       bodyText: ""
@@ -203,7 +217,7 @@ async function loadPublicPinterestBoard(
         }
       })()`, true) as {
         ok: boolean;
-        pins: BrowserPin[];
+        pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>;
         atBottom: boolean;
         bodyText: string;
         pageUrl?: string;
@@ -263,7 +277,7 @@ async function readImagesFromFolder(folderPath: string, includeSubfolders = fals
       url: pathToFileURL(filePath).toString(),
       modifiedAt: fileStat.mtime.toISOString(),
       size: fileStat.size,
-      mediaType: classifyLocalMediaPath(filePath),
+      mediaType: videoExtensions.has(extension) ? "video" : "image",
       videoThumbnail: videoExtensions.has(extension) ? false : undefined
     });
   }
@@ -281,7 +295,7 @@ async function sourceFromFolder(folderPath: string): Promise<ImageSource> {
     path: folderPath,
     images,
     mediaPolicy: "images-only",
-    mediaCounts: mediaCounts(images),
+    mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
     importStatus: "ready",
     importLog: [`Scanned ${images.length} supported images.`],
     lastScannedAt: new Date().toISOString(),
@@ -299,15 +313,26 @@ async function imageFromFilePath(filePath: string): Promise<LocalImageRef> {
     url: pathToFileURL(filePath).toString(),
     modifiedAt: fileStat.mtime.toISOString(),
     size: fileStat.size,
-    mediaType: classifyLocalMediaPath(filePath),
+    mediaType: videoExtensions.has(extension) ? "video" : "image",
     videoThumbnail: videoExtensions.has(extension) ? false : undefined
   };
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
-  const comma = dataUrl.indexOf(",");
-  if (comma === -1) throw new Error("Invalid image data.");
-  return Buffer.from(dataUrl.slice(comma + 1), "base64");
+  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(dataUrl);
+  if (!match) throw new Error("Rendered data is not a valid PNG or JPEG data URL.");
+  const buffer = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  if (buffer.length < 16) throw new Error("Rendered image data is empty or corrupt.");
+  return buffer;
+}
+
+function validateRenderedWallpaperBuffer(buffer: Buffer) {
+  const image = nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) throw new Error("Rendered image data could not be decoded by Electron.");
+  const size = image.getSize();
+  if (!size.width || !size.height) throw new Error("Rendered image has invalid dimensions.");
+  image.toBitmap();
+  return size;
 }
 
 async function validateRenderedWallpaperImage(filePath: string) {
@@ -330,10 +355,17 @@ async function writeRenderedWallpaper(dataUrl: string, suggestedName: string) {
   const cacheDir = path.join(app.getPath("userData"), "Generated Wallpapers");
   await mkdir(cacheDir, { recursive: true });
   const filePath = path.join(cacheDir, safeWallpaperFileName(suggestedName));
-  const temporaryPath = `${filePath}.writing`;
-  await writeFile(temporaryPath, dataUrlToBuffer(dataUrl));
-  await validateRenderedWallpaperImage(temporaryPath);
-  await rename(temporaryPath, filePath);
+  const extension = path.extname(filePath) || ".png";
+  const temporaryPath = path.join(cacheDir, `${path.basename(filePath, extension)}.${crypto.randomUUID()}.writing${extension}`);
+  const buffer = dataUrlToBuffer(dataUrl);
+  validateRenderedWallpaperBuffer(buffer);
+  try {
+    await writeFile(temporaryPath, buffer);
+    await rename(temporaryPath, filePath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
   const file = await validateRenderedWallpaperImage(filePath);
   return { cacheDir, filePath, file };
 }
@@ -378,7 +410,8 @@ async function startFadeTransition(
   items: FadeOverlayItem[],
   options: { enabled?: boolean; durationMs?: number; allDisplays?: boolean } = {}
 ): Promise<FadeOverlaySession | undefined> {
-  if (process.platform !== "darwin" || options.enabled === false || reduceMotionEnabled() || !items.length) return undefined;
+  destroyFadeOverlayWindows();
+  if (!fadeOverlayTransitionsEnabled || process.platform !== "darwin" || options.enabled === false || reduceMotionEnabled() || !items.length) return undefined;
   const displays = screen.getAllDisplays();
   if (!displays.length) return undefined;
   const duration = Math.max(200, Math.min(1600, options.durationMs ?? 650));
@@ -413,7 +446,7 @@ async function startFadeTransition(
         height: display.bounds.height,
         frame: false,
         transparent: false,
-        backgroundColor: "#000000",
+        backgroundColor: "#f5f5f2",
         show: false,
         focusable: false,
         skipTaskbar: true,
@@ -444,6 +477,8 @@ window.pwcRollback=()=>new Promise(resolve=>{nextImage.style.opacity='0';setTime
       diagnostic.oldImageDecoded = Boolean(decoded?.old);
       diagnostic.newImageDecoded = Boolean(decoded?.next);
       overlay.showInactive();
+      fadeOverlayWindows.add(overlay);
+      overlay.once("closed", () => fadeOverlayWindows.delete(overlay));
       diagnostic.overlayCreated = true;
       windows.push({ window: overlay, diagnostic });
     }
@@ -471,6 +506,7 @@ window.pwcRollback=()=>new Promise(resolve=>{nextImage.style.opacity='0';setTime
           diagnostic.removedAfterVerification = true;
           diagnostic.removedAt = new Date().toISOString();
           if (!window.isDestroyed()) window.destroy();
+          fadeOverlayWindows.delete(window);
         }
       }
     };
@@ -478,6 +514,7 @@ window.pwcRollback=()=>new Promise(resolve=>{nextImage.style.opacity='0';setTime
     for (const { window, diagnostic } of windows) {
       diagnostic.error = error instanceof Error ? error.message : String(error);
       if (!window.isDestroyed()) window.destroy();
+      fadeOverlayWindows.delete(window);
     }
     return undefined;
   }
@@ -657,7 +694,9 @@ ipcMain.handle("image:export", async (_event, payload: ExportPayload) => {
   });
   if (result.canceled || !result.filePath) return { canceled: true };
 
-  await writeFile(result.filePath, dataUrlToBuffer(payload.dataUrl));
+  const buffer = dataUrlToBuffer(payload.dataUrl);
+  validateRenderedWallpaperBuffer(buffer);
+  await writeFile(result.filePath, buffer);
   return { canceled: false, filePath: result.filePath };
 });
 
@@ -681,9 +720,17 @@ ipcMain.handle("export-set:write-file", async (_event, payload: ExportSetFilePay
     } catch {
       // File does not exist.
     }
-    await writeFile(filePath, dataUrlToBuffer(payload.dataUrl));
+    const buffer = dataUrlToBuffer(payload.dataUrl);
+    validateRenderedWallpaperBuffer(buffer);
+    await writeFile(filePath, buffer);
     return { ok: true, filePath };
   } catch (error) {
+    console.error("[export-set:write-file] failed", {
+      destinationPath: payload.destinationPath,
+      fileName: payload.fileName,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     return { ok: false, error: error instanceof Error ? error.message : "Unable to export variation." };
   }
 });
@@ -729,6 +776,7 @@ ipcMain.handle("texture:reveal", async (_event, texturePath: string) => {
 });
 
 ipcMain.handle("wallpaper:apply", async (_event, payload: WallpaperApplyPayload) => {
+  destroyFadeOverlayWindows();
   try {
     const { cacheDir, filePath, file: generatedFile } = await writeRenderedWallpaper(payload.dataUrl, payload.suggestedName);
     const controller = createWallpaperController();
@@ -779,6 +827,14 @@ ipcMain.handle("wallpaper:apply", async (_event, payload: WallpaperApplyPayload)
       diagnostics
     };
   } catch (error) {
+    console.error("[wallpaper:apply] failed", {
+      suggestedName: payload.suggestedName,
+      scope: payload.scope,
+      monitorMode: payload.monitorMode,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      diagnostics: diagnosticsFromError(error)
+    });
     return {
       ok: false,
       error: error instanceof Error ? error.message : "Unable to set wallpaper.",
@@ -804,6 +860,7 @@ ipcMain.handle("wallpaper:targets", async () => {
 });
 
 ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApplyTargetsPayload) => {
+  destroyFadeOverlayWindows();
   const cacheDir = path.join(app.getPath("userData"), "Generated Wallpapers");
   const writtenItems: Array<{ targetId: string; targetLabel: string; displayId?: string; current?: boolean; filePath: string; fileSize: number }> = [];
   const earlyFailures: WallpaperTargetResult[] = [];
@@ -945,6 +1002,7 @@ ipcMain.handle("app:apply-startup-behavior", (_event, startMinimized: boolean) =
 });
 
 app.whenReady().then(() => {
+  destroyFadeOverlayWindows();
   createWindow();
   createTray();
 
@@ -959,4 +1017,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  destroyFadeOverlayWindows();
 });

@@ -1,14 +1,39 @@
 import type {
   GeneratedCombination,
-  PlaceholderLayer,
   TemplateLibrary,
   WallpaperInterval,
-  WallpaperProject,
   WallpaperTemplate,
   WallpaperTarget
 } from "./types.js";
 
 export const appliedHistoryLimit = 40;
+
+export interface WallpaperFailureDecision {
+  consecutiveFailures: number;
+  shouldPause: boolean;
+}
+
+export function wallpaperFailureDecision(
+  currentFailures: number,
+  options: { automatic: boolean; hardFailure?: boolean; threshold?: number }
+): WallpaperFailureDecision {
+  if (!options.automatic || options.hardFailure === false) {
+    return { consecutiveFailures: currentFailures, shouldPause: false };
+  }
+  const consecutiveFailures = currentFailures + 1;
+  return {
+    consecutiveFailures,
+    shouldPause: consecutiveFailures >= (options.threshold ?? 3)
+  };
+}
+
+export function targetsForWallpaperApply(targets: WallpaperTarget[]) {
+  const unique = new Map<string, WallpaperTarget>();
+  for (const target of targets) {
+    if (!unique.has(target.id)) unique.set(target.id, target);
+  }
+  return [...unique.values()];
+}
 
 export function wallpaperIntervalToMs(
   interval: WallpaperInterval,
@@ -51,60 +76,6 @@ export function nextScheduledAt(
 
 export function generationStateAfterApplication<T>(current: T, candidate: T, applied: boolean) {
   return applied ? candidate : current;
-}
-
-function layerSourceSignature(layer: PlaceholderLayer) {
-  return JSON.stringify({
-    sourceId: layer.sourceId,
-    sourceIds: layer.sourceState.sourceIds,
-    mode: layer.sourceState.mode,
-    selectedImageId: layer.selectedImageId
-  });
-}
-
-function mergeAppliedLayerState(current: PlaceholderLayer, candidate?: PlaceholderLayer) {
-  if (!candidate) return current;
-  const sameSource = layerSourceSignature(current) === layerSourceSignature(candidate);
-  return {
-    ...current,
-    generatedImageId: sameSource ? candidate.generatedImageId : current.generatedImageId,
-    sourceState: sameSource
-      ? {
-          ...current.sourceState,
-          currentIndex: candidate.sourceState.currentIndex,
-          shuffleQueue: candidate.sourceState.shuffleQueue,
-          usedImageIds: candidate.sourceState.usedImageIds
-        }
-      : current.sourceState
-  };
-}
-
-export function mergeAppliedWallpaperState(
-  current: WallpaperProject,
-  candidate: WallpaperProject,
-  entry: GeneratedCombination,
-  options: {
-    appliedAt: string;
-    filePath: string;
-    templateId?: string;
-    nextScheduledAt?: string;
-  }
-): WallpaperProject {
-  const candidateLayers = new Map(candidate.layers.map((layer) => [layer.id, layer]));
-  return {
-    ...current,
-    layers: current.layers.map((layer) => mergeAppliedLayerState(layer, candidateLayers.get(layer.id))),
-    wallpaper: {
-      ...current.wallpaper,
-      lastUpdatedAt: options.appliedAt,
-      lastAppliedFilePath: options.filePath,
-      lastAppliedTemplateId: options.templateId,
-      lastError: undefined,
-      consecutiveFailures: 0,
-      nextScheduledAt: options.nextScheduledAt
-    },
-    recentCombinations: appendAppliedHistory(current.recentCombinations, entry)
-  };
 }
 
 export function appendAppliedHistory(

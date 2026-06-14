@@ -5,14 +5,15 @@ import {
   buildMacOSWallpaperTargets,
   classifyMacOSDockRows,
   generationStateAfterApplication,
-  mergeAppliedWallpaperState,
   nextHistoryIndex,
   nextScheduledAt,
   planFadeOverlayAssignments,
   planTemplateRotation,
-  previousHistoryIndex
+  previousHistoryIndex,
+  targetsForWallpaperApply,
+  wallpaperFailureDecision
 } from "../shared/wallpaper.js";
-import type { GeneratedCombination, PlaceholderLayer, TemplateLibrary, WallpaperProject, WallpaperTemplate } from "../shared/types.js";
+import type { GeneratedCombination, TemplateLibrary, WallpaperTemplate } from "../shared/types.js";
 
 function combo(id: string): GeneratedCombination {
   return { id, name: id, createdAt: new Date(0).toISOString(), assignments: {} };
@@ -63,79 +64,6 @@ test("generated shuffle state is committed only after a successful application",
   assert.equal(generationStateAfterApplication(current, candidate, true).layers[0].sourceState.currentIndex, 1);
 });
 
-function layer(id: string, width: number, generatedImageId?: string): PlaceholderLayer {
-  return {
-    id,
-    type: "placeholder",
-    name: id,
-    x: 0,
-    y: 0,
-    width,
-    height: 100,
-    rotation: 0,
-    cropMode: "cover",
-    alignment: "center",
-    borderWidth: 0,
-    borderColor: "#fff",
-    borderOpacity: 1,
-    borderRadius: 0,
-    maskShape: "rectangle",
-    shadow: false,
-    opacity: 1,
-    locked: false,
-    hidden: false,
-    keepAspectRatio: false,
-    crop: { offsetX: 0, offsetY: 0, zoom: 1 },
-    effects: {} as PlaceholderLayer["effects"],
-    sourceId: "source-a",
-    generatedImageId,
-    sourceState: {
-      sourceIds: ["source-a"],
-      mode: "shuffle",
-      currentIndex: 0,
-      shuffleQueue: ["image-a", "image-b"],
-      usedImageIds: [],
-      preventDuplicates: true,
-      includeSubfolders: false
-    }
-  };
-}
-
-function projectWithLayer(testLayer: PlaceholderLayer): WallpaperProject {
-  return {
-    schemaVersion: 2,
-    id: "project",
-    name: "Project",
-    canvas: {} as WallpaperProject["canvas"],
-    layers: [testLayer],
-    sources: [],
-    customTextures: [],
-    wallpaper: { enabled: true, paused: false, interval: "manual", customIntervalMinutes: 20, customIntervalValue: 20, customIntervalUnit: "minutes", launchAtLogin: false, startMinimized: false, monitorMode: "all", scope: "same-all-desktops", targetTemplateMode: "single-template", targetTemplateIds: {}, targetPlaylistIds: {}, displayMode: "fill", transitionEnabled: true, transitionDurationMs: 650, consecutiveFailures: 0 },
-    templates: { templates: [], collections: [], rotationMode: "shuffle", rotationTemplateIds: [], shuffleQueue: [], currentIndex: 0 },
-    savedCombinations: [],
-    recentCombinations: [],
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString()
-  };
-}
-
-test("verified wallpaper apply preserves newer sidebar layer edits", () => {
-  const candidateLayer = layer("layer-a", 100, "image-a");
-  const currentLayer = layer("layer-a", 180);
-  const candidate = projectWithLayer(candidateLayer);
-  const current = projectWithLayer(currentLayer);
-  const appliedAt = "2026-06-14T00:00:00.000Z";
-  const merged = mergeAppliedWallpaperState(current, candidate, { ...combo("combo-a"), assignments: { "layer-a": "image-a" } }, {
-    appliedAt,
-    filePath: "/wallpaper.png",
-    templateId: "template-a"
-  });
-  assert.equal(merged.layers[0].width, 180);
-  assert.equal(merged.layers[0].generatedImageId, "image-a");
-  assert.equal(merged.wallpaper.lastAppliedFilePath, "/wallpaper.png");
-  assert.equal(merged.wallpaper.lastUpdatedAt, appliedAt);
-});
-
 
 test("macOS target discovery preserves inactive Spaces even when wallpapers match", () => {
   const targets = buildMacOSWallpaperTargets(
@@ -180,4 +108,20 @@ test("visibility classification consumes duplicate wallpaper paths only once per
   );
   assert.deepEqual(classified.map((item) => item.visible), [true, false, true]);
   assert.deepEqual(classified.map((item) => item.targetType), ["active-space", "inactive-space", "active-space"]);
+});
+
+
+test("manual and soft failures do not auto-pause rotation", () => {
+  assert.deepEqual(wallpaperFailureDecision(2, { automatic: false }), { consecutiveFailures: 2, shouldPause: false });
+  assert.deepEqual(wallpaperFailureDecision(2, { automatic: true, hardFailure: false }), { consecutiveFailures: 2, shouldPause: false });
+  assert.deepEqual(wallpaperFailureDecision(2, { automatic: true }), { consecutiveFailures: 3, shouldPause: true });
+});
+
+test("wallpaper target selection keeps inactive Spaces and removes only duplicate IDs", () => {
+  const targets = targetsForWallpaperApply([
+    { id: "picture-1", label: "Current", index: 1, current: true, reliable: true },
+    { id: "picture-2", label: "Inactive", index: 2, current: false, reliable: false },
+    { id: "picture-2", label: "Duplicate", index: 2, current: false, reliable: false }
+  ]);
+  assert.deepEqual(targets.map((target) => target.id), ["picture-1", "picture-2"]);
 });

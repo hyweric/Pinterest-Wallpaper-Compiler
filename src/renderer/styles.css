@@ -7,15 +7,12 @@ body {
   color: #252932;
   background: #fbfbfa;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  overflow: hidden;
 }
 
 button,
 input,
 select {
   font: inherit;
-  max-width: 100%;
-  min-width: 0;
 }
 
 button {
@@ -34,44 +31,7 @@ button {
   font-weight: 740;
   line-height: 1;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
-}
-
-button > span,
-button strong,
-select,
-input,
-.panel-tabs button,
-.segmented-control button,
-.source-row,
-.source-row-main,
-.layer-row,
-.layer-main,
-.popover-menu button,
-.modal,
-.modal * {
-  min-width: 0;
-  max-width: 100%;
-}
-
-button > span,
-.source-copy,
-.source-copy strong,
-.source-copy span,
-.layer-name,
-.toolbar-title,
-.toolbar-title strong,
-.toolbar-title span,
-.context-menu-label,
-.popover-menu button,
-.modal-title-row h2,
-.modal-title-row p,
-.settings-hint,
-.source-help {
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 button svg {
@@ -146,7 +106,7 @@ h2,
   background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(22px);
   border-color: rgba(43, 48, 58, 0.08);
-  overflow: hidden;
+  overflow: auto;
   padding: 14px;
   transition: opacity 160ms ease, padding 160ms ease;
 }
@@ -3206,15 +3166,10 @@ textarea:focus-visible {
 .sidebar.right .settings-section,
 .sidebar.right .properties {
   align-content: start;
-  overflow: visible;
-  scrollbar-gutter: stable;
-  padding-right: 12px;
-}
-
-.inspector-scroll-region {
-  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding-right: 12px;
 }
 
 .settings-section > details,
@@ -3225,9 +3180,6 @@ textarea:focus-visible {
 .settings-section > details > summary,
 .properties > details > summary {
   white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tooltip-anchor::after,
@@ -3332,4 +3284,145 @@ textarea:focus-visible {
 .sidebar.right .inspector-scroll-region > .settings-section,
 .sidebar.right .inspector-scroll-region > .properties {
   overflow: visible;
+}
+
+/* Stabilization: strict control containment and predictable inspector layout */
+:root {
+  --pwc-control-height: 34px;
+  --pwc-control-radius: 8px;
+  --pwc-inspector-gap: 10px;
+}
+
+button,
+.button,
+.icon-button,
+.layer-icon-button,
+select,
+input,
+textarea,
+summary,
+label,
+.panel-tabs button,
+.segmented-control button {
+  min-width: 0;
+  max-width: 100%;
+}
+
+button,
+.button,
+.panel-tabs button,
+.segmented-control button {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+button > span,
+.button > span,
+.panel-tabs button > span,
+.segmented-control button > span,
+label > span,
+.target-row > span,
+.source-row-main,
+.layer-row-main {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+button > svg,
+.button > svg,
+.icon-button > svg,
+.layer-icon-button > svg {
+  flex: 0 0 auto;
+}
+
+select,
+input[type="text"],
+input[type="number"],
+input[type="url"] {
+  width: 100%;
+  height: var(--pwc-control-height);
+  min-height: var(--pwc-control-height);
+  padding-block: 0;
+  line-height: normal;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+select {
+  padding-left: 10px;
+  padding-right: 30px;
+}
+
+.sidebar.right,
+.sidebar.right .inspector-scroll-region,
+.sidebar.right .settings-section,
+.sidebar.right .properties {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sidebar.right .inspector-scroll-region {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.settings-section,
+.properties,
+.settings-section > details,
+.properties > details,
+.settings-section > details > *,
+.properties > details > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-section > details > summary,
+.properties > details > summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.two-col,
+.custom-interval-row,
+.compact-action-row,
+.rotation-control-row,
+.target-row,
+.preset-grid {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.two-col > *,
+.custom-interval-row > *,
+.compact-action-row > *,
+.rotation-control-row > *,
+.target-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.generate-apply-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.runtime-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Transition overlays are intentionally disabled during stabilization. */
+.wallpaper-panel .toggle-setting:has(input[checked]) {
+  max-width: 100%;
 }
