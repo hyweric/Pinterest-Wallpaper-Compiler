@@ -186,6 +186,40 @@ function run(argv) {
   return JSON.stringify(output);
 }`;
 
+const macScreenVerifyScript = String.raw`
+ObjC.import('AppKit');
+function unwrap(value) {
+  try { return ObjC.unwrap(value); } catch (_) { return String(value || ''); }
+}
+function displayNumber(screen, fallback) {
+  try {
+    const value = screen.deviceDescription.objectForKey('NSScreenNumber');
+    return String(unwrap(value));
+  } catch (_) { return String(fallback); }
+}
+function run(argv) {
+  const assignments = JSON.parse(argv[0] || '[]');
+  const byDisplay = {};
+  assignments.forEach((item) => { byDisplay[String(item.displayId)] = item.filePath; });
+  const workspace = $.NSWorkspace.sharedWorkspace;
+  const screens = $.NSScreen.screens.js;
+  const output = [];
+  screens.forEach((screen, index) => {
+    const displayId = displayNumber(screen, index + 1);
+    const requestedPath = byDisplay[displayId];
+    if (!requestedPath) return;
+    const reportedURL = workspace.desktopImageURLForScreen(screen);
+    const reportedPath = reportedURL ? unwrap(reportedURL.path) : '';
+    output.push({
+      displayId,
+      requestedPath,
+      reportedPath,
+      ok: Boolean(reportedPath)
+    });
+  });
+  return JSON.stringify(output);
+}`;
+
 async function discoverMacScreens(nativeResults: NativeCommandResult[]) {
   const result = await runNativeCommand(
     "macos-appkit-list-visible-displays",
@@ -220,7 +254,7 @@ async function applyMacScreens(
     12000
   );
   nativeResults.push(result);
-  if (!commandSucceeded(result)) return { result, responses: [] as MacApplyResponse[] };
+  if (!commandSucceeded(result)) return { result, responses: [] as MacApplyResponse[], applyPassCount: 1 };
   try {
     const responses = JSON.parse(result.stdout.trim()) as MacApplyResponse[];
     return {
@@ -230,10 +264,40 @@ async function applyMacScreens(
         displayId: String(item.displayId),
         requestedPath: normalizeWallpaperPath(item.requestedPath) ?? item.requestedPath,
         reportedPath: normalizeWallpaperPath(item.reportedPath)
-      }))
+      })),
+      applyPassCount: 1
     };
   } catch {
-    return { result, responses: [] as MacApplyResponse[] };
+    return { result, responses: [] as MacApplyResponse[], applyPassCount: 1 };
+  }
+}
+
+async function verifyMacScreens(
+  assignments: Array<{ displayId: string; filePath: string }>,
+  nativeResults: NativeCommandResult[]
+) {
+  const result = await runNativeCommand(
+    "macos-appkit-verify-visible-displays",
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", macScreenVerifyScript, JSON.stringify(assignments)],
+    8000
+  );
+  nativeResults.push(result);
+  if (!commandSucceeded(result)) return { result, responses: [] as MacApplyResponse[], applyPassCount: 0 };
+  try {
+    const responses = JSON.parse(result.stdout.trim()) as MacApplyResponse[];
+    return {
+      result,
+      responses: responses.map((item) => ({
+        ...item,
+        displayId: String(item.displayId),
+        requestedPath: normalizeWallpaperPath(item.requestedPath) ?? item.requestedPath,
+        reportedPath: normalizeWallpaperPath(item.reportedPath)
+      })),
+      applyPassCount: 0
+    };
+  } catch {
+    return { result, responses: [] as MacApplyResponse[], applyPassCount: 0 };
   }
 }
 
@@ -245,20 +309,52 @@ function successfulMacApplyCount(
   return responses.filter((response) => response.ok && response.reportedPath === expected.get(response.displayId)).length;
 }
 
+function macOSAllSpacesVerificationMethod(status: WallpaperApplyDiagnostics["macOSAllSpaces"] | undefined, batch: boolean) {
+  const refresh = status?.reloadMethod === "wallpaperagent-restart"
+    ? "refreshed WallpaperAgent"
+    : "accepted native WallpaperAgent bridge request";
+  return batch
+    ? `Verified modern wallpaper Store update through ${refresh} plus one visible-screen pass`
+    : `Verified modern wallpaper Store update, ${refresh}, and one NSWorkspace visible-screen pass`;
+}
+
+function macOSRefreshSafetyNote(status: WallpaperApplyDiagnostics["macOSAllSpaces"] | undefined) {
+  return status?.wallpaperAgentReloaded
+    ? "WallpaperAgent was restarted; Dock was not restarted and no overlay was created."
+    : "No overlay, Dock restart, or WallpaperAgent restart was used.";
+}
+
 async function applyMacScreensWithRetry(
   assignments: Array<{ displayId: string; filePath: string }>,
   nativeResults: NativeCommandResult[]
 ) {
   const first = await applyMacScreens(assignments, nativeResults);
+  const candidates = [{ ...first, applyPassCount: 1 }];
   if (successfulMacApplyCount(assignments, first.responses) === assignments.length) return first;
 
-  // WallpaperAgent occasionally drops back-to-back changes. Give it a full
-  // second to catch up, then perform one bounded verification retry.
+  // WallpaperAgent often accepts a change before desktopImageURL(for:) reports
+  // it. Poll once before re-applying so all-desktop mode does not fail early.
   await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const delayed = await verifyMacScreens(assignments, nativeResults);
+  candidates.push({ ...delayed, applyPassCount: 1 });
+  if (successfulMacApplyCount(assignments, delayed.responses) === assignments.length) return { ...delayed, applyPassCount: 1 };
+
+  // If the delayed read still mismatches, perform one bounded re-apply and a
+  // final verification read. This keeps the previous visible-display retry
+  // behavior while avoiding an unbounded WallpaperAgent loop.
   const second = await applyMacScreens(assignments, nativeResults);
-  return successfulMacApplyCount(assignments, second.responses) >= successfulMacApplyCount(assignments, first.responses)
-    ? second
-    : first;
+  candidates.push({ ...second, applyPassCount: 2 });
+  if (successfulMacApplyCount(assignments, second.responses) === assignments.length) return { ...second, applyPassCount: 2 };
+
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  const final = await verifyMacScreens(assignments, nativeResults);
+  candidates.push({ ...final, applyPassCount: 2 });
+
+  return candidates.reduce((best, candidate) => (
+    successfulMacApplyCount(assignments, candidate.responses) > successfulMacApplyCount(assignments, best.responses)
+      ? candidate
+      : best
+  ));
 }
 
 function targetFromScreen(screen: MacScreenInfo, currentDisplayId?: string): WallpaperTarget {
@@ -361,34 +457,56 @@ export class MacOSWallpaperController implements WallpaperController {
 
     const normalizedPath = normalizeWallpaperPath(filePath) ?? filePath;
     const assignments = selected.map((target) => ({ displayId: target.displayId!, filePath: normalizedPath }));
+    const needsInactiveSpaces = wallpaperTargetModeNeedsInactiveSpaces(mode);
+    // Suppress the previous observer for the entire transaction so it cannot
+    // duplicate the current visible redraw or react to its own Store update.
+    if (needsInactiveSpaces) this.spaceObserver.stop();
+    // Apply visible NSScreens first. This lets WallpaperAgent create a native,
+    // version-correct static-image record for the new file. The inactive-Space
+    // controller then clones that exact macOS-generated record instead of
+    // guessing at the private Store schema.
+    const visiblePass = await applyMacScreensWithRetry(assignments, nativeResults);
+    const { result, responses } = visiblePass;
+    const visibleApplyPassCount = visiblePass.applyPassCount ?? (assignments.length ? 1 : 0);
+    const visibleMatchedCount = successfulMacApplyCount(assignments, responses);
+
     let advancedError: string | undefined;
     let advancedImmediate = false;
+    let advancedObserverFallback = false;
     let allSpacesStatus: WallpaperApplyDiagnostics["macOSAllSpaces"];
-    if (wallpaperTargetModeNeedsInactiveSpaces(mode)) {
+    if (needsInactiveSpaces && visibleMatchedCount > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
       const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
       const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
       nativeResults.push(...advanced.commands);
       advancedImmediate = Boolean(advanced.summary?.ok);
       const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
+      advancedObserverFallback = !advancedImmediate && observerStarted;
       if (advanced.summary) {
+        advanced.summary.visibleApplyPassCount = visibleApplyPassCount;
+        advanced.summary.observerSuppressedDuringTransaction = true;
         advanced.summary.observerStarted = observerStarted;
-        advanced.summary.observerFallback = !advanced.summary.ok && observerStarted;
+        advanced.summary.observerFallback = advancedObserverFallback;
+        advanced.summary.fallbackToVisibleMonitors = !advanced.summary.ok && !advancedObserverFallback;
+        if (!advanced.summary.ok) advanced.summary.reloadMethod = advancedObserverFallback ? "observer-fallback" : "visible-monitors-fallback";
         allSpacesStatus = advanced.summary;
       }
       if (!advancedImmediate) {
-        advancedError = advanced.summary?.error
+        const directError = advanced.summary?.error
           || advanced.summary?.warning
           || advanced.command.error
           || advanced.command.stderr
           || `${wallpaperTargetModeLabel(mode)} could not be configured immediately.`;
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        advancedError = advancedObserverFallback
+          ? "Direct inactive-Space control was unavailable. The active-Space observer will apply this wallpaper to each Mission Control desktop as you visit it."
+          : directError;
       }
+    } else if (needsInactiveSpaces) {
+      this.spaceObserver.stop();
+      advancedError = "The visible display update did not verify, so inactive desktop synchronization was not attempted.";
     } else {
       this.spaceObserver.stop();
     }
-
-    const { result, responses } = await applyMacScreensWithRetry(assignments, nativeResults);
     const responseByDisplay = new Map(responses.map((item) => [item.displayId, item]));
     const matched = selected.filter((target) => {
       const response = responseByDisplay.get(target.displayId!);
@@ -408,10 +526,12 @@ export class MacOSWallpaperController implements WallpaperController {
       renderedPath: normalizedPath,
       nativeResults,
       verifiedPaths: matched.map(() => normalizedPath),
-      verificationMethod: wallpaperTargetModeNeedsInactiveSpaces(mode)
+      verificationMethod: needsInactiveSpaces
         ? advancedImmediate
-          ? "Transactional macOS wallpaper Store update for inactive Spaces, active-Space observer, and NSWorkspace verification on each visible NSScreen"
-          : "Active-Space observer fallback plus NSWorkspace verification on each visible NSScreen"
+          ? macOSAllSpacesVerificationMethod(allSpacesStatus, false)
+          : advancedObserverFallback
+            ? "Visible-screen apply succeeded; active-Space observer will repair each desktop as it becomes visible"
+          : "Visible-monitor NSWorkspace fallback only; inactive Spaces were not modified"
         : "NSWorkspace desktopImageURL(for:) on each visible NSScreen",
       permissionStatus: resultPermissionStatus(responses),
       changed,
@@ -430,10 +550,12 @@ export class MacOSWallpaperController implements WallpaperController {
       requestedTargetCount: selected.length,
       appliedTargetCount: matched.length,
       macOSAllSpaces: allSpacesStatus,
-      limitation: wallpaperTargetModeNeedsInactiveSpaces(mode)
-        ? advancedError
-          ? `${advancedError} Connected visible Spaces were applied now; other Spaces will be re-applied automatically when they become active while the app is running.`
-          : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active for newly created or externally changed Spaces.` : "All-desktop status was unavailable."
+      limitation: needsInactiveSpaces
+        ? advancedObserverFallback
+          ? `${advancedError} ${macOSRefreshSafetyNote(allSpacesStatus)}`
+          : advancedError
+            ? `${advancedError} Only the currently visible monitor targets were guaranteed. ${macOSRefreshSafetyNote(allSpacesStatus)}`
+          : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active only as maintenance after direct success.` : "All-desktop status was unavailable."
         : undefined
     };
   }
@@ -448,31 +570,48 @@ export class MacOSWallpaperController implements WallpaperController {
       const displayId = item.displayId ?? item.targetId.replace(/^display-/, "");
       return screenById.has(displayId) ? [{ displayId, filePath: normalizeWallpaperPath(item.filePath) ?? item.filePath }] : [];
     });
+    const needsInactiveSpaces = wallpaperTargetModeNeedsInactiveSpaces(mode);
+    if (needsInactiveSpaces) this.spaceObserver.stop();
+    const visiblePass = assignments.length
+      ? await applyMacScreensWithRetry(assignments, nativeResults)
+      : { result: { method: "macos-appkit-apply-visible-displays", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false, error: "No matching visible displays." } as NativeCommandResult, responses: [] as MacApplyResponse[], applyPassCount: 0 };
+    const { result, responses } = visiblePass;
+    const visibleApplyPassCount = visiblePass.applyPassCount ?? (assignments.length ? 1 : 0);
+    const visibleMatchedCount = successfulMacApplyCount(assignments, responses);
+
     let advancedError: string | undefined;
     let advancedImmediate = false;
+    let advancedObserverFallback = false;
     let allSpacesStatus: WallpaperApplyDiagnostics["macOSAllSpaces"];
-    if (assignments.length && wallpaperTargetModeNeedsInactiveSpaces(mode)) {
+    if (assignments.length && needsInactiveSpaces && visibleMatchedCount > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
       const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
       const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
       nativeResults.push(...advanced.commands);
       advancedImmediate = Boolean(advanced.summary?.ok);
       const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
+      advancedObserverFallback = !advancedImmediate && observerStarted;
       if (advanced.summary) {
+        advanced.summary.visibleApplyPassCount = visibleApplyPassCount;
+        advanced.summary.observerSuppressedDuringTransaction = true;
         advanced.summary.observerStarted = observerStarted;
-        advanced.summary.observerFallback = !advanced.summary.ok && observerStarted;
+        advanced.summary.observerFallback = advancedObserverFallback;
+        advanced.summary.fallbackToVisibleMonitors = !advanced.summary.ok && !advancedObserverFallback;
+        if (!advanced.summary.ok) advanced.summary.reloadMethod = advancedObserverFallback ? "observer-fallback" : "visible-monitors-fallback";
         allSpacesStatus = advanced.summary;
       }
       if (!advancedImmediate) {
-        advancedError = advanced.summary?.error || advanced.summary?.warning || advanced.command.error || advanced.command.stderr || `${wallpaperTargetModeLabel(mode)} could not be configured immediately.`;
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        const directError = advanced.summary?.error || advanced.summary?.warning || advanced.command.error || advanced.command.stderr || `${wallpaperTargetModeLabel(mode)} could not be configured immediately.`;
+        advancedError = advancedObserverFallback
+          ? "Direct inactive-Space control was unavailable. The active-Space observer will apply this wallpaper to each Mission Control desktop as you visit it."
+          : directError;
       }
+    } else if (needsInactiveSpaces) {
+      this.spaceObserver.stop();
+      advancedError = "The visible display update did not verify, so inactive desktop synchronization was not attempted.";
     } else {
       this.spaceObserver.stop();
     }
-    const { result, responses } = assignments.length
-      ? await applyMacScreensWithRetry(assignments, nativeResults)
-      : { result: { method: "macos-appkit-apply-visible-displays", command: "", args: [], stdout: "", stderr: "", exitCode: 1, timedOut: false, error: "No matching visible displays." } as NativeCommandResult, responses: [] as MacApplyResponse[] };
     const responseByDisplay = new Map(responses.map((item) => [item.displayId, item]));
 
     return items.map((item) => {
@@ -490,10 +629,12 @@ export class MacOSWallpaperController implements WallpaperController {
         validImage: true,
         nativeResults: [...nativeResults],
         verifiedPaths: ok ? [requestedPath] : [],
-        verificationMethod: wallpaperTargetModeNeedsInactiveSpaces(mode)
+        verificationMethod: needsInactiveSpaces
           ? advancedImmediate
-            ? "Transactional macOS wallpaper Store update, active-Space observer, and NSWorkspace verification on the requested visible NSScreen"
-            : "Active-Space observer fallback plus NSWorkspace verification on the requested visible NSScreen"
+            ? macOSAllSpacesVerificationMethod(allSpacesStatus, true)
+            : advancedObserverFallback
+              ? "Visible-screen apply succeeded; active-Space observer will repair this desktop as it becomes visible"
+            : "Visible-monitor fallback after the direct inactive-Space bridge could not be confirmed"
           : "NSWorkspace desktopImageURL(for:) on the requested visible NSScreen",
         permissionStatus: ok ? "verified" : resultPermissionStatus(response ? [response] : []),
         changed: ok,
@@ -513,9 +654,11 @@ export class MacOSWallpaperController implements WallpaperController {
         appliedTargetCount: ok ? 1 : 0,
         macOSAllSpaces: allSpacesStatus,
         limitation: wallpaperTargetModeNeedsInactiveSpaces(mode)
-          ? advancedError
-            ? `${advancedError} This display's visible Space was applied now; other Spaces will be synchronized when activated while the app is running.`
-            : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active for maintenance.` : "All-desktop status was unavailable."
+          ? advancedObserverFallback
+            ? `${advancedError} ${macOSRefreshSafetyNote(allSpacesStatus)}`
+            : advancedError
+              ? `${advancedError} Only this display's currently visible Space was guaranteed. ${macOSRefreshSafetyNote(allSpacesStatus)}`
+            : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active only for maintenance.` : "All-desktop status was unavailable."
           : undefined
       };
       return { targetId: item.targetId, targetLabel: item.targetLabel, filePath: item.filePath, fileSize: item.fileSize, diagnostics, ok, error };

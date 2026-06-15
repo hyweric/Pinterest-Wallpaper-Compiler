@@ -56,19 +56,20 @@ test("inactive Space modes retain their physical display scope", () => {
   assert.equal(wallpaperTargetModeLabel("all-desktops-all-monitors"), "All desktops on all monitors");
 });
 
-test("macOS all-desktop implementation is diagnostic-driven, transactional, and may use the proven legacy database only when compatible", async () => {
+test("macOS all-desktop implementation is diagnostic-driven, transactional, and uses the modern Store on macOS 15", async () => {
   const source = await readFile(path.join(process.cwd(), "src/main/wallpaper.ts"), "utf8");
   const spacesSource = await readFile(path.join(process.cwd(), "src/main/macos-spaces.ts"), "utf8");
   assert.match(source, /setDesktopImageURLForScreenOptionsError/);
   assert.match(spacesSource, /diagnoseMacOSWallpaperEnvironment/);
   assert.match(spacesSource, /com\.apple\.wallpaper\/Store\/Index\.plist/);
-  assert.match(spacesSource, /atomicCommit/);
+  assert.match(spacesSource, /writePlist/);
   assert.match(spacesSource, /desktopReferencesPath/);
   assert.match(spacesSource, /desktoppicture\.db/);
-  assert.match(spacesSource, /legacyDatabase\.compatible/);
-  assert.match(spacesSource, /begin immediate/);
+  assert.match(spacesSource, /macOSMajorVersion/);
+  assert.match(spacesSource, /if \(modern\) return "modern-store"/);
+  assert.match(spacesSource, /spaceDisplayUUIDs/);
   assert.match(spacesSource, /rollbackPerformed/);
-  assert.match(spacesSource, /PWC_SPACE_OBSERVER_V2/);
+  assert.match(spacesSource, /PWC_SPACE_OBSERVER_V3/);
   assert.match(spacesSource, /NSWorkspaceActiveSpaceDidChangeNotification/);
   assert.match(spacesSource, /NSWorkspaceDidWakeNotification/);
 });

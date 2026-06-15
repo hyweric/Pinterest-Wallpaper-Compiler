@@ -71,6 +71,8 @@ export interface MacOSWallpaperStoreDiagnostic {
   displayRecordCount: number;
   spaceRecordCount: number;
   desktopRecordCount: number;
+  displayKeys: string[];
+  spaceDisplayUUIDs: Record<string, string[]>;
   references: MacOSWallpaperFileReferenceDiagnostic[];
   error?: string;
 }
@@ -99,6 +101,8 @@ export interface MacOSWallpaperDiagnosticReport {
   activeSpaceUUIDs: string[];
   displays: MacOSWallpaperDisplayDiagnostic[];
   totalSpaceCount: number;
+  sharedSpaceCount: number;
+  sharedSpaceUUIDs: string[];
   wallpaperAgentRunning: boolean;
   dockRunning: boolean;
   store: MacOSWallpaperStoreDiagnostic;
@@ -108,21 +112,49 @@ export interface MacOSWallpaperDiagnosticReport {
   errors: string[];
 }
 
+export interface MacOSAllSpacesApplyAttempt {
+  id: "active-record-clone" | "path-only-store" | "global-all-spaces" | "legacy-current-row-bridge";
+  label: string;
+  ok: boolean;
+  targetSpaceCount?: number;
+  verifiedSpaceCount?: number;
+  targetDisplayCount?: number;
+  verifiedDisplayCount?: number;
+  error?: string;
+}
+
 export interface MacOSAllSpacesApplyStatus {
   attempted: boolean;
   strategy: MacOSWallpaperStrategy;
+  attempts: MacOSAllSpacesApplyAttempt[];
   targetDisplayCount: number;
   updatedDisplayCount: number;
   verifiedDisplayCount: number;
   targetSpaceCount: number;
   updatedSpaceCount: number;
   verifiedSpaceCount: number;
+  updatedSharedSpaceCount: number;
+  verifiedSharedSpaceCount: number;
   modernStoreWritten: boolean;
   modernStoreVerified: boolean;
   legacyDatabaseWritten: boolean;
   legacyDatabaseVerified: boolean;
   wallpaperAgentReloaded: boolean;
   dockReloaded: boolean;
+  reloadMethod: "none" | "native-wallpaper-agent-xpc" | "wallpaperagent-restart" | "visible-monitors-fallback" | "observer-fallback";
+  visibleApplyPassCount: number;
+  observerSuppressedDuringTransaction: boolean;
+  operationDurationMs: number;
+  missionControlTransitionDetected?: boolean;
+  directBridgeAttempted?: boolean;
+  directBridgeAvailable?: boolean;
+  directBridgePostedSignals?: string[];
+  directBridgeFrameworks?: string[];
+  directBridgeMechanism?: string;
+  directBridgeRequestAccepted?: boolean;
+  directBridgeXPCServices?: string[];
+  directBridgeSelectors?: string[];
+  fallbackToVisibleMonitors?: boolean;
   observerStarted: boolean;
   observerFallback: boolean;
   rollbackPerformed: boolean;

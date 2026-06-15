@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && node scripts/start-electron.cjs .\"",
     "build": "tsc && vite build && node scripts/inline-renderer-assets.cjs && npm run build:electron",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json && node scripts/build-macos-wallpaper-bridge.cjs",
     "app:dir": "npm run build && electron-builder --dir",
     "app:mac": "npm run build && electron-builder --mac dmg zip",
     "app:win": "npm run build && electron-builder --win nsis portable",
@@ -88,6 +88,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "asarUnpack": [
+      "dist/main/helpers/pwc-wallpaper-bridge"
+    ]
   }
 }

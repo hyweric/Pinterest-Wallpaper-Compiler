@@ -1,4 +1,4 @@
-import { access, readdir, rm, stat } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 
@@ -17,6 +17,36 @@ export function safeWallpaperFileName(suggestedName: string) {
     .replace(/^-+|-+$/g, "") || "wallpaper";
   const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return `${stem}-${nonce}${extension.toLowerCase()}`;
+}
+
+export async function persistWallpaperAsset(filePath: string, vaultDirectory: string) {
+  const sourceInfo = await validateWallpaperFile(filePath);
+  await mkdir(vaultDirectory, { recursive: true });
+  const source = path.resolve(filePath);
+  const destination = path.resolve(vaultDirectory, path.basename(filePath));
+  if (source === destination) return { filePath: destination, file: sourceInfo };
+
+  try {
+    const existing = await validateWallpaperFile(destination);
+    if (existing.size === sourceInfo.size) return { filePath: destination, file: existing };
+  } catch {
+    // Copy below when the destination does not exist or is invalid.
+  }
+
+  const extension = path.extname(destination);
+  const temporaryPath = path.join(
+    vaultDirectory,
+    `${path.basename(destination, extension)}.${Date.now()}-${Math.random().toString(36).slice(2, 8)}.writing${extension}`
+  );
+  try {
+    await copyFile(source, temporaryPath);
+    await validateWallpaperFile(temporaryPath);
+    await rename(temporaryPath, destination);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  return { filePath: destination, file: await validateWallpaperFile(destination) };
 }
 
 export async function cleanupGeneratedWallpapers(directory: string, keep = 40, preservePaths: string[] = []) {

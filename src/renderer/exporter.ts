@@ -1,15 +1,18 @@
 import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTextureEffect, PlaceholderLayer, WallpaperProject } from "../shared/types";
 import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
+import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/local-file-url";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { getImageForLayer } from "./project";
 import { bundledSurfaceUrl } from "./surface-textures";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
+    const renderSrc = renderableLocalFileUrl(src);
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error(`Unable to load ${src}`));
-    image.src = src;
+    if (isRenderableLocalFileUrl(renderSrc)) image.crossOrigin = "anonymous";
+    image.src = renderSrc;
   });
 }
 

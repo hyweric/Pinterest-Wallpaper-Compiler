@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, systemPreferences, Tray } from "electron";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,12 +21,15 @@ import type {
   WallpaperGenerateResult,
   WallpaperProject,
   WallpaperTransitionDiagnostic,
+  WallpaperTarget,
+  WallpaperTargetMode,
   WallpaperTargetResult,
   TrayRuntimeState
 } from "../shared/types.js";
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
 import { createWallpaperController } from "./wallpaper.js";
-import { cleanupGeneratedWallpapers, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
+import { cleanupGeneratedWallpapers, persistWallpaperAsset, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
+import { localFileProtocolScheme, pathFromRenderableLocalFileUrl } from "../shared/local-file-url.js";
 import { planFadeOverlayAssignments, selectWallpaperTargets } from "../shared/wallpaper.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
@@ -39,6 +42,18 @@ let isQuitting = false;
 let trayRuntimeState: TrayRuntimeState = { enabled: false, paused: false };
 const pinterestJobs = new Map<string, AbortController>();
 const wallpaperController = createWallpaperController();
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: localFileProtocolScheme,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true
+    }
+  }
+]);
 
 // Full-screen BrowserWindow crossfade overlays could remain visible after an
 // interrupted scheduled run and look like a blank/white screen. Keep native
@@ -90,6 +105,44 @@ function createWindow() {
       if (isDev) void mainWindow.loadURL("http://127.0.0.1:5173");
       else void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
     }, 500);
+  });
+}
+
+function contentTypeForLocalImage(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".png") return "image/png";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".bmp") return "image/bmp";
+  if (extension === ".heic") return "image/heic";
+  if (extension === ".heif") return "image/heif";
+  return "application/octet-stream";
+}
+
+function registerLocalFileProtocol() {
+  protocol.handle(localFileProtocolScheme, async (request) => {
+    const corsHeaders = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response(null, { status: 405, headers: corsHeaders });
+    }
+    try {
+      const filePath = pathFromRenderableLocalFileUrl(request.url, process.platform);
+      const extension = path.extname(filePath).toLowerCase();
+      if (!imageExtensions.has(extension)) {
+        return new Response("Unsupported local image type.", { status: 415, headers: corsHeaders });
+      }
+      const data = request.method === "HEAD" ? undefined : new Uint8Array(await readFile(filePath));
+      return new Response(data, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": contentTypeForLocalImage(filePath)
+        }
+      });
+    } catch {
+      return new Response("Local image not available.", { status: 404, headers: corsHeaders });
+    }
   });
 }
 
@@ -414,6 +467,16 @@ async function cleanupGeneratedWallpaperCache(cacheDir: string, currentFilePath:
   return cleanupGeneratedWallpapers(cacheDir, 160, [currentFilePath, ...referenced]);
 }
 
+function wallpaperVaultDirectory() {
+  return path.join(app.getPath("pictures"), "Pinterest Wallpaper Compiler", "Wallpaper Vault");
+}
+
+async function persistAppliedWallpaper(filePath: string) {
+  const persisted = await persistWallpaperAsset(filePath, wallpaperVaultDirectory());
+  await validateRenderedWallpaperImage(persisted.filePath);
+  return persisted;
+}
+
 type FadeOverlayItem = { filePath: string; displayId?: string; current?: boolean; oldFilePath?: string };
 
 type FadeOverlaySession = {
@@ -562,7 +625,10 @@ async function applyWallpaperFilePath(
   filePath: string,
   payload: Omit<WallpaperApplyFilePayload, "filePath"> = {}
 ): Promise<WallpaperApplyResult> {
-  const generatedFile = await validateRenderedWallpaperImage(filePath);
+  await validateRenderedWallpaperImage(filePath);
+  const persisted = await persistAppliedWallpaper(filePath);
+  const appliedFilePath = persisted.filePath;
+  const generatedFile = persisted.file;
   const controller = wallpaperController;
   const currentDisplayId = currentPhysicalDisplayId();
   const knownTargets = await controller.getTargets?.({ currentDisplayId }).catch(() => []) ?? [];
@@ -572,8 +638,8 @@ async function applyWallpaperFilePath(
     ? knownTargets.filter((target) => target.id === payload.targetId || target.displayId === payload.targetId)
     : selectWallpaperTargets(knownTargets, targetMode, payload.monitorId);
   const fadeItems = requestedTargets.length
-    ? requestedTargets.map((target) => ({ filePath, displayId: target.displayId, current: target.current, oldFilePath: target.currentPath }))
-    : [{ filePath }];
+    ? requestedTargets.map((target) => ({ filePath: appliedFilePath, displayId: target.displayId, current: target.current, oldFilePath: target.currentPath }))
+    : [{ filePath: appliedFilePath }];
   const transition = await startFadeTransition(fadeItems, {
     enabled: payload.transitionEnabled,
     durationMs: payload.transitionDurationMs,
@@ -582,7 +648,7 @@ async function applyWallpaperFilePath(
   const transitionAnimation = transition?.begin();
   let diagnostics: WallpaperApplyDiagnostics;
   try {
-    diagnostics = await controller.setWallpaper(filePath, {
+    diagnostics = await controller.setWallpaper(appliedFilePath, {
       monitorMode: payload.monitorMode,
       displayMode: payload.displayMode,
       scope: payload.scope,
@@ -599,7 +665,7 @@ async function applyWallpaperFilePath(
     await transition?.complete(false);
     throw error;
   }
-  diagnostics.renderedPath = filePath;
+  diagnostics.renderedPath = appliedFilePath;
   diagnostics.fileSize = generatedFile.size;
   diagnostics.validImage = true;
   if (!diagnostics.changed) {
@@ -607,7 +673,7 @@ async function applyWallpaperFilePath(
   }
   return {
     ok: true,
-    filePath,
+    filePath: appliedFilePath,
     fileSize: generatedFile.size,
     appliedAt: new Date().toISOString(),
     platform: process.platform,
@@ -940,9 +1006,11 @@ ipcMain.handle("wallpaper:macos-diagnostic", async () => {
       activeSpaceUUIDs: [],
       displays: [],
       totalSpaceCount: 0,
+      sharedSpaceCount: 0,
+      sharedSpaceUUIDs: [],
       wallpaperAgentRunning: false,
       dockRunning: false,
-      store: { path: "", exists: false, readable: false, writable: false, schema: "missing", compatible: false, topLevelKeys: [], displayRecordCount: 0, spaceRecordCount: 0, desktopRecordCount: 0, references: [] },
+      store: { path: "", exists: false, readable: false, writable: false, schema: "missing", compatible: false, topLevelKeys: [], displayRecordCount: 0, spaceRecordCount: 0, desktopRecordCount: 0, displayKeys: [], spaceDisplayUUIDs: {}, references: [] },
       legacyDatabase: { path: "", exists: false, readable: false, writable: false, compatible: false, tables: [], pictureRecordCount: 0, targetRecordCount: 0, references: [] },
       recommendedStrategy: "unsupported",
       warnings: [],
@@ -960,13 +1028,14 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
   for (const item of payload.items) {
     try {
       const written = await writeRenderedWallpaper(item.imageData, item.suggestedName);
+      const persisted = await persistAppliedWallpaper(written.filePath);
       writtenItems.push({
         targetId: item.targetId,
         targetLabel: item.targetLabel,
         displayId: item.displayId,
         current: item.current,
-        filePath: written.filePath,
-        fileSize: written.file.size
+        filePath: persisted.filePath,
+        fileSize: persisted.file.size
       });
     } catch (error) {
       const diagnostics = diagnosticsFromError(error) ?? {
@@ -1107,7 +1176,8 @@ ipcMain.handle("app:apply-startup-behavior", (_event, startMinimized: boolean) =
   return { openedAtLogin, hidden: Boolean(startMinimized && openedAtLogin) };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  registerLocalFileProtocol();
   createWindow();
   createTray();
 

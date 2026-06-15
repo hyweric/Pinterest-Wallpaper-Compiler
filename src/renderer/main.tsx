@@ -87,6 +87,7 @@ import { placeTooltip } from "../shared/ui";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
 import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { projectAfterExportSet } from "../shared/export-set";
+import { renderableLocalFileUrl } from "../shared/local-file-url";
 import {
   appendAppliedHistory,
   formatWallpaperCountdown,
@@ -111,6 +112,11 @@ const filePathKey = "pwc.filePath.v1";
 const backgroundAdvancedKey = "pwc.backgroundAdvanced.v1";
 const historyLimit = 80;
 const snapDistance = 8;
+
+function cssImageUrl(src?: string) {
+  if (!src) return undefined;
+  return `url("${renderableLocalFileUrl(src).replace(/"/g, "\\\"")}")`;
+}
 
 type DragMode =
   | "move"
@@ -1481,7 +1487,8 @@ function App() {
           transitionEnabled: candidate.wallpaper.transitionEnabled,
           transitionDurationMs: candidate.wallpaper.transitionDurationMs
         }),
-        onStatus: setWallpaperStatus
+        onStatus: setWallpaperStatus,
+        timeouts: { applyMs: wallpaperTargetModeNeedsInactiveSpaces(candidate.wallpaper.targetMode) ? 120_000 : 45_000 }
       });
       setLastWallpaperDiagnostics(result.diagnostics);
 
@@ -1587,6 +1594,7 @@ function App() {
       }
 
       setWallpaperStatus("applying");
+      const applyTimeoutMs = wallpaperTargetModeNeedsInactiveSpaces(working.wallpaper.targetMode) ? 120_000 : 45_000;
       const result = await withWallpaperTimeout(window.wallpaperApi.applyWallpaperTargets({
         scope: "different-per-desktop",
         targetMode: working.wallpaper.targetMode,
@@ -1603,7 +1611,7 @@ function App() {
           mimeType: "image/png",
           suggestedName: `${templateName.replace(/[^\w.-]+/g, "-")}-${target.id}-${Date.now()}.png`
         }))
-      }), 60_000, "Applying desktop wallpapers timed out.");
+      }), applyTimeoutMs, "Applying desktop wallpapers timed out.");
       setWallpaperStatus("verifying");
       setLastWallpaperDiagnostics(result.diagnostics);
       if (!result.ok || !result.targets?.length) {
@@ -1724,7 +1732,8 @@ function App() {
           transitionEnabled: current.wallpaper.transitionEnabled,
           transitionDurationMs: current.wallpaper.transitionDurationMs
         }),
-        onStatus: setWallpaperStatus
+        onStatus: setWallpaperStatus,
+        timeouts: { applyMs: wallpaperTargetModeNeedsInactiveSpaces(current.wallpaper.targetMode) ? 120_000 : 45_000 }
       });
       setLastWallpaperDiagnostics(result.diagnostics);
       const appliedAt = result.appliedAt ?? new Date().toISOString();
@@ -1844,6 +1853,7 @@ function App() {
     let completed = 0;
     let skipped = 0;
     let failed = 0;
+    let firstError: string | undefined;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const baseName = (options.includeTemplateName ? template.name : "Wallpaper")
       .replace(/[^a-zA-Z0-9_-]+/g, "-")
@@ -1861,10 +1871,10 @@ function App() {
       }
       signatures.add(signature);
       exportProject = prepared.project;
+      const suffix = `${String(index).padStart(3, "0")}${options.includeTimestamp ? `-${stamp}` : ""}`;
+      const fileName = `${baseName}-${suffix}.${options.format === "png" ? "png" : "jpg"}`;
       try {
         const dataUrl = await renderProjectToDataUrl(exportProject, options.format, options.quality);
-        const suffix = `${String(index).padStart(3, "0")}${options.includeTimestamp ? `-${stamp}` : ""}`;
-        const fileName = `${baseName}-${suffix}.${options.format === "png" ? "png" : "jpg"}`;
         const result = await window.wallpaperApi.writeExportSetFile({
           destinationPath,
           dataUrl,
@@ -1873,9 +1883,13 @@ function App() {
         });
         if (result.ok) completed += 1;
         else if (result.skipped) skipped += 1;
-        else failed += 1;
-      } catch {
+        else {
+          failed += 1;
+          firstError ??= result.error ?? `Could not write ${fileName}.`;
+        }
+      } catch (error) {
         failed += 1;
+        firstError ??= error instanceof Error ? error.message : `Could not export ${fileName}.`;
       }
       setExportSet((current) => ({ ...current, completed, skipped, failed }));
       await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -1891,7 +1905,7 @@ function App() {
       ? `Export stopped: ${completed} exported, ${skipped} skipped, ${failed} failed.`
       : `Export complete: ${completed} exported, ${skipped} skipped, ${failed} failed.`;
     setMessage(summary);
-    setExportSet((current) => ({ ...current, busy: false, cancelRequested: exportCancelRef.current, completed, skipped, failed, error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed.` : undefined }));
+    setExportSet((current) => ({ ...current, busy: false, cancelRequested: exportCancelRef.current, completed, skipped, failed, error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed. ${firstError ?? ""}`.trim() : undefined }));
   }
 
   async function saveProject() {
@@ -3114,7 +3128,7 @@ function App() {
                   >
                     {image ? (
                       <FramedImage
-                        src={image.url}
+                        src={renderableLocalFileUrl(image.url)}
                         frameWidth={innerWidth}
                         frameHeight={innerHeight}
                         mode={layer.cropMode}
@@ -3364,7 +3378,7 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
       style={{
         aspectRatio: `${canvas.width} / ${canvas.height}`,
         backgroundColor: canvas.backgroundColor,
-        backgroundImage: canvas.backgroundImage ? `url(${canvas.backgroundImage.url})` : undefined
+        backgroundImage: cssImageUrl(canvas.backgroundImage?.url)
       }}
     >
       {template.project.layers.filter((layer) => !layer.hidden).map((layer) => {
@@ -3384,7 +3398,7 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
               height: `${(layer.height / canvas.height) * 100}%`,
               transform: `rotate(${layer.rotation}deg)`,
               borderRadius: `${Math.min(18, layer.borderRadius / 2)}px`,
-              backgroundImage: image ? `url(${image.url})` : undefined,
+              backgroundImage: cssImageUrl(image?.url),
               backgroundColor: image ? undefined : "rgba(255,255,255,.6)"
             }}
           />
@@ -3430,7 +3444,7 @@ function FramedImage({
       <div
         className="framed-image tiled-image"
         style={{
-          backgroundImage: `url(${src})`,
+          backgroundImage: cssImageUrl(src),
           backgroundRepeat: "repeat",
           backgroundSize: `${placement.width * zoom}px ${placement.height * zoom}px`,
           backgroundPosition: `${placement.x * zoom}px ${placement.y * zoom}px`,
@@ -3461,6 +3475,7 @@ function FramedImage({
 function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"]; zoom: number }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const showImage = canvas.backgroundBaseMode === "image" && Boolean(canvas.backgroundImage);
+  const backgroundSrc = canvas.backgroundImage ? renderableLocalFileUrl(canvas.backgroundImage.url) : undefined;
   const placement = showImage && natural.width
     ? computeImagePlacement(
         natural.width,
@@ -3479,7 +3494,7 @@ function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasS
         <div
           className="canvas-background-image tiled-image"
           style={{
-            backgroundImage: `url(${canvas.backgroundImage.url})`,
+            backgroundImage: cssImageUrl(backgroundSrc),
             backgroundRepeat: "repeat",
             backgroundSize: `${placement.width * zoom}px ${placement.height * zoom}px`,
             backgroundPosition: `${placement.x * zoom}px ${placement.y * zoom}px`,
@@ -3487,12 +3502,12 @@ function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasS
             opacity: canvas.backgroundOpacity
           }}
         >
-          <img className="image-dimension-probe" src={canvas.backgroundImage.url} onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />
+          <img className="image-dimension-probe" src={backgroundSrc} onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />
         </div>
       ) : (
         <img
           className="canvas-background-image"
-          src={canvas.backgroundImage.url}
+          src={backgroundSrc}
           onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           style={placement ? {
             left: placement.x * zoom,
@@ -3525,10 +3540,10 @@ function paperTextureBackground(paper: PaperTextureEffect, customTextures: Wallp
   if (paper.type === "none") return undefined;
   if (paper.type === "custom") {
     const texture = customTextures.find((item) => item.id === paper.customTextureId);
-    return texture ? `url(${texture.url})` : undefined;
+    return cssImageUrl(texture?.url);
   }
   const bundled = bundledSurfaceUrl(paper.type);
-  if (bundled) return `url(${bundled})`;
+  if (bundled) return cssImageUrl(bundled);
   if (paper.type === "dust-scratches") {
     return "radial-gradient(circle at 20% 35%, rgba(30,25,20,.28) 0 .7px, transparent 1px), radial-gradient(circle at 72% 66%, rgba(255,255,255,.65) 0 .8px, transparent 1.2px)";
   }
@@ -3928,16 +3943,38 @@ function WallpaperPanel({
             {macOSDiagnostic && (
               <>
                 <p className={macOSDiagnostic.recommendedStrategy === "observer-only" || macOSDiagnostic.recommendedStrategy === "unsupported" ? "settings-warning" : "settings-success"}>
-                  Detected {macOSDiagnostic.displays.length} monitor{macOSDiagnostic.displays.length === 1 ? "" : "s"} and {macOSDiagnostic.totalSpaceCount} Mission Control desktop{macOSDiagnostic.totalSpaceCount === 1 ? "" : "s"}. Strategy: {macOSDiagnostic.recommendedStrategy}.
+                  Detected {macOSDiagnostic.displays.length} monitor{macOSDiagnostic.displays.length === 1 ? "" : "s"} and {macOSDiagnostic.totalSpaceCount} Mission Control desktop{macOSDiagnostic.totalSpaceCount === 1 ? "" : "s"}. {macOSDiagnostic.sharedSpaceCount ? `${macOSDiagnostic.sharedSpaceCount} shared wallpaper Store record${macOSDiagnostic.sharedSpaceCount === 1 ? "" : "s"} excluded from the desktop count. ` : ""}Strategy: {macOSDiagnostic.recommendedStrategy}.
                 </p>
                 {macOSDiagnostic.warnings.map((warning) => <p className="settings-warning" key={warning}>{warning}</p>)}
                 {macOSDiagnostic.errors.map((error) => <p className="status-error" key={error}>{error}</p>)}
               </>
             )}
             {diagnostics?.macOSAllSpaces && (
-              <p className={diagnostics.macOSAllSpaces.modernStoreVerified || diagnostics.macOSAllSpaces.legacyDatabaseVerified ? "settings-success" : "settings-warning"}>
-                Last apply: verified {diagnostics.macOSAllSpaces.verifiedSpaceCount} of {diagnostics.macOSAllSpaces.targetSpaceCount} desktop records and {diagnostics.macOSAllSpaces.verifiedDisplayCount} of {diagnostics.macOSAllSpaces.targetDisplayCount} display records. {diagnostics.macOSAllSpaces.observerFallback ? "Observer fallback is active." : "Observer maintenance is active."}
-              </p>
+              <>
+                <p className={diagnostics.macOSAllSpaces.modernStoreVerified ? "settings-success" : "settings-warning"}>
+	                  {diagnostics.macOSAllSpaces.observerFallback
+	                    ? `Last apply: visible apply verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so the active Space-change observer will repair inactive Mission Control desktops as you visit them.`
+	                    : diagnostics.macOSAllSpaces.fallbackToVisibleMonitors
+	                      ? `Last apply: visible fallback verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records for the current visible Space. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so inactive Mission Control desktops remain unconfirmed.`
+	                    : `Last apply: verified ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} system desktop records and ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}${diagnostics.macOSAllSpaces.observerStarted ? "Direct update succeeded; the observer is running only for maintenance." : "Direct update completed without an observer."}`}
+	                </p>
+	                <p className="settings-hint">
+	                  Background method: {diagnostics.macOSAllSpaces.reloadMethod}. WallpaperAgent restarted: {diagnostics.macOSAllSpaces.wallpaperAgentReloaded ? "yes" : "no"}. Dock restarted: {diagnostics.macOSAllSpaces.dockReloaded ? "yes" : "no"}. Overlay created: no. Visible redraw passes: {diagnostics.macOSAllSpaces.visibleApplyPassCount}. Direct bridge attempted: {diagnostics.macOSAllSpaces.directBridgeAttempted ? "yes" : "no"}. Direct bridge available: {diagnostics.macOSAllSpaces.directBridgeAvailable ? "yes" : "no"}. Request accepted: {diagnostics.macOSAllSpaces.directBridgeRequestAccepted ? "yes" : "no"}. Mechanism: {diagnostics.macOSAllSpaces.directBridgeMechanism || "none"}. Duration: {diagnostics.macOSAllSpaces.operationDurationMs} ms.
+	                </p>
+                {(diagnostics.macOSAllSpaces.attempts ?? []).length > 0 && (
+                  <details className="diagnostics">
+                    <summary>Last all-desktop strategy attempts <ChevronDown size={14} /></summary>
+                    <div className="strategy-attempt-list">
+                      {(diagnostics.macOSAllSpaces.attempts ?? []).map((attempt) => (
+                        <p className={attempt.ok ? "settings-success" : "settings-warning"} key={attempt.id}>
+                          <strong>{attempt.label}:</strong> {attempt.ok ? "accepted" : attempt.error || "failed"}
+                          {typeof attempt.verifiedSpaceCount === "number" && typeof attempt.targetSpaceCount === "number" ? ` · ${attempt.verifiedSpaceCount}/${attempt.targetSpaceCount} desktops` : ""}
+                        </p>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </>
             )}
             {macOSDiagnostic && <details className="diagnostics"><summary>macOS wallpaper diagnostic <ChevronDown size={14} /></summary><pre>{JSON.stringify(macOSDiagnostic, null, 2)}</pre></details>}
           </div>
@@ -4098,8 +4135,8 @@ function CanvasDesignPanel({
       <details>
         <summary>Surface <ChevronDown size={15} /></summary>
         <div className="texture-picker-grid compact-texture-grid">
-          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(24, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.22, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: surface.thumbnailUrl ? `url(${surface.thumbnailUrl})` : undefined }} /><span>{surface.label}</span></button>)}
-          {customTextures.map((texture) => <div className={canvas.backgroundPaper.type === "custom" && canvas.backgroundPaper.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}><button onClick={() => patchPaper({ type: "custom", customTextureId: texture.id, intensity: Math.max(30, canvas.backgroundPaper.intensity), opacity: Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: `url(${texture.url})` }} /><span>{texture.name}</span></button><div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div></div>)}
+          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(24, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.22, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: cssImageUrl(surface.thumbnailUrl) }} /><span>{surface.label}</span></button>)}
+          {customTextures.map((texture) => <div className={canvas.backgroundPaper.type === "custom" && canvas.backgroundPaper.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}><button onClick={() => patchPaper({ type: "custom", customTextureId: texture.id, intensity: Math.max(30, canvas.backgroundPaper.intensity), opacity: Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: cssImageUrl(texture.url) }} /><span>{texture.name}</span></button><div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div></div>)}
         </div>
         <button className="button ghost compact" onClick={onImportTexture}>Import Custom Surface</button>
         {canvas.backgroundPaper.type !== "none" && <><FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value, opacity: Math.max(.05, value / 100) })} /><FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={.4} max={3} step={.1} onChange={(value) => patchPaper({ scale: value })} /></>}

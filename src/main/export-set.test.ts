@@ -64,5 +64,8 @@ test("export set preserves live state unless explicitly advanced", () => {
   const live = project(1);
   const generated = project(9);
   assert.equal(projectAfterExportSet(live, generated, false), live);
-  assert.equal(projectAfterExportSet(live, generated, true), generated);
+  const advanced = projectAfterExportSet(live, generated, true);
+  assert.notEqual(advanced, generated);
+  assert.equal(advanced.wallpaper.consecutiveFailures, live.wallpaper.consecutiveFailures);
+  assert.equal(advanced.templates.currentIndex, live.templates.currentIndex);
 });
