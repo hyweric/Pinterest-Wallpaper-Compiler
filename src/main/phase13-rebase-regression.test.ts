@@ -14,6 +14,8 @@ test("main process registers generation and apply-file IPC handlers", async () =
   assert.match(source, /ipcMain\.handle\("wallpaper:generate"/);
   assert.match(source, /ipcMain\.handle\("wallpaper:apply-file"/);
   assert.match(source, /const fadeOverlayTransitionsEnabled = false/);
+  assert.doesNotMatch(source, /destroyAllFadeOverlays/);
+  assert.doesNotMatch(source, /Fade overlay exceeded its maximum lifetime/);
 });
 
 test("autosave compaction removes rendered previews without mutating live state", () => {

@@ -14,6 +14,7 @@ import type {
   WallpaperSettings,
   WallpaperTemplate
 } from "../shared/types";
+import { normalizeAllSpacesRefreshMode } from "../shared/wallpaper";
 
 export const presets = [
   { id: "1920x1080", label: "Desktop HD", width: 1920, height: 1080 },
@@ -42,7 +43,7 @@ export function createDefaultWallpaperSettings(): WallpaperSettings {
     monitorMode: "all",
     scope: "same-all-desktops",
     targetMode: "all-visible-monitors",
-    allSpacesRefreshMode: "immediate-restart",
+    allSpacesRefreshMode: "silent-observer",
     targetTemplateMode: "single-template",
     targetTemplateIds: {},
     targetPlaylistIds: {},
@@ -495,6 +496,7 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
   wallpaper.targetTemplateMode = wallpaper.targetTemplateMode ?? "single-template";
   wallpaper.targetTemplateIds = wallpaper.targetTemplateIds ?? {};
   wallpaper.targetPlaylistIds = wallpaper.targetPlaylistIds ?? {};
+  wallpaper.allSpacesRefreshMode = normalizeAllSpacesRefreshMode(wallpaper.allSpacesRefreshMode);
   wallpaper.transitionEnabled = wallpaper.transitionEnabled ?? true;
   wallpaper.transitionDurationMs = Math.max(200, Math.min(1600, wallpaper.transitionDurationMs ?? 650));
   const layers = (raw.layers ?? []).map(normalizeLayer);
@@ -518,7 +520,11 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
         canvas: normalizeCanvas(structuredClone(legacyProject.canvas ?? raw.canvas)),
         layers: structuredClone(templateLayers),
         sourceIds: [...new Set(linkedIds)],
-        wallpaper: { ...wallpaper, ...(legacyProject.wallpaper ?? {}) }
+        wallpaper: {
+          ...wallpaper,
+          ...(legacyProject.wallpaper ?? {}),
+          allSpacesRefreshMode: normalizeAllSpacesRefreshMode(legacyProject.wallpaper?.allSpacesRefreshMode ?? wallpaper.allSpacesRefreshMode)
+        }
       },
       collectionIds: template.collectionIds ?? [],
       favorite: template.favorite ?? false,

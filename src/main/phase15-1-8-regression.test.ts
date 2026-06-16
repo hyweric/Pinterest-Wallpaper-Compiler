@@ -32,7 +32,10 @@ test("modern Store is the only inactive-Space strategy and refresh never restart
 
   const macOS = await source("src/main/macos-spaces.ts");
   assert.doesNotMatch(macOS, /killall[\s\S]{0,80}Dock/);
-  assert.match(macOS, /refreshMode === 'immediate-restart'/);
+  assert.match(macOS, /request\.refreshMode \|\| 'silent-observer'/);
+  assert.match(macOS, /refreshMode === 'force-wallpaperagent-restart'/);
+  assert.doesNotMatch(macOS, /refreshMode === 'active-space-walk'/);
+  assert.doesNotMatch(macOS, /CGSManagedDisplaySetCurrentSpace/);
   assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
   assert.match(macOS, /wallpaperagent-restart/);
   assert.doesNotMatch(macOS, /applyLegacyWallpaperDatabase/);
@@ -78,7 +81,10 @@ test("failed direct bridge falls back to the active-Space observer without proce
   assert.match(macOS, /Direct private wallpaper bridge is unavailable/);
   assert.match(macOS, /The direct private wallpaper bridge could not get WallpaperAgent to accept a native refresh request/);
   assert.match(macOS, /no WallpaperAgent restart was used to avoid black flash/);
-  assert.match(macOS, /refreshMode === 'immediate-restart'/);
+  assert.doesNotMatch(macOS, /refreshMode === 'active-space-walk'/);
+  assert.doesNotMatch(macOS, /visitSpacesAndApply/);
+  assert.doesNotMatch(macOS, /reloadMethod = 'active-space-walk'/);
+  assert.match(macOS, /force-wallpaperagent-restart/);
   assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
   assert.match(macOS, /reloadMethod = 'wallpaperagent-restart'/);
   assert.match(macOS, /copyReplacing\(backupPath, indexPath\)/);
@@ -89,8 +95,10 @@ test("failed direct bridge falls back to the active-Space observer without proce
   assert.match(wallpaper, /active-Space observer will apply this wallpaper to each Mission Control desktop as you visit it/);
   assert.match(renderer, /active Space-change observer will repair inactive Mission Control desktops as you visit them/);
   assert.match(renderer, /No wallpaper process was restarted/);
-  assert.match(renderer, /Immediate all desktops/);
-  assert.match(renderer, /Silent as Spaces are visited/);
+  assert.match(renderer, /Safe silent refresh/);
+  assert.match(renderer, /No wallpaper process restarts, overlay windows, or Space switching/);
+  assert.doesNotMatch(renderer, /Immediate all desktops/);
+  assert.doesNotMatch(renderer, /Visit desktops now/);
   assert.doesNotMatch(macOS, /macos-mission-control-space-sweep/);
   assert.doesNotMatch(macOS, /Application\('System Events'\)\.keyCode/);
   assert.doesNotMatch(renderer, /Sweep desktops now/);
@@ -113,7 +121,11 @@ test("direct bridge telemetry is presented honestly", async () => {
   assert.match(renderer, /Overlay created: no/);
 });
 
-test("fade stays disabled while direct all-Space control is experimental", async () => {
+test("fade overlays stay disabled while safe all-desktop refresh is the default", async () => {
   const main = await source("src/main/main.ts");
   assert.match(main, /const fadeOverlayTransitionsEnabled = false/);
+  assert.doesNotMatch(main, /activeFadeOverlayWindows/);
+  assert.doesNotMatch(main, /destroyAllFadeOverlays/);
+  assert.doesNotMatch(main, /Fade overlay exceeded its maximum lifetime/);
+  assert.match(main, /transitionDiagnostics/);
 });

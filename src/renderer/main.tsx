@@ -96,6 +96,7 @@ import {
   nextScheduledAt,
   planTemplateRotation,
   previousHistoryIndex,
+  normalizeAllSpacesRefreshMode,
   selectWallpaperTargets,
   wallpaperIntervalToMs,
   wallpaperTargetModeNeedsInactiveSpaces
@@ -1484,7 +1485,7 @@ function App() {
           scope: candidate.wallpaper.scope,
           targetMode: candidate.wallpaper.targetMode,
           monitorId: candidate.wallpaper.monitorId,
-          allSpacesRefreshMode: candidate.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
+          allSpacesRefreshMode: normalizeAllSpacesRefreshMode(candidate.wallpaper.allSpacesRefreshMode),
           transitionEnabled: candidate.wallpaper.transitionEnabled,
           transitionDurationMs: candidate.wallpaper.transitionDurationMs
         }),
@@ -1600,7 +1601,7 @@ function App() {
         scope: "different-per-desktop",
         targetMode: working.wallpaper.targetMode,
         monitorId: working.wallpaper.monitorId,
-        allSpacesRefreshMode: working.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
+        allSpacesRefreshMode: normalizeAllSpacesRefreshMode(working.wallpaper.allSpacesRefreshMode),
         displayMode: working.wallpaper.displayMode,
         transitionEnabled: working.wallpaper.transitionEnabled,
         transitionDurationMs: working.wallpaper.transitionDurationMs,
@@ -1731,7 +1732,7 @@ function App() {
           scope: current.wallpaper.scope,
           targetMode: current.wallpaper.targetMode,
           monitorId: current.wallpaper.monitorId,
-          allSpacesRefreshMode: current.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
+          allSpacesRefreshMode: normalizeAllSpacesRefreshMode(current.wallpaper.allSpacesRefreshMode),
           transitionEnabled: current.wallpaper.transitionEnabled,
           transitionDurationMs: current.wallpaper.transitionDurationMs
         }),
@@ -3891,6 +3892,7 @@ function WallpaperPanel({
 }) {
   const rotationActive = project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval !== "manual";
   const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
+  const allSpacesRefreshMode = normalizeAllSpacesRefreshMode(project.wallpaper.allSpacesRefreshMode);
 
   function toggleRotation() {
     if (rotationActive) {
@@ -3939,22 +3941,19 @@ function WallpaperPanel({
           <div className="macos-space-status">
             <label>
               Refresh all desktops
-              <select value={project.wallpaper.allSpacesRefreshMode ?? "immediate-restart"} onChange={(event) => onPatch({ allSpacesRefreshMode: event.target.value as WallpaperProject["wallpaper"]["allSpacesRefreshMode"] })}>
-                <option value="immediate-restart">Immediate all desktops</option>
-                <option value="silent-observer">Silent as Spaces are visited</option>
+              <select value={allSpacesRefreshMode} onChange={(event) => onPatch({ allSpacesRefreshMode: event.target.value as WallpaperProject["wallpaper"]["allSpacesRefreshMode"] })}>
+                <option value="silent-observer">Safe silent refresh</option>
               </select>
             </label>
             <p className="settings-hint">
-              {project.wallpaper.allSpacesRefreshMode === "silent-observer"
-                ? "No wallpaper process restarts; inactive desktops update when you visit them."
-                : "Updates every desktop now; macOS may briefly flash while WallpaperAgent refreshes."}
+              No wallpaper process restarts, overlay windows, or Space switching. Visible monitors update now; inactive desktops update when macOS visits them.
             </p>
             <div className="compact-action-row">
               <button className="button ghost" disabled={macOSDiagnosticBusy} onClick={onRunMacOSDiagnostic}>
                 <RefreshCcw size={14} /> {macOSDiagnosticBusy ? "Inspecting…" : "Run macOS diagnostic"}
               </button>
             </div>
-            {!macOSDiagnostic && <p className="settings-warning">Run the diagnostic to verify which immediate all-desktop strategy is available on this Mac.</p>}
+            {!macOSDiagnostic && <p className="settings-warning">Run the diagnostic to verify which all-desktop refresh strategy is available on this Mac.</p>}
             {macOSDiagnostic && (
               <>
                 <p className={macOSDiagnostic.recommendedStrategy === "observer-only" || macOSDiagnostic.recommendedStrategy === "unsupported" ? "settings-warning" : "settings-success"}>
@@ -3971,7 +3970,7 @@ function WallpaperPanel({
 	                    ? `Last apply: visible apply verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so the active Space-change observer will repair inactive Mission Control desktops as you visit them.`
 	                    : diagnostics.macOSAllSpaces.fallbackToVisibleMonitors
 	                      ? `Last apply: visible fallback verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records for the current visible Space. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so inactive Mission Control desktops remain unconfirmed.`
-	                    : `Last apply: verified ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} system desktop records and ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}${diagnostics.macOSAllSpaces.observerStarted ? "Direct update succeeded; the observer is running only for maintenance." : "Direct update completed without an observer."}`}
+		                    : `Last apply: verified ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} system desktop records and ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}${diagnostics.macOSAllSpaces.observerStarted ? "Direct update succeeded; the observer is running only for maintenance." : "Direct update completed without an observer."}`}
 	                </p>
 	                <p className="settings-hint">
 	                  Background method: {diagnostics.macOSAllSpaces.reloadMethod}. WallpaperAgent restarted: {diagnostics.macOSAllSpaces.wallpaperAgentReloaded ? "yes" : "no"}. Dock restarted: {diagnostics.macOSAllSpaces.dockReloaded ? "yes" : "no"}. Overlay created: no. Visible redraw passes: {diagnostics.macOSAllSpaces.visibleApplyPassCount}. Direct bridge attempted: {diagnostics.macOSAllSpaces.directBridgeAttempted ? "yes" : "no"}. Direct bridge available: {diagnostics.macOSAllSpaces.directBridgeAvailable ? "yes" : "no"}. Request accepted: {diagnostics.macOSAllSpaces.directBridgeRequestAccepted ? "yes" : "no"}. Mechanism: {diagnostics.macOSAllSpaces.directBridgeMechanism || "none"}. Duration: {diagnostics.macOSAllSpaces.operationDurationMs} ms.

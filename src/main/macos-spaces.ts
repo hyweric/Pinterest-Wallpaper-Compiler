@@ -1002,9 +1002,9 @@ function run(argv) {
         if (!initialVerification.ok) throw new Error('The Store write did not verify every targeted desktop before background observation.');
 
         // First try the no-restart private bridge. If WallpaperAgent does not
-        // accept that refresh request, keep the verified Store records and let
-        // the active-Space observer repair desktops as they become visible.
-        // Restarting WallpaperAgent can create a visible black flash.
+        // accept that refresh request, use the selected refresh mode. The
+        // immediate path restarts WallpaperAgent only; it never drives Mission
+        // Control or switches the user's Spaces.
         let reloadMethod = 'none';
         let bridgeError = '';
         if (refreshHelperPath && manager.isExecutableFileAtPath(key(refreshHelperPath))) {
@@ -1029,8 +1029,8 @@ function run(argv) {
           bridgeError = 'Direct private wallpaper bridge is unavailable on this build.';
         }
         if (reloadMethod === 'none') {
-          const refreshMode = String(request.refreshMode || 'immediate-restart');
-          if (refreshMode === 'immediate-restart') {
+          const refreshMode = String(request.refreshMode || 'silent-observer');
+          if (refreshMode === 'force-wallpaperagent-restart' || refreshMode === 'immediate-restart') {
             const restartStatus = runTask('/usr/bin/killall', ['WallpaperAgent']);
             if (restartStatus !== 0) {
               throw new Error((bridgeError ? bridgeError + ' ' : '') + 'WallpaperAgent restart failed.');
@@ -1187,7 +1187,7 @@ async function applyModernWallpaperStore(
   const command = await runNativeCommand(
     "macos-modern-wallpaper-store-transaction",
     "/usr/bin/osascript",
-    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshMode: refreshMode ?? "immediate-restart", refreshHelperPath: await resolvePrivateWallpaperBridgePath() })],
+    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshMode: refreshMode ?? "silent-observer", refreshHelperPath: await resolvePrivateWallpaperBridgePath() })],
     75_000
   );
   let result: ModernStoreApplyResult | undefined;

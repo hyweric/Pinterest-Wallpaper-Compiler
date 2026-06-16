@@ -34,7 +34,10 @@ export type WallpaperTargetMode =
   | "all-desktops-current-monitor"
   | "all-desktops-all-monitors";
 export type WallpaperTargetTemplateMode = "single-template" | "different-template" | "playlist";
-export type WallpaperAllSpacesRefreshMode = "immediate-restart" | "silent-observer";
+export type WallpaperAllSpacesRefreshMode =
+  | "silent-observer"
+  | "force-wallpaperagent-restart"
+  | "immediate-restart";
 
 export type MacOSWallpaperStrategy =
   | "modern-store"

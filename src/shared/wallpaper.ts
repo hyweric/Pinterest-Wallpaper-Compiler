@@ -2,6 +2,7 @@ import type {
   GeneratedCombination,
   TemplateLibrary,
   WallpaperInterval,
+  WallpaperAllSpacesRefreshMode,
   WallpaperTemplate,
   WallpaperTarget,
   WallpaperTargetMode
@@ -14,6 +15,10 @@ export const inactiveSpaceTargetModes: WallpaperTargetMode[] = [
 
 export function wallpaperTargetModeNeedsInactiveSpaces(mode: WallpaperTargetMode) {
   return inactiveSpaceTargetModes.includes(mode);
+}
+
+export function normalizeAllSpacesRefreshMode(mode?: WallpaperAllSpacesRefreshMode): Exclude<WallpaperAllSpacesRefreshMode, "immediate-restart"> {
+  return "silent-observer";
 }
 
 export function wallpaperTargetModeLabel(mode: WallpaperTargetMode) {

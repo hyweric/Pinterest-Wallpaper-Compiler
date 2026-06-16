@@ -56,9 +56,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 // Full-screen BrowserWindow crossfade overlays could remain visible after an
-// interrupted scheduled run and look like a blank/white screen. Keep native
-// wallpaper application stable and immediate until that transition system is
-// separately reworked and verified on macOS.
+// interrupted scheduled run and can disturb Mission Control. Keep native
+// wallpaper application stable until a non-window transition is available.
 const fadeOverlayTransitionsEnabled = false;
 
 function createWindow() {
@@ -1075,90 +1074,96 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
   );
   const transitionAnimation = transition?.begin();
   let appliedResults: WallpaperTargetResult[] = [];
-  if (writtenItems.length && controller.setWallpapers) {
-    appliedResults = await controller.setWallpapers(writtenItems, {
-      displayMode: payload.displayMode,
-      scope: payload.scope ?? "different-per-desktop",
-      targetMode: payload.targetMode,
-      allSpacesRefreshMode: payload.allSpacesRefreshMode,
-      monitorId: payload.monitorId,
-      currentDisplayId
-    });
-  } else {
-    for (const item of writtenItems) {
-      try {
-        const diagnostics = await controller.setWallpaper(item.filePath, {
-          displayMode: payload.displayMode,
-          scope: payload.scope ?? "different-per-desktop",
-          targetMode: payload.targetMode,
-          allSpacesRefreshMode: payload.allSpacesRefreshMode,
-          monitorId: payload.monitorId,
-          targetId: item.targetId,
-          currentDisplayId
-        });
-        diagnostics.renderedPath = item.filePath;
-        diagnostics.fileSize = item.fileSize;
-        diagnostics.validImage = true;
-        diagnostics.targetId = item.targetId;
-        diagnostics.targetLabel = item.targetLabel;
-        appliedResults.push({
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          filePath: item.filePath,
-          fileSize: item.fileSize,
-          diagnostics,
-          ok: diagnostics.changed,
-          error: diagnostics.changed ? undefined : diagnostics.lastError
-        });
-      } catch (error) {
-        const diagnostics = diagnosticsFromError(error) ?? {
-          nativeResults: [],
-          verifiedPaths: [],
-          changed: false,
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          lastError: error instanceof Error ? error.message : "Unable to set wallpaper target."
-        };
-        appliedResults.push({
-          targetId: item.targetId,
-          targetLabel: item.targetLabel,
-          filePath: item.filePath,
-          fileSize: item.fileSize,
-          diagnostics,
-          ok: false,
-          error: diagnostics.lastError
-        });
+  try {
+    if (writtenItems.length && controller.setWallpapers) {
+      appliedResults = await controller.setWallpapers(writtenItems, {
+        displayMode: payload.displayMode,
+        scope: payload.scope ?? "different-per-desktop",
+        targetMode: payload.targetMode,
+        allSpacesRefreshMode: payload.allSpacesRefreshMode,
+        monitorId: payload.monitorId,
+        currentDisplayId
+      });
+    } else {
+      for (const item of writtenItems) {
+        try {
+          const diagnostics = await controller.setWallpaper(item.filePath, {
+            displayMode: payload.displayMode,
+            scope: payload.scope ?? "different-per-desktop",
+            targetMode: payload.targetMode,
+            allSpacesRefreshMode: payload.allSpacesRefreshMode,
+            monitorId: payload.monitorId,
+            targetId: item.targetId,
+            currentDisplayId
+          });
+          diagnostics.renderedPath = item.filePath;
+          diagnostics.fileSize = item.fileSize;
+          diagnostics.validImage = true;
+          diagnostics.targetId = item.targetId;
+          diagnostics.targetLabel = item.targetLabel;
+          appliedResults.push({
+            targetId: item.targetId,
+            targetLabel: item.targetLabel,
+            filePath: item.filePath,
+            fileSize: item.fileSize,
+            diagnostics,
+            ok: diagnostics.changed,
+            error: diagnostics.changed ? undefined : diagnostics.lastError
+          });
+        } catch (error) {
+          const diagnostics = diagnosticsFromError(error) ?? {
+            nativeResults: [],
+            verifiedPaths: [],
+            changed: false,
+            targetId: item.targetId,
+            targetLabel: item.targetLabel,
+            lastError: error instanceof Error ? error.message : "Unable to set wallpaper target."
+          };
+          appliedResults.push({
+            targetId: item.targetId,
+            targetLabel: item.targetLabel,
+            filePath: item.filePath,
+            fileSize: item.fileSize,
+            diagnostics,
+            ok: false,
+            error: diagnostics.lastError
+          });
+        }
       }
     }
-  }
 
-  const targetResults = [...appliedResults, ...earlyFailures];
-  await transitionAnimation;
-  for (const result of targetResults) result.diagnostics.transitionDiagnostics = transition?.diagnostics;
-  await cleanupGeneratedWallpapers(cacheDir, 120, writtenItems.map((item) => item.filePath));
-  const ok = targetResults.length === payload.items.length && targetResults.every((result) => result.ok);
-  const appliedTargetCount = targetResults.filter((result) => result.ok).length;
-  const partial = appliedTargetCount > 0 && !ok;
-  await transition?.complete(ok);
-  const lastError = targetResults.find((result) => !result.ok)?.error;
-  return {
-    ok,
-    appliedAt: ok ? new Date().toISOString() : undefined,
-    platform: process.platform,
-    error: ok ? undefined : lastError ?? "One or more wallpaper targets failed.",
-    diagnostics: {
-      nativeResults: targetResults.flatMap((result) => result.diagnostics.nativeResults),
-      verifiedPaths: targetResults.flatMap((result) => result.diagnostics.verifiedPaths),
-      changed: ok,
-      partial,
-      targetMode: payload.targetMode,
-      requestedTargetCount: payload.items.length,
-      appliedTargetCount,
-      targetResults,
-      lastError
-    },
-    targets: targetResults
-  };
+    const targetResults = [...appliedResults, ...earlyFailures];
+    await transitionAnimation;
+    for (const result of targetResults) result.diagnostics.transitionDiagnostics = transition?.diagnostics;
+    await cleanupGeneratedWallpapers(cacheDir, 120, writtenItems.map((item) => item.filePath));
+    const ok = targetResults.length === payload.items.length && targetResults.every((result) => result.ok);
+    const appliedTargetCount = targetResults.filter((result) => result.ok).length;
+    const partial = appliedTargetCount > 0 && !ok;
+    await transition?.complete(ok);
+    const lastError = targetResults.find((result) => !result.ok)?.error;
+    return {
+      ok,
+      appliedAt: ok ? new Date().toISOString() : undefined,
+      platform: process.platform,
+      error: ok ? undefined : lastError ?? "One or more wallpaper targets failed.",
+      diagnostics: {
+        nativeResults: targetResults.flatMap((result) => result.diagnostics.nativeResults),
+        verifiedPaths: targetResults.flatMap((result) => result.diagnostics.verifiedPaths),
+        changed: ok,
+        partial,
+        targetMode: payload.targetMode,
+        requestedTargetCount: payload.items.length,
+        appliedTargetCount,
+        targetResults,
+        lastError
+      },
+      targets: targetResults
+    };
+  } catch (error) {
+    await transitionAnimation;
+    await transition?.complete(false);
+    throw error;
+  }
 });
 
 ipcMain.handle("tray:set-state", (_event, state: TrayRuntimeState) => {
