@@ -653,6 +653,7 @@ async function applyWallpaperFilePath(
       displayMode: payload.displayMode,
       scope: payload.scope,
       targetMode,
+      allSpacesRefreshMode: payload.allSpacesRefreshMode,
       monitorId: payload.monitorId,
       targetId: payload.targetId,
       currentDisplayId
@@ -1079,6 +1080,7 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
       displayMode: payload.displayMode,
       scope: payload.scope ?? "different-per-desktop",
       targetMode: payload.targetMode,
+      allSpacesRefreshMode: payload.allSpacesRefreshMode,
       monitorId: payload.monitorId,
       currentDisplayId
     });
@@ -1089,6 +1091,7 @@ ipcMain.handle("wallpaper:apply-targets", async (_event, payload: WallpaperApply
           displayMode: payload.displayMode,
           scope: payload.scope ?? "different-per-desktop",
           targetMode: payload.targetMode,
+          allSpacesRefreshMode: payload.allSpacesRefreshMode,
           monitorId: payload.monitorId,
           targetId: item.targetId,
           currentDisplayId

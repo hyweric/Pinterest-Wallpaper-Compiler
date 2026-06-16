@@ -1484,6 +1484,7 @@ function App() {
           scope: candidate.wallpaper.scope,
           targetMode: candidate.wallpaper.targetMode,
           monitorId: candidate.wallpaper.monitorId,
+          allSpacesRefreshMode: candidate.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
           transitionEnabled: candidate.wallpaper.transitionEnabled,
           transitionDurationMs: candidate.wallpaper.transitionDurationMs
         }),
@@ -1599,6 +1600,7 @@ function App() {
         scope: "different-per-desktop",
         targetMode: working.wallpaper.targetMode,
         monitorId: working.wallpaper.monitorId,
+        allSpacesRefreshMode: working.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
         displayMode: working.wallpaper.displayMode,
         transitionEnabled: working.wallpaper.transitionEnabled,
         transitionDurationMs: working.wallpaper.transitionDurationMs,
@@ -1729,6 +1731,7 @@ function App() {
           scope: current.wallpaper.scope,
           targetMode: current.wallpaper.targetMode,
           monitorId: current.wallpaper.monitorId,
+          allSpacesRefreshMode: current.wallpaper.allSpacesRefreshMode ?? "immediate-restart",
           transitionEnabled: current.wallpaper.transitionEnabled,
           transitionDurationMs: current.wallpaper.transitionDurationMs
         }),
@@ -3934,6 +3937,18 @@ function WallpaperPanel({
         )}
         {wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode) && (
           <div className="macos-space-status">
+            <label>
+              Refresh all desktops
+              <select value={project.wallpaper.allSpacesRefreshMode ?? "immediate-restart"} onChange={(event) => onPatch({ allSpacesRefreshMode: event.target.value as WallpaperProject["wallpaper"]["allSpacesRefreshMode"] })}>
+                <option value="immediate-restart">Immediate all desktops</option>
+                <option value="silent-observer">Silent as Spaces are visited</option>
+              </select>
+            </label>
+            <p className="settings-hint">
+              {project.wallpaper.allSpacesRefreshMode === "silent-observer"
+                ? "No wallpaper process restarts; inactive desktops update when you visit them."
+                : "Updates every desktop now; macOS may briefly flash while WallpaperAgent refreshes."}
+            </p>
             <div className="compact-action-row">
               <button className="button ghost" disabled={macOSDiagnosticBusy} onClick={onRunMacOSDiagnostic}>
                 <RefreshCcw size={14} /> {macOSDiagnosticBusy ? "Inspecting…" : "Run macOS diagnostic"}
@@ -3961,6 +3976,11 @@ function WallpaperPanel({
 	                <p className="settings-hint">
 	                  Background method: {diagnostics.macOSAllSpaces.reloadMethod}. WallpaperAgent restarted: {diagnostics.macOSAllSpaces.wallpaperAgentReloaded ? "yes" : "no"}. Dock restarted: {diagnostics.macOSAllSpaces.dockReloaded ? "yes" : "no"}. Overlay created: no. Visible redraw passes: {diagnostics.macOSAllSpaces.visibleApplyPassCount}. Direct bridge attempted: {diagnostics.macOSAllSpaces.directBridgeAttempted ? "yes" : "no"}. Direct bridge available: {diagnostics.macOSAllSpaces.directBridgeAvailable ? "yes" : "no"}. Request accepted: {diagnostics.macOSAllSpaces.directBridgeRequestAccepted ? "yes" : "no"}. Mechanism: {diagnostics.macOSAllSpaces.directBridgeMechanism || "none"}. Duration: {diagnostics.macOSAllSpaces.operationDurationMs} ms.
 	                </p>
+	                {diagnostics.macOSAllSpaces.modernStoreVerified && diagnostics.macOSAllSpaces.observerFallback && (
+	                  <p className="settings-hint">
+	                    All desktop records are verified. No wallpaper process was restarted, so inactive desktops update silently when the active Space-change observer sees them.
+	                  </p>
+	                )}
                 {(diagnostics.macOSAllSpaces.attempts ?? []).length > 0 && (
                   <details className="diagnostics">
                     <summary>Last all-desktop strategy attempts <ChevronDown size={14} /></summary>

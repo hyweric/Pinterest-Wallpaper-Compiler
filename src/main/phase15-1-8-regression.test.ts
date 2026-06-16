@@ -32,6 +32,7 @@ test("modern Store is the only inactive-Space strategy and refresh never restart
 
   const macOS = await source("src/main/macos-spaces.ts");
   assert.doesNotMatch(macOS, /killall[\s\S]{0,80}Dock/);
+  assert.match(macOS, /refreshMode === 'immediate-restart'/);
   assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
   assert.match(macOS, /wallpaperagent-restart/);
   assert.doesNotMatch(macOS, /applyLegacyWallpaperDatabase/);
@@ -70,21 +71,26 @@ test("compiled Swift bridge is built, packaged outside asar, and never opens win
   assert.deepEqual(packageJson.build.asarUnpack, ["dist/main/helpers/pwc-wallpaper-bridge"]);
 });
 
-test("failed direct bridge can fall back to WallpaperAgent refresh without Dock or Space automation", async () => {
+test("failed direct bridge falls back to the active-Space observer without process restarts", async () => {
   const macOS = await source("src/main/macos-spaces.ts");
   const wallpaper = await source("src/main/wallpaper.ts");
   const renderer = await source("src/renderer/main.tsx");
   assert.match(macOS, /Direct private wallpaper bridge is unavailable/);
   assert.match(macOS, /The direct private wallpaper bridge could not get WallpaperAgent to accept a native refresh request/);
+  assert.match(macOS, /no WallpaperAgent restart was used to avoid black flash/);
+  assert.match(macOS, /refreshMode === 'immediate-restart'/);
   assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
   assert.match(macOS, /reloadMethod = 'wallpaperagent-restart'/);
   assert.match(macOS, /copyReplacing\(backupPath, indexPath\)/);
-  assert.match(macOS, /Only the currently visible monitor targets were changed/);
+  assert.match(macOS, /All desktop Store records were verified/);
   assert.match(macOS, /No Dock restart, WallpaperAgent restart, or overlay was used/);
   assert.match(wallpaper, /advancedObserverFallback = !advancedImmediate && observerStarted/);
   assert.match(wallpaper, /observer-fallback/);
   assert.match(wallpaper, /active-Space observer will apply this wallpaper to each Mission Control desktop as you visit it/);
   assert.match(renderer, /active Space-change observer will repair inactive Mission Control desktops as you visit them/);
+  assert.match(renderer, /No wallpaper process was restarted/);
+  assert.match(renderer, /Immediate all desktops/);
+  assert.match(renderer, /Silent as Spaces are visited/);
   assert.doesNotMatch(macOS, /macos-mission-control-space-sweep/);
   assert.doesNotMatch(macOS, /Application\('System Events'\)\.keyCode/);
   assert.doesNotMatch(renderer, /Sweep desktops now/);

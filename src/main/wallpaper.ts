@@ -5,6 +5,7 @@ import type {
   NativeCommandResult,
   MacOSWallpaperDiagnosticReport,
   WallpaperApplyDiagnostics,
+  WallpaperAllSpacesRefreshMode,
   WallpaperDisplayMode,
   WallpaperScope,
   WallpaperTarget,
@@ -28,6 +29,7 @@ export interface WallpaperControllerOptions {
   monitorMode?: "primary" | "all" | "span";
   scope?: WallpaperScope;
   targetMode?: WallpaperTargetMode;
+  allSpacesRefreshMode?: WallpaperAllSpacesRefreshMode;
   monitorId?: string;
   targetId?: string;
   currentDisplayId?: string;
@@ -310,18 +312,16 @@ function successfulMacApplyCount(
 }
 
 function macOSAllSpacesVerificationMethod(status: WallpaperApplyDiagnostics["macOSAllSpaces"] | undefined, batch: boolean) {
-  const refresh = status?.reloadMethod === "wallpaperagent-restart"
-    ? "refreshed WallpaperAgent"
-    : "accepted native WallpaperAgent bridge request";
+  const refresh = status?.reloadMethod === "native-wallpaper-agent-xpc"
+    ? "accepted native WallpaperAgent bridge request"
+    : "verified Store records without restarting wallpaper processes";
   return batch
     ? `Verified modern wallpaper Store update through ${refresh} plus one visible-screen pass`
     : `Verified modern wallpaper Store update, ${refresh}, and one NSWorkspace visible-screen pass`;
 }
 
-function macOSRefreshSafetyNote(status: WallpaperApplyDiagnostics["macOSAllSpaces"] | undefined) {
-  return status?.wallpaperAgentReloaded
-    ? "WallpaperAgent was restarted; Dock was not restarted and no overlay was created."
-    : "No overlay, Dock restart, or WallpaperAgent restart was used.";
+function macOSRefreshSafetyNote() {
+  return "No overlay, Dock restart, or WallpaperAgent restart was used.";
 }
 
 async function applyMacScreensWithRetry(
@@ -477,7 +477,7 @@ export class MacOSWallpaperController implements WallpaperController {
     if (needsInactiveSpaces && visibleMatchedCount > 0) {
       await new Promise((resolve) => setTimeout(resolve, 1_200));
       const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
-      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
+      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId, options.allSpacesRefreshMode);
       nativeResults.push(...advanced.commands);
       advancedImmediate = Boolean(advanced.summary?.ok);
       const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
@@ -552,9 +552,9 @@ export class MacOSWallpaperController implements WallpaperController {
       macOSAllSpaces: allSpacesStatus,
       limitation: needsInactiveSpaces
         ? advancedObserverFallback
-          ? `${advancedError} ${macOSRefreshSafetyNote(allSpacesStatus)}`
+          ? `${advancedError} ${macOSRefreshSafetyNote()}`
           : advancedError
-            ? `${advancedError} Only the currently visible monitor targets were guaranteed. ${macOSRefreshSafetyNote(allSpacesStatus)}`
+            ? `${advancedError} Only the currently visible monitor targets were guaranteed. ${macOSRefreshSafetyNote()}`
           : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active only as maintenance after direct success.` : "All-desktop status was unavailable."
         : undefined
     };
@@ -586,7 +586,7 @@ export class MacOSWallpaperController implements WallpaperController {
     if (assignments.length && needsInactiveSpaces && visibleMatchedCount > 0) {
       await new Promise((resolve) => setTimeout(resolve, 1_200));
       const allSpacesMode = mode as Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">;
-      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId);
+      const advanced = await applyMacOSWallpapersAcrossSpaces(assignments, allSpacesMode, options.displayMode, options.currentDisplayId, options.allSpacesRefreshMode);
       nativeResults.push(...advanced.commands);
       advancedImmediate = Boolean(advanced.summary?.ok);
       const observerStarted = this.spaceObserver.start(assignments, allSpacesMode, options.displayMode);
@@ -655,9 +655,9 @@ export class MacOSWallpaperController implements WallpaperController {
         macOSAllSpaces: allSpacesStatus,
         limitation: wallpaperTargetModeNeedsInactiveSpaces(mode)
           ? advancedObserverFallback
-            ? `${advancedError} ${macOSRefreshSafetyNote(allSpacesStatus)}`
+            ? `${advancedError} ${macOSRefreshSafetyNote()}`
             : advancedError
-              ? `${advancedError} Only this display's currently visible Space was guaranteed. ${macOSRefreshSafetyNote(allSpacesStatus)}`
+              ? `${advancedError} Only this display's currently visible Space was guaranteed. ${macOSRefreshSafetyNote()}`
             : allSpacesStatus ? `Immediate all-desktop strategy ${allSpacesStatus.strategy} verified ${allSpacesStatus.verifiedSpaceCount} of ${allSpacesStatus.targetSpaceCount} desktop records. The observer remains active only for maintenance.` : "All-desktop status was unavailable."
           : undefined
       };

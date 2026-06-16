@@ -12,6 +12,7 @@ import type {
   MacOSWallpaperStoreDiagnostic,
   MacOSWallpaperStrategy,
   NativeCommandResult,
+  WallpaperAllSpacesRefreshMode,
   WallpaperDisplayMode,
   WallpaperTargetMode
 } from "../shared/types.js";
@@ -1001,8 +1002,9 @@ function run(argv) {
         if (!initialVerification.ok) throw new Error('The Store write did not verify every targeted desktop before background observation.');
 
         // First try the no-restart private bridge. If WallpaperAgent does not
-        // accept that refresh request, use the Sonoma Store-refresh fallback:
-        // restart WallpaperAgent only, never Dock and never a Space sweep.
+        // accept that refresh request, keep the verified Store records and let
+        // the active-Space observer repair desktops as they become visible.
+        // Restarting WallpaperAgent can create a visible black flash.
         let reloadMethod = 'none';
         let bridgeError = '';
         if (refreshHelperPath && manager.isExecutableFileAtPath(key(refreshHelperPath))) {
@@ -1027,13 +1029,33 @@ function run(argv) {
           bridgeError = 'Direct private wallpaper bridge is unavailable on this build.';
         }
         if (reloadMethod === 'none') {
-          const restartStatus = runTask('/usr/bin/killall', ['WallpaperAgent']);
-          if (restartStatus !== 0) {
-            throw new Error((bridgeError ? bridgeError + ' ' : '') + 'WallpaperAgent restart failed.');
+          const refreshMode = String(request.refreshMode || 'immediate-restart');
+          if (refreshMode === 'immediate-restart') {
+            const restartStatus = runTask('/usr/bin/killall', ['WallpaperAgent']);
+            if (restartStatus !== 0) {
+              throw new Error((bridgeError ? bridgeError + ' ' : '') + 'WallpaperAgent restart failed.');
+            }
+            reloadMethod = 'wallpaperagent-restart';
+            output.wallpaperAgentReloaded = true;
+            $.NSThread.sleepForTimeInterval(4.5);
+          } else {
+            attempt.ok = true;
+            attempt.verifiedSpaceCount = initialVerification.verifiedSpaces;
+            attempt.verifiedDisplayCount = initialVerification.verifiedDisplays;
+            output.ok = false;
+            output.approach = approach.id;
+            output.reloadMethod = 'none';
+            output.wallpaperAgentReloaded = false;
+            output.updatedDisplayCount = assignments.length;
+            output.verifiedDisplayCount = initialVerification.verifiedDisplays;
+            output.updatedSpaceCount = inventory.userSpaces.length;
+            output.verifiedSpaceCount = initialVerification.verifiedSpaces;
+            output.verifiedSharedSpaceCount = initialVerification.verifiedShared;
+            output.operationDurationMs = Date.now() - startedAt;
+            output.error = (bridgeError ? bridgeError + ' ' : '') + 'All desktop Store records were verified, but no WallpaperAgent restart was used to avoid black flash. The active-Space observer will apply desktops as they become visible.';
+            output.attempts.push(attempt);
+            return JSON.stringify(output);
           }
-          reloadMethod = 'wallpaperagent-restart';
-          output.wallpaperAgentReloaded = true;
-          $.NSThread.sleepForTimeInterval(2.2);
         }
         const settledVerification = verifyAppliedApproach(readMutablePlist(indexPath), approach.id, assignments, inventory, true);
         if (!settledVerification.ok) {
@@ -1149,7 +1171,8 @@ async function applyModernWallpaperStore(
   assignments: MacOSSpaceAssignment[],
   mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
   displayMode: WallpaperDisplayMode | undefined,
-  diagnostic: MacOSWallpaperDiagnosticReport
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  refreshMode: WallpaperAllSpacesRefreshMode | undefined
 ) {
   const displayById = new Map(diagnostic.displays.map((display) => [display.displayId, display]));
   const mappedAssignments = assignments.map((assignment) => {
@@ -1164,7 +1187,7 @@ async function applyModernWallpaperStore(
   const command = await runNativeCommand(
     "macos-modern-wallpaper-store-transaction",
     "/usr/bin/osascript",
-    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshHelperPath: await resolvePrivateWallpaperBridgePath() })],
+    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshMode: refreshMode ?? "immediate-restart", refreshHelperPath: await resolvePrivateWallpaperBridgePath() })],
     75_000
   );
   let result: ModernStoreApplyResult | undefined;
@@ -1182,7 +1205,8 @@ export async function applyMacOSWallpapersAcrossSpaces(
   assignments: MacOSSpaceAssignment[],
   mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
   displayMode?: WallpaperDisplayMode,
-  activeDisplayId?: string
+  activeDisplayId?: string,
+  refreshMode?: WallpaperAllSpacesRefreshMode
 ): Promise<MacOSSpacesApplyResult> {
   const diagnostic = await diagnoseMacOSWallpaperEnvironment(activeDisplayId);
   const commands: NativeCommandResult[] = [];
@@ -1219,7 +1243,7 @@ export async function applyMacOSWallpapersAcrossSpaces(
 
   let immediateOk = false;
   if (diagnostic.recommendedStrategy === "modern-store") {
-    const modern = await applyModernWallpaperStore(assignments, mode, displayMode, diagnostic);
+    const modern = await applyModernWallpaperStore(assignments, mode, displayMode, diagnostic, refreshMode);
     commands.push(modern.command);
     if (modern.result) {
       immediateOk = modern.result.ok;
@@ -1242,7 +1266,9 @@ export async function applyMacOSWallpapersAcrossSpaces(
       status.updatedSharedSpaceCount = modern.result.updatedSharedSpaceCount;
       status.verifiedSharedSpaceCount = modern.result.verifiedSharedSpaceCount;
       status.modernStoreWritten = modern.result.updatedSpaceCount > 0;
-      status.modernStoreVerified = modern.result.ok;
+      status.modernStoreVerified = modern.result.verifiedSpaceCount === modern.result.targetSpaceCount
+        && modern.result.verifiedSharedSpaceCount === modern.result.updatedSharedSpaceCount
+        && modern.result.verifiedDisplayCount === modern.result.targetDisplayCount;
       status.wallpaperAgentReloaded = modern.result.wallpaperAgentReloaded;
       status.dockReloaded = false;
       status.reloadMethod = modern.result.reloadMethod ?? "none";
@@ -1256,7 +1282,7 @@ export async function applyMacOSWallpapersAcrossSpaces(
       status.directBridgeRequestAccepted = modern.result.directBridgeRequestAccepted ?? false;
       status.directBridgeXPCServices = modern.result.directBridgeXPCServices ?? [];
       status.directBridgeSelectors = modern.result.directBridgeSelectors ?? [];
-      status.fallbackToVisibleMonitors = !modern.result.ok;
+      status.fallbackToVisibleMonitors = !modern.result.ok && !status.modernStoreVerified;
       status.rollbackPerformed ||= modern.result.rollbackPerformed;
       if (modern.result.backupPath) status.backupPaths.push(modern.result.backupPath);
       if (!modern.result.ok) status.error = modern.result.error;
@@ -1274,15 +1300,17 @@ export async function applyMacOSWallpapersAcrossSpaces(
 
   if (!status.ok) {
     status.observerFallback = false;
-    status.fallbackToVisibleMonitors = true;
-    status.reloadMethod = "visible-monitors-fallback";
-    const refreshNote = status.wallpaperAgentReloaded
-      ? "WallpaperAgent was restarted, but Dock was not restarted and no overlay was created."
-      : "No Dock restart, WallpaperAgent restart, or overlay was used.";
-    status.warning = [
-      status.error || diagnostic.warnings.join(" ") || "Immediate inactive-Space synchronization was unavailable.",
-      `Only the currently visible monitor targets were changed. ${refreshNote}`
-    ].filter(Boolean).join(" ");
+    status.fallbackToVisibleMonitors = !status.modernStoreVerified;
+    status.reloadMethod = status.modernStoreVerified ? "none" : "visible-monitors-fallback";
+    status.warning = status.modernStoreVerified
+      ? [
+        status.error || "Immediate inactive-Space redraw was unavailable.",
+        "All desktop Store records were verified. No Dock restart, WallpaperAgent restart, or overlay was used."
+      ].filter(Boolean).join(" ")
+      : [
+        status.error || diagnostic.warnings.join(" ") || "Immediate inactive-Space synchronization was unavailable.",
+        "Only the currently visible monitor targets were changed. No Dock restart, WallpaperAgent restart, or overlay was used."
+      ].filter(Boolean).join(" ");
   }
   const command = commands.at(-1) ?? fallbackCommand(status.warning || "No immediate all-Space wallpaper strategy was available.");
   return { command, commands, summary: status };

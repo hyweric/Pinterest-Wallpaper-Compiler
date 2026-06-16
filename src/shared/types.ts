@@ -34,6 +34,7 @@ export type WallpaperTargetMode =
   | "all-desktops-current-monitor"
   | "all-desktops-all-monitors";
 export type WallpaperTargetTemplateMode = "single-template" | "different-template" | "playlist";
+export type WallpaperAllSpacesRefreshMode = "immediate-restart" | "silent-observer";
 
 export type MacOSWallpaperStrategy =
   | "modern-store"
@@ -397,6 +398,7 @@ export interface WallpaperSettings {
   monitorMode: "primary" | "all" | "span";
   scope: WallpaperScope;
   targetMode: WallpaperTargetMode;
+  allSpacesRefreshMode?: WallpaperAllSpacesRefreshMode;
   targetTemplateMode: WallpaperTargetTemplateMode;
   targetTemplateIds: Record<string, string | undefined>;
   targetPlaylistIds: Record<string, string[]>;
@@ -555,6 +557,7 @@ export interface WallpaperApplyPayload extends WallpaperGeneratePayload {
   displayMode?: WallpaperDisplayMode;
   scope?: WallpaperScope;
   targetMode?: WallpaperTargetMode;
+  allSpacesRefreshMode?: WallpaperAllSpacesRefreshMode;
   monitorId?: string;
   targetId?: string;
 }
@@ -565,6 +568,7 @@ export interface WallpaperApplyFilePayload {
   displayMode?: WallpaperDisplayMode;
   scope?: WallpaperScope;
   targetMode?: WallpaperTargetMode;
+  allSpacesRefreshMode?: WallpaperAllSpacesRefreshMode;
   monitorId?: string;
   targetId?: string;
   transitionEnabled?: boolean;
@@ -588,6 +592,7 @@ export interface WallpaperApplyTargetsPayload {
   transitionDurationMs?: number;
   scope?: WallpaperScope;
   targetMode?: WallpaperTargetMode;
+  allSpacesRefreshMode?: WallpaperAllSpacesRefreshMode;
   monitorId?: string;
 }
 
