@@ -19,8 +19,6 @@ import {
   LayoutTemplate,
   Lock,
   MoreHorizontal,
-  Minus,
-  Maximize2,
   PanelLeft,
   PencilLine,
   Plus,
@@ -113,6 +111,8 @@ import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
+import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-renderer";
+import { nextSurfaceSeed, normalizeSurfaceEffect, surfaceEffectIsVisible } from "../shared/surface-rendering";
 import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
@@ -856,7 +856,6 @@ function App() {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasZoomShellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const zoomReadoutRef = useRef<HTMLSpanElement>(null);
   const zoomRef = useRef(zoom);
   const zoomFrameRef = useRef<number | undefined>(undefined);
   const zoomCommitTimerRef = useRef<number | undefined>(undefined);
@@ -1343,7 +1342,7 @@ function App() {
       customTextures: [...current.customTextures.filter((texture) => texture.id !== result.texture!.id), result.texture!],
       canvas: {
         ...current.canvas,
-        backgroundPaper: { ...current.canvas.backgroundPaper, type: "custom", customTextureId: result.texture!.id, intensity: Math.max(35, current.canvas.backgroundPaper.intensity), opacity: Math.max(0.35, current.canvas.backgroundPaper.opacity) }
+        backgroundPaper: { ...current.canvas.backgroundPaper, enabled: true, type: "custom", customTextureId: result.texture!.id, intensity: Math.max(45, current.canvas.backgroundPaper.intensity), opacity: Math.max(0.5, current.canvas.backgroundPaper.opacity) }
       }
     }));
     setMessage(`Imported texture ${result.texture.name}.`);
@@ -1353,14 +1352,15 @@ function App() {
     const texture = projectRef.current.customTextures.find((item) => item.id === textureId);
     if (!texture) return;
     await window.wallpaperApi.removeCustomTexture(texture.path);
+    clearSurfaceTextureCaches(texture.url);
     commitProject((current) => ({
       ...current,
       customTextures: current.customTextures.filter((item) => item.id !== textureId),
       canvas: current.canvas.backgroundPaper.customTextureId === textureId
-        ? { ...current.canvas, backgroundPaper: { ...current.canvas.backgroundPaper, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } }
+        ? { ...current.canvas, backgroundPaper: { ...current.canvas.backgroundPaper, enabled: false, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } }
         : current.canvas,
       layers: current.layers.map((layer) => layer.effects.paper.customTextureId === textureId
-        ? { ...layer, effects: { ...layer.effects, paper: { ...layer.effects.paper, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } } }
+        ? { ...layer, effects: { ...layer.effects, paper: { ...layer.effects.paper, enabled: false, type: "none", customTextureId: undefined, intensity: 0, opacity: 0 } } }
         : layer)
     }));
     setMessage(`Removed texture ${texture.name}.`);
@@ -2699,11 +2699,14 @@ function App() {
     shell.style.height = `${canvasSettings.height * normalized}px`;
     canvas.style.transform = `scale(${normalized})`;
     zoomRef.current = normalized;
-    if (zoomReadoutRef.current) zoomReadoutRef.current.textContent = `${Math.round(normalized * 100)}%`;
 
+    const targetClientX = beforeRect.left + anchor.x * previous;
+    const targetClientY = beforeRect.top + anchor.y * previous;
     const afterRect = canvas.getBoundingClientRect();
-    stage.scrollLeft += afterRect.left + anchor.x * normalized - clientX;
-    stage.scrollTop += afterRect.top + anchor.y * normalized - clientY;
+    const nextAnchorClientX = afterRect.left + anchor.x * normalized;
+    const nextAnchorClientY = afterRect.top + anchor.y * normalized;
+    stage.scrollLeft += nextAnchorClientX - targetClientX;
+    stage.scrollTop += nextAnchorClientY - targetClientY;
     scheduleZoomCommit();
   }
 
@@ -3593,15 +3596,11 @@ function App() {
           ref={stageRef}
           className="canvas-stage"
         >
-          <div className={`floating-canvas-status ${cropModeLayerId ? "cropping" : ""}`}>
-            <div className="canvas-zoom-controls" role="group" aria-label="Canvas zoom">
-              <button className="tooltip-anchor" data-tooltip="Zoom out" aria-label="Zoom out" onClick={() => zoomCanvasByStep(-1)}><Minus size={14} /></button>
-              <span ref={zoomReadoutRef} className="zoom-readout" aria-live="polite">{Math.round(zoomRef.current * 100)}%</span>
-              <button className="tooltip-anchor" data-tooltip="Zoom in" aria-label="Zoom in" onClick={() => zoomCanvasByStep(1)}><Plus size={14} /></button>
-              <button className="fit-zoom-button tooltip-anchor" data-tooltip="Fit canvas" aria-label="Fit canvas" onClick={fitCanvas}><Maximize2 size={14} /> Fit</button>
+          {cropModeLayerId && (
+            <div className="floating-canvas-status cropping">
+              <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>
             </div>
-            {cropModeLayerId && <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>}
-          </div>
+          )}
           {selectedLayer && !selectedLayer.locked && cropModeLayerId === selectedLayer.id ? (
             <CropToolbar
               layer={selectedLayer}
@@ -3662,7 +3661,7 @@ function App() {
               }
             }}
           >
-            <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} />
+            <BackgroundImageView canvas={project.canvas} />
             {dropFeedback?.target === "canvas" && !dropFeedback.valid && (
               <div className="drop-feedback-overlay canvas-drop-feedback invalid">
                 <Upload size={24} />
@@ -3765,7 +3764,7 @@ function App() {
                       ><EyeOff size={14} /></button>
                     </div>
                   )}
-                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type }, project.customTextures) }} />}
+                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type }, project.customTextures) }} />}
                   <div
                     className="placeholder-image-area"
                     style={{
@@ -3799,6 +3798,7 @@ function App() {
                 </div>
               );
             })}
+            <CanvasSurfaceOverlay canvas={project.canvas} customTextures={project.customTextures} />
           </div>
           </div>
         </div>
@@ -4124,7 +4124,66 @@ function FramedImage({
   );
 }
 
-function BackgroundImageView({ canvas, customTextures }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"] }) {
+function CanvasSurfaceOverlay({ canvas, customTextures }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const paper = normalizeSurfaceEffect(canvas.backgroundPaper);
+  const customTexture = paper.type === "custom"
+    ? customTextures.find((texture) => texture.id === paper.customTextureId)
+    : undefined;
+
+  useEffect(() => {
+    const target = canvasRef.current;
+    if (!target || !surfaceEffectIsVisible(paper)) return;
+    let canceled = false;
+    let frame: number | undefined;
+    const timer = window.setTimeout(() => {
+      frame = window.requestAnimationFrame(() => {
+        void drawSurfacePreview(
+          target,
+          canvas.width,
+          canvas.height,
+          { ...paper, blendMode: "normal" },
+          customTexture
+        ).catch((error) => {
+          if (!canceled) console.warn("Surface preview could not be rendered", error);
+        });
+      });
+    }, 28);
+    return () => {
+      canceled = true;
+      window.clearTimeout(timer);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
+  }, [
+    canvas.width,
+    canvas.height,
+    paper.enabled,
+    paper.type,
+    paper.intensity,
+    paper.scale,
+    paper.rotation,
+    paper.opacity,
+    paper.blendMode,
+    paper.seed,
+    paper.noise,
+    paper.roughness,
+    paper.tone,
+    paper.customTextureId,
+    customTexture?.url
+  ]);
+
+  if (!surfaceEffectIsVisible(paper)) return null;
+  return (
+    <canvas
+      ref={canvasRef}
+      className="canvas-surface-overlay"
+      aria-hidden="true"
+      style={{ width: canvas.width, height: canvas.height, mixBlendMode: paper.blendMode }}
+    />
+  );
+}
+
+function BackgroundImageView({ canvas }: { canvas: CanvasSettings }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const showImage = canvas.backgroundBaseMode === "image" && Boolean(canvas.backgroundImage);
   const backgroundSrc = canvas.backgroundImage ? renderableLocalFileUrl(canvas.backgroundImage.url) : undefined;
@@ -4172,20 +4231,8 @@ function BackgroundImageView({ canvas, customTextures }: { canvas: CanvasSetting
         />
       ))}
       {canvas.backgroundTemperature !== 0 && <span className="canvas-background-temperature" style={{ backgroundColor: canvas.backgroundTemperature > 0 ? "#ff9b55" : "#5e8dff", opacity: Math.min(0.35, Math.abs(canvas.backgroundTemperature) / 280), mixBlendMode: "soft-light" }} />}
-      <span className="canvas-background-texture" style={backgroundTextureStyle(canvas, customTextures)} />
     </>
   );
-}
-
-function backgroundTextureStyle(canvas: CanvasSettings, customTextures: WallpaperProject["customTextures"]): React.CSSProperties {
-  const paper = canvas.backgroundPaper;
-  return {
-    opacity: Math.max(paper.opacity, paper.intensity / 100) * 0.55,
-    mixBlendMode: paper.blendMode,
-    backgroundImage: paperTextureBackground(paper, customTextures),
-    backgroundSize: paper.type === "custom" ? `${Math.max(48, 220 * paper.scale)}px auto` : `${Math.max(96, 320 * paper.scale)}px ${Math.max(96, 320 * paper.scale)}px`,
-    transform: `rotate(${paper.rotation}deg) scale(1.05)`
-  };
 }
 
 function paperTextureBackground(paper: PaperTextureEffect, customTextures: WallpaperProject["customTextures"] = []) {
@@ -4771,6 +4818,30 @@ function CanvasDesignPanel({
   function patchPaper(patch: Partial<PaperTextureEffect>) { onPatch({ backgroundPaper: { ...canvas.backgroundPaper, ...patch } }); }
 
   const surfaces = bundledSurfaceChoices;
+  const surface = normalizeSurfaceEffect(canvas.backgroundPaper);
+
+  function setSurfaceEnabled(enabled: boolean) {
+    patchPaper({
+      enabled,
+      type: enabled && surface.type === "none" ? "paper" : surface.type,
+      intensity: enabled ? Math.max(45, surface.intensity) : surface.intensity,
+      opacity: enabled ? Math.max(.5, surface.opacity) : surface.opacity
+    });
+  }
+
+  function selectSurface(type: PaperTextureEffect["type"], customTextureId?: string) {
+    if (type === "none") {
+      patchPaper({ enabled: false, type: "none", customTextureId: undefined });
+      return;
+    }
+    patchPaper({
+      enabled: true,
+      type,
+      customTextureId,
+      intensity: Math.max(45, surface.intensity),
+      opacity: Math.max(.5, surface.opacity)
+    });
+  }
 
   return (
     <section className="panel canvas-design-panel settings-section">
@@ -4803,14 +4874,55 @@ function CanvasDesignPanel({
         </>}
       </details>
 
-      <details>
+      <details open>
         <summary>Surface <ChevronDown size={15} /></summary>
+        <label className="surface-enable-row">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={surface.enabled && surface.type !== "none"}
+            onChange={(event) => setSurfaceEnabled(event.target.checked)}
+          />
+          <span><strong>Enable surface texture</strong><small>Applies across the complete wallpaper.</small></span>
+        </label>
         <div className="texture-picker-grid compact-texture-grid">
-          {surfaces.map((surface) => <button key={surface.type} className={canvas.backgroundPaper.type === surface.type ? "texture-choice active" : "texture-choice"} onClick={() => patchPaper({ type: surface.type, customTextureId: undefined, intensity: surface.type === "none" ? 0 : Math.max(24, canvas.backgroundPaper.intensity), opacity: surface.type === "none" ? 0 : Math.max(.22, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: cssImageUrl(surface.thumbnailUrl) }} /><span>{surface.label}</span></button>)}
-          {customTextures.map((texture) => <div className={canvas.backgroundPaper.type === "custom" && canvas.backgroundPaper.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}><button onClick={() => patchPaper({ type: "custom", customTextureId: texture.id, intensity: Math.max(30, canvas.backgroundPaper.intensity), opacity: Math.max(.3, canvas.backgroundPaper.opacity) })}><span className="texture-swatch" style={{ backgroundImage: cssImageUrl(texture.url) }} /><span>{texture.name}</span></button><div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div></div>)}
+          {surfaces.map((choice) => (
+            <button
+              key={choice.type}
+              className={(choice.type === "none" ? !surface.enabled || surface.type === "none" : surface.enabled && surface.type === choice.type) ? "texture-choice active" : "texture-choice"}
+              onClick={() => selectSurface(choice.type)}
+            >
+              <span className="texture-swatch" style={{ backgroundImage: cssImageUrl(choice.thumbnailUrl) }} />
+              <span>{choice.label}</span>
+            </button>
+          ))}
+          {customTextures.map((texture) => (
+            <div className={surface.enabled && surface.type === "custom" && surface.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}>
+              <button onClick={() => selectSurface("custom", texture.id)}>
+                <span className="texture-swatch" style={{ backgroundImage: cssImageUrl(texture.url) }} />
+                <span>{texture.name}</span>
+              </button>
+              <div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div>
+            </div>
+          ))}
         </div>
         <button className="button ghost compact" onClick={onImportTexture}>Import Custom Surface</button>
-        {canvas.backgroundPaper.type !== "none" && <><FilterSlider label="Intensity" value={canvas.backgroundPaper.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value, opacity: Math.max(.05, value / 100) })} /><FilterSlider label="Scale" value={canvas.backgroundPaper.scale} min={.4} max={3} step={.1} onChange={(value) => patchPaper({ scale: value })} /></>}
+        {surface.enabled && surface.type !== "none" && (
+          <div className="surface-controls">
+            <FilterSlider label="Intensity" value={surface.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
+            <FilterSlider label="Opacity" value={surface.opacity} min={0} max={1} step={.02} onChange={(value) => patchPaper({ opacity: value })} />
+            <FilterSlider label="Scale" value={surface.scale} min={.2} max={5} step={.05} onChange={(value) => patchPaper({ scale: value })} />
+            <FilterSlider label="Noise / grain" value={surface.noise} min={0} max={100} onChange={(value) => patchPaper({ noise: value })} />
+            <FilterSlider label="Roughness" value={surface.roughness} min={0} max={100} onChange={(value) => patchPaper({ roughness: value })} />
+            <FilterSlider label="Light / dark" value={surface.tone} min={-100} max={100} onChange={(value) => patchPaper({ tone: value })} />
+            <FilterSlider label="Rotation" value={surface.rotation} min={-180} max={180} step={1} onChange={(value) => patchPaper({ rotation: value })} />
+            <label>Blend mode<select value={surface.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
+            <div className="surface-seed-row">
+              <label>Texture seed<input type="number" min="1" value={surface.seed} onChange={(event) => patchPaper({ seed: Math.max(1, Number(event.target.value) || 1) })} /></label>
+              <button className="button secondary" onClick={() => patchPaper({ seed: nextSurfaceSeed(surface.seed) })}><RefreshCcw size={14} /> Regenerate Texture</button>
+            </div>
+          </div>
+        )}
       </details>
 
       <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
@@ -4821,9 +4933,6 @@ function CanvasDesignPanel({
         <FilterSlider label="Temperature" value={canvas.backgroundTemperature} min={-100} max={100} onChange={(value) => onPatch({ backgroundTemperature: value })} />
         <div className="two-col"><label>Offset X<input type="number" value={canvas.backgroundOffsetX} onChange={(event) => onPatch({ backgroundOffsetX: Number(event.target.value) })} /></label><label>Offset Y<input type="number" value={canvas.backgroundOffsetY} onChange={(event) => onPatch({ backgroundOffsetY: Number(event.target.value) })} /></label></div>
         <FilterSlider label="Image scale" value={canvas.backgroundScale} min={.1} max={4} step={.05} onChange={(value) => onPatch({ backgroundScale: value })} />
-        <FilterSlider label="Surface opacity" value={canvas.backgroundPaper.opacity} min={0} max={1} step={.05} onChange={(value) => patchPaper({ opacity: value })} />
-        <label>Surface blend<select value={canvas.backgroundPaper.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
-        <label>Seed<input type="number" value={canvas.backgroundPaper.seed} onChange={(event) => patchPaper({ seed: Number(event.target.value) })} /></label>
       </details>
     </section>
   );

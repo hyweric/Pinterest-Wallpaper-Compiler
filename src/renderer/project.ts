@@ -181,13 +181,17 @@ export function createDefaultFilters(): ImageFilters {
 
 export function createDefaultPaper(): PaperTextureEffect {
   return {
+    enabled: false,
     type: "none",
     intensity: 0,
     scale: 1,
     rotation: 0,
     opacity: 0,
     blendMode: "multiply",
-    seed: 1
+    seed: 1,
+    noise: 18,
+    roughness: 20,
+    tone: 0
   };
 }
 
@@ -267,7 +271,11 @@ function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
     backgroundTemperature: canvas.backgroundTemperature ?? 0,
     backgroundVignette: canvas.backgroundVignette ?? 0,
     backgroundOpacity: canvas.backgroundOpacity ?? 1,
-    backgroundPaper: { ...createDefaultPaper(), ...(canvas.backgroundPaper ?? {}) }
+    backgroundPaper: {
+      ...createDefaultPaper(),
+      ...(canvas.backgroundPaper ?? {}),
+      enabled: canvas.backgroundPaper?.enabled ?? canvas.backgroundPaper?.type !== "none"
+    }
   };
 }
 
@@ -293,7 +301,11 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
       ...createDefaultEffects(),
       ...(layer.effects ?? {}),
       filters: { ...createDefaultFilters(), ...(layer.effects?.filters ?? {}) },
-      paper: { ...createDefaultPaper(), ...(layer.effects?.paper ?? {}) },
+      paper: {
+        ...createDefaultPaper(),
+        ...(layer.effects?.paper ?? {}),
+        enabled: layer.effects?.paper?.enabled ?? layer.effects?.paper?.type !== "none"
+      },
       paperFrame: { ...createDefaultPaperFrame(), ...(layer.effects?.paperFrame ?? {}), type: paperType }
     }
   };

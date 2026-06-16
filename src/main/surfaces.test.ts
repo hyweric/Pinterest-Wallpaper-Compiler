@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { bundledSurfaceManifest, surfaceManifestEntryForPaperType, surfaceManifestIsComplete } from "../shared/surfaces.js";
+import { bundledSurfaceManifest, resolveBundledSurfaceType, surfaceManifestEntryForPaperType, surfaceManifestIsComplete } from "../shared/surfaces.js";
 
 test("bundled surface manifest is complete and uses CC0 provenance", () => {
   assert.equal(surfaceManifestIsComplete(), true);
   assert.deepEqual(bundledSurfaceManifest.map((entry) => entry.label), [
-    "Fine Paper",
-    "Matte Paper",
-    "Recycled Paper",
-    "Canvas",
-    "Handmade Paper"
+    "Paper",
+    "Crumpled Paper",
+    "Grid Paper",
+    "Dotted Paper"
   ]);
   assert.ok(bundledSurfaceManifest.every((entry) => entry.license === "CC0-1.0" && entry.sha256.length === 64));
 });
@@ -23,7 +22,11 @@ test("every surface manifest entry has an asset and thumbnail", async () => {
   }
 });
 
-test("unsupported or missing surfaces safely resolve to no bundled entry", () => {
+test("surface aliases keep older projects compatible while the editor shows the new curated set", () => {
   assert.equal(surfaceManifestEntryForPaperType("missing-surface"), undefined);
-  assert.equal(surfaceManifestEntryForPaperType("fine-grain")?.id, "fine-paper");
+  assert.equal(surfaceManifestEntryForPaperType("paper")?.id, "paper");
+  assert.equal(surfaceManifestEntryForPaperType("fine-grain")?.id, "paper");
+  assert.equal(surfaceManifestEntryForPaperType("handmade")?.id, "crumpled-paper");
+  assert.equal(resolveBundledSurfaceType("matte-photo"), "paper");
+  assert.equal(resolveBundledSurfaceType("canvas"), "crumpled-paper");
 });

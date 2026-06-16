@@ -2356,16 +2356,6 @@ summary {
   z-index: 0;
 }
 
-.canvas-background-texture {
-  position: absolute;
-  inset: -20%;
-  z-index: 1;
-  pointer-events: none;
-  background-image:
-    radial-gradient(circle, rgba(255,255,255,.72) 0 1px, transparent 1px),
-    radial-gradient(circle, rgba(45,38,32,.22) 0 1px, transparent 1px);
-  background-position: 0 0, 11px 17px;
-}
 
 .canvas > .guide,
 .canvas > .placeholder {
@@ -3377,7 +3367,6 @@ textarea:focus-visible {
   background-position: center;
   background-repeat: repeat;
 }
-.canvas-background-texture,
 .texture-overlay,
 .paper-frame-texture {
   background-repeat: repeat;
@@ -3884,4 +3873,64 @@ textarea:focus-visible {
 .canvas-zoom-controls .fit-zoom-button {
   gap: 5px;
   min-width: 48px;
+}
+
+/* Phase 17: deterministic canvas-wide surface rendering. */
+.canvas-surface-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: block;
+  pointer-events: none;
+}
+
+
+.surface-enable-row {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid rgba(43, 48, 58, 0.09);
+  border-radius: 10px;
+  background: rgba(247, 250, 250, 0.8);
+}
+
+.surface-enable-row input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+
+.surface-enable-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.surface-enable-row strong {
+  font-size: 12px;
+}
+
+.surface-enable-row small {
+  color: #858b93;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.surface-controls {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.surface-seed-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.surface-seed-row .button {
+  min-height: 34px;
+  white-space: nowrap;
 }

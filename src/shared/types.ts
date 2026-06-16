@@ -235,8 +235,13 @@ export interface ImageFilters {
 }
 
 export interface PaperTextureEffect {
+  enabled?: boolean;
   type:
     | "none"
+    | "paper"
+    | "crumpled-paper"
+    | "grid-paper"
+    | "dotted-paper"
     | "fine-grain"
     | "recycled"
     | "matte-photo"
@@ -253,6 +258,9 @@ export interface PaperTextureEffect {
   opacity: number;
   blendMode: BlendMode;
   seed: number;
+  noise?: number;
+  roughness?: number;
+  tone?: number;
   customTextureId?: string;
 }
 

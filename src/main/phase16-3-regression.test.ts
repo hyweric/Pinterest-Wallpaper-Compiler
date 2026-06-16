@@ -6,12 +6,14 @@ import test from "node:test";
 const root = process.cwd();
 const source = (relativePath: string) => readFile(path.join(root, relativePath), "utf8");
 
-test("wheel zoom is editor-scoped, non-passive, and coalesced through one animation frame", async () => {
+test("wheel zoom is editor-scoped, non-passive, coalesced, and faster", async () => {
   const renderer = await source("src/renderer/main.tsx");
+  const engine = await source("src/shared/canvas-zoom.ts");
   assert.match(renderer, /stage\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/);
   assert.match(renderer, /wheelDeltaRef\.current \+= normalizeWheelDelta/);
   assert.match(renderer, /window\.requestAnimationFrame/);
   assert.match(renderer, /zoomAfterWheel\(zoomRef\.current, delta\)/);
+  assert.match(engine, /Math\.exp\(-normalizedDeltaY \* 0\.0032\)/);
   assert.doesNotMatch(renderer, /onWheel=\{/);
   assert.doesNotMatch(renderer, /addEventListener\("gesture(?:start|change)"/);
 });
@@ -29,17 +31,19 @@ test("the logical canvas is scaled as one composited surface instead of resizing
   assert.match(styles, /contain: layout paint style/);
 });
 
-test("cursor anchoring and all zoom inputs share the central bounded zoom engine", async () => {
+test("cursor anchoring preserves the exact point beneath the pointer", async () => {
   const renderer = await source("src/renderer/main.tsx");
   assert.match(renderer, /function applyCanvasZoom\(nextZoom: number, clientX: number, clientY: number\)/);
   assert.match(renderer, /canvasPointAtClient\(/);
-  assert.match(renderer, /stage\.scrollLeft \+= afterRect\.left \+ anchor\.x \* normalized - clientX/);
+  assert.match(renderer, /const targetClientX = beforeRect\.left \+ anchor\.x \* previous/);
+  assert.match(renderer, /const nextAnchorClientX = afterRect\.left \+ anchor\.x \* normalized/);
+  assert.match(renderer, /stage\.scrollLeft \+= nextAnchorClientX - targetClientX/);
+  assert.match(renderer, /stage\.scrollTop \+= nextAnchorClientY - targetClientY/);
   assert.match(renderer, /zoomAfterStep\(zoomRef\.current, direction\)/);
   assert.match(renderer, /fitCanvasZoom\(/);
-  assert.match(renderer, /applyCanvasZoom\(1, anchor\.clientX, anchor\.clientY\)/);
 });
 
-test("keyboard shortcuts and visible buttons use the same zoom functions", async () => {
+test("keyboard zoom remains available while the persistent percentage panel is hidden", async () => {
   const renderer = await source("src/renderer/main.tsx");
   assert.match(renderer, /event\.key === "=" \|\| event\.key === "\+"/);
   assert.match(renderer, /command && event\.key === "-"/);
@@ -47,15 +51,13 @@ test("keyboard shortcuts and visible buttons use the same zoom functions", async
   assert.match(renderer, /zoomCanvasByStep\(1\)/);
   assert.match(renderer, /zoomCanvasByStep\(-1\)/);
   assert.match(renderer, /resetCanvasZoom\(\)/);
-  assert.match(renderer, /aria-label="Zoom out"/);
-  assert.match(renderer, /aria-label="Zoom in"/);
-  assert.match(renderer, /aria-label="Fit canvas"/);
+  assert.doesNotMatch(renderer, /zoomReadoutRef/);
+  assert.doesNotMatch(renderer, /aria-label="Canvas zoom"/);
+  assert.doesNotMatch(renderer, /aria-live="polite"/);
 });
 
-test("zoom readout is updated once per rendered frame and committed after gesture settle", async () => {
+test("zoom state commits once after the gesture settles", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(renderer, /zoomReadoutRef\.current\.textContent = `\$\{Math\.round\(normalized \* 100\)\}%`/);
   assert.match(renderer, /window\.setTimeout\([\s\S]*?, 120\)/);
   assert.match(renderer, /setZoom\(\(current\) => Math\.abs\(current - settledZoom\)/);
-  assert.match(renderer, /aria-live="polite"/);
 });

@@ -1,6 +1,6 @@
 export const MIN_CANVAS_ZOOM = 0.1;
 export const MAX_CANVAS_ZOOM = 5;
-export const CANVAS_ZOOM_STEP = 1.15;
+export const CANVAS_ZOOM_STEP = 1.22;
 
 export type CanvasPoint = { x: number; y: number };
 export type ClientRectLike = Pick<DOMRect, "left" | "top" | "width" | "height">;
@@ -17,7 +17,7 @@ export function normalizeWheelDelta(deltaY: number, deltaMode: number, viewportH
 }
 
 export function zoomAfterWheel(currentZoom: number, normalizedDeltaY: number): number {
-  return clampCanvasZoom(currentZoom * Math.exp(-normalizedDeltaY * 0.0012));
+  return clampCanvasZoom(currentZoom * Math.exp(-normalizedDeltaY * 0.0032));
 }
 
 export function zoomAfterStep(currentZoom: number, direction: -1 | 1): number {

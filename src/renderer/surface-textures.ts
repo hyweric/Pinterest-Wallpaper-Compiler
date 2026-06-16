@@ -1,29 +1,25 @@
-import finePaperUrl from "./assets/textures/bundled/fine-paper.webp";
-import mattePaperUrl from "./assets/textures/bundled/matte-paper.webp";
-import recycledPaperUrl from "./assets/textures/bundled/recycled-paper.webp";
-import canvasUrl from "./assets/textures/bundled/canvas.webp";
-import handmadePaperUrl from "./assets/textures/bundled/handmade-paper.webp";
-import finePaperThumbUrl from "./assets/textures/bundled/thumbs/fine-paper.webp";
-import mattePaperThumbUrl from "./assets/textures/bundled/thumbs/matte-paper.webp";
-import recycledPaperThumbUrl from "./assets/textures/bundled/thumbs/recycled-paper.webp";
-import canvasThumbUrl from "./assets/textures/bundled/thumbs/canvas.webp";
-import handmadePaperThumbUrl from "./assets/textures/bundled/thumbs/handmade-paper.webp";
+import paperUrl from "./assets/textures/bundled/paper.webp";
+import crumpledPaperUrl from "./assets/textures/bundled/crumpled-paper.webp";
+import gridPaperUrl from "./assets/textures/bundled/grid-paper.webp";
+import dottedPaperUrl from "./assets/textures/bundled/dotted-paper.webp";
+import paperThumbUrl from "./assets/textures/bundled/thumbs/paper.webp";
+import crumpledPaperThumbUrl from "./assets/textures/bundled/thumbs/crumpled-paper.webp";
+import gridPaperThumbUrl from "./assets/textures/bundled/thumbs/grid-paper.webp";
+import dottedPaperThumbUrl from "./assets/textures/bundled/thumbs/dotted-paper.webp";
 import type { PaperTextureEffect } from "../shared/types";
-import { bundledSurfaceManifest } from "../shared/surfaces";
+import { bundledSurfaceManifest, resolveBundledSurfaceType } from "../shared/surfaces";
 
 const urls: Record<string, string> = {
-  "fine-grain": finePaperUrl,
-  "matte-photo": mattePaperUrl,
-  recycled: recycledPaperUrl,
-  canvas: canvasUrl,
-  handmade: handmadePaperUrl
+  paper: paperUrl,
+  "crumpled-paper": crumpledPaperUrl,
+  "grid-paper": gridPaperUrl,
+  "dotted-paper": dottedPaperUrl
 };
 const thumbs: Record<string, string> = {
-  "fine-grain": finePaperThumbUrl,
-  "matte-photo": mattePaperThumbUrl,
-  recycled: recycledPaperThumbUrl,
-  canvas: canvasThumbUrl,
-  handmade: handmadePaperThumbUrl
+  paper: paperThumbUrl,
+  "crumpled-paper": crumpledPaperThumbUrl,
+  "grid-paper": gridPaperThumbUrl,
+  "dotted-paper": dottedPaperThumbUrl
 };
 
 export const bundledSurfaceChoices = [
@@ -32,5 +28,6 @@ export const bundledSurfaceChoices = [
 ];
 
 export function bundledSurfaceUrl(type: PaperTextureEffect["type"]) {
-  return urls[type];
+  const resolved = resolveBundledSurfaceType(type);
+  return resolved ? urls[resolved] : undefined;
 }

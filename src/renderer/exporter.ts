@@ -3,7 +3,7 @@ import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
 import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/local-file-url";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { getImageForLayer } from "./project";
-import { bundledSurfaceUrl } from "./surface-textures";
+import { drawSurfaceTexture } from "./surface-renderer";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -120,87 +120,6 @@ function customTexture(project: WallpaperProject, paper: PaperTextureEffect): Cu
   return paper.type === "custom" ? project.customTextures.find((texture) => texture.id === paper.customTextureId) : undefined;
 }
 
-async function drawPaperTexture(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  paper: PaperTextureEffect,
-  grain = 0,
-  custom?: CustomTextureAsset
-) {
-  const amount = Math.max(grain, paper.intensity);
-  if ((paper.type === "none" || paper.opacity <= 0) && amount <= 0) return;
-  context.save();
-  context.globalAlpha = Math.max(paper.opacity, amount / 100) * 0.42;
-  context.globalCompositeOperation = paper.blendMode === "normal" ? "source-over" : paper.blendMode;
-  if (paper.type === "custom" && custom) {
-    const image = await loadImage(custom.url);
-    const pattern = context.createPattern(image, "repeat");
-    if (pattern) {
-      const scale = Math.max(0.05, paper.scale);
-      pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
-      context.fillStyle = pattern;
-      context.fillRect(0, 0, width, height);
-    }
-    context.restore();
-    return;
-  }
-
-  const bundledUrl = bundledSurfaceUrl(paper.type);
-  if (bundledUrl) {
-    try {
-      const image = await loadImage(bundledUrl);
-      const pattern = context.createPattern(image, "repeat");
-      if (pattern) {
-        const scale = Math.max(0.08, paper.scale * 0.45);
-        pattern.setTransform(new DOMMatrix().scale(scale, scale).rotate(paper.rotation));
-        context.fillStyle = pattern;
-        context.fillRect(0, 0, width, height);
-      }
-    } catch (error) {
-      console.warn(`Bundled surface texture could not be loaded: ${paper.type}`, error);
-    }
-    context.restore();
-    return;
-  }
-
-  const random = seeded(paper.seed);
-  const step = Math.max(4, 18 / Math.max(0.4, paper.scale));
-  context.translate(width / 2, height / 2);
-  context.rotate((paper.rotation * Math.PI) / 180);
-  context.translate(-width / 2, -height / 2);
-  for (let y = -step; y < height + step; y += step) {
-    for (let x = -step; x < width + step; x += step) {
-      const value = random();
-      if (paper.type === "canvas") {
-        context.strokeStyle = value > 0.5 ? "rgba(255,255,255,.34)" : "rgba(45,38,30,.22)";
-        context.lineWidth = Math.max(0.6, step * 0.07);
-        context.beginPath();
-        context.moveTo(x, y);
-        context.lineTo(x + step, y);
-        context.moveTo(x, y);
-        context.lineTo(x, y + step);
-        context.stroke();
-      } else if (paper.type === "recycled") {
-        context.fillStyle = value > 0.62 ? "rgba(96,78,52,.30)" : "rgba(255,255,255,.25)";
-        context.fillRect(x, y, Math.max(1, step * 0.48), Math.max(0.7, step * 0.08));
-      } else if (paper.type === "matte-photo") {
-        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.36)" : "rgba(20,20,20,.09)";
-        context.fillRect(x, y, step, Math.max(0.7, step * 0.05));
-      } else if (paper.type === "dust-scratches" || paper.type === "halftone" || paper.type === "newspaper") {
-        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.28)" : "rgba(30,25,20,.34)";
-        context.beginPath();
-        context.arc(x, y, Math.max(0.5, step * 0.1), 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = value > 0.5 ? "rgba(255,255,255,.48)" : "rgba(45,38,30,.26)";
-        context.fillRect(x, y, Math.max(0.8, step * 0.12), Math.max(0.8, step * 0.12));
-      }
-    }
-  }
-  context.restore();
-}
-
 function drawCanvasVignette(context: CanvasRenderingContext2D, canvas: CanvasSettings) {
   if (canvas.backgroundVignette <= 0) return;
   const gradient = context.createRadialGradient(canvas.width / 2, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.2, canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.72);
@@ -233,7 +152,6 @@ async function drawBackground(context: CanvasRenderingContext2D, project: Wallpa
       context.restore();
     }
   }
-  await drawPaperTexture(context, canvas.width, canvas.height, canvas.backgroundPaper, 0, customTexture(project, canvas.backgroundPaper));
 }
 
 function drawVignette(context: CanvasRenderingContext2D, layer: PlaceholderLayer) {
@@ -274,7 +192,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.fill();
     context.shadowColor = "transparent";
     if (paperFrame.textureIntensity > 0) {
-      await drawPaperTexture(context, layer.width, layer.height, { ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "fine-grain" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, 0, customTexture(project, layer.effects.paper));
+      await drawSurfaceTexture(context, layer.width, layer.height, { ...layer.effects.paper, enabled: true, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, customTexture(project, layer.effects.paper));
     }
   }
 
@@ -296,7 +214,13 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.fillStyle = "#d9d7d0";
     context.fillRect(0, 0, innerWidth, innerHeight);
   }
-  await drawPaperTexture(context, innerWidth, innerHeight, layer.effects.paper, layer.effects.filters.grain, customTexture(project, layer.effects.paper));
+  await drawSurfaceTexture(context, innerWidth, innerHeight, {
+    ...layer.effects.paper,
+    enabled: (layer.effects.paper.enabled ?? layer.effects.paper.type !== "none") || layer.effects.filters.grain > 0,
+    type: layer.effects.paper.type === "none" && layer.effects.filters.grain > 0 ? "paper" : layer.effects.paper.type,
+    intensity: Math.max(layer.effects.paper.intensity, layer.effects.filters.grain),
+    opacity: Math.max(layer.effects.paper.opacity, layer.effects.filters.grain / 100)
+  }, customTexture(project, layer.effects.paper));
   if (layer.effects.innerShadow) {
     context.save();
     context.shadowColor = "rgba(15,23,42,.34)";
@@ -346,6 +270,8 @@ async function renderProjectToCanvas(project: WallpaperProject, format: "png" | 
 
   await drawBackground(context, project, format);
   for (const layer of project.layers) await drawLayer(context, project, layer);
+  await drawSurfaceTexture(context, width, height, project.canvas.backgroundPaper, customTexture(project, project.canvas.backgroundPaper));
+  drawCanvasVignette(context, project.canvas);
   return output;
 }
 

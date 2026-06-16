@@ -1,9 +1,9 @@
-export type BundledSurfaceId = "fine-paper" | "matte-paper" | "recycled-paper" | "canvas" | "handmade-paper";
+export type BundledSurfaceId = "paper" | "crumpled-paper" | "grid-paper" | "dotted-paper";
 
 export interface BundledSurfaceManifestEntry {
   id: BundledSurfaceId;
   label: string;
-  paperType: "fine-grain" | "matte-photo" | "recycled" | "canvas" | "handmade";
+  paperType: "paper" | "crumpled-paper" | "grid-paper" | "dotted-paper";
   assetFile: string;
   thumbnailFile: string;
   sourceAsset: string;
@@ -17,85 +17,87 @@ export interface BundledSurfaceManifestEntry {
 
 export const bundledSurfaceManifest: BundledSurfaceManifestEntry[] = [
   {
-    id: "fine-paper",
-    label: "Fine Paper",
-    paperType: "fine-grain",
-    assetFile: "fine-paper.webp",
-    thumbnailFile: "thumbs/fine-paper.webp",
-    sourceAsset: "Paper 001",
-    sourceUrl: "https://ambientcg.com/view?id=Paper001",
-    publisher: "ambientCG",
-    license: "CC0-1.0",
-    downloadedAt: "2026-06-14",
-    originalFileName: "Paper001.webp",
-    sha256: "7579751bcb520325bf9073a93828b8f3ad4a777fe3b01b2988772a92763d8826"
-  },
-  {
-    id: "matte-paper",
-    label: "Matte Paper",
-    paperType: "matte-photo",
-    assetFile: "matte-paper.webp",
-    thumbnailFile: "thumbs/matte-paper.webp",
-    sourceAsset: "Paper 001",
-    sourceUrl: "https://ambientcg.com/view?id=Paper001",
-    publisher: "ambientCG",
-    license: "CC0-1.0",
-    downloadedAt: "2026-06-14",
-    originalFileName: "Paper001.webp",
-    sha256: "0a9ec4518e87fa8b6b9f596e134433d218632665585817aa825d41e7f6811d33"
-  },
-  {
-    id: "recycled-paper",
-    label: "Recycled Paper",
-    paperType: "recycled",
-    assetFile: "recycled-paper.webp",
-    thumbnailFile: "thumbs/recycled-paper.webp",
+    id: "paper",
+    label: "Paper",
+    paperType: "paper",
+    assetFile: "paper.webp",
+    thumbnailFile: "thumbs/paper.webp",
     sourceAsset: "Paper 002",
     sourceUrl: "https://ambientcg.com/view?id=Paper002",
     publisher: "ambientCG",
     license: "CC0-1.0",
-    downloadedAt: "2026-06-14",
-    originalFileName: "Paper002.webp",
-    sha256: "ae7b66359f34193e709286a6bce8a9a3bcbbc699ff4f68c6e1edd1870a662c7f"
+    downloadedAt: "2026-06-16",
+    originalFileName: "paper002_4K_Color.jpg",
+    sha256: "ab7c1d7a01f990dbde98df12972baf6c620b0f0f860a1563efefa6f2935fb65d"
   },
   {
-    id: "canvas",
-    label: "Canvas",
-    paperType: "canvas",
-    assetFile: "canvas.webp",
-    thumbnailFile: "thumbs/canvas.webp",
-    sourceAsset: "Fabric 001",
-    sourceUrl: "https://ambientcg.com/view?id=Fabric001",
-    publisher: "ambientCG",
-    license: "CC0-1.0",
-    downloadedAt: "2026-06-14",
-    originalFileName: "Fabric001.webp",
-    sha256: "a187999cf1a0cc7cb98561d32f674832d3835ff735b4f819ae68785d811a3b8f"
-  },
-  {
-    id: "handmade-paper",
-    label: "Handmade Paper",
-    paperType: "handmade",
-    assetFile: "handmade-paper.webp",
-    thumbnailFile: "thumbs/handmade-paper.webp",
+    id: "crumpled-paper",
+    label: "Crumpled Paper",
+    paperType: "crumpled-paper",
+    assetFile: "crumpled-paper.webp",
+    thumbnailFile: "thumbs/crumpled-paper.webp",
     sourceAsset: "Paper 003",
     sourceUrl: "https://ambientcg.com/view?id=Paper003",
     publisher: "ambientCG",
     license: "CC0-1.0",
-    downloadedAt: "2026-06-14",
-    originalFileName: "Paper003.webp",
-    sha256: "2d775cb3437648d5e0e48e647f3c8099a25af34e91a14f678b7c95ea0463d504"
+    downloadedAt: "2026-06-16",
+    originalFileName: "Paper003_4K_Color.jpg",
+    sha256: "fb910cb512a556e6b25285f281a6b6f8b47ae66e4db65e9718a9cfb7fc2bb51b"
+  },
+  {
+    id: "grid-paper",
+    label: "Grid Paper",
+    paperType: "grid-paper",
+    assetFile: "grid-paper.webp",
+    thumbnailFile: "thumbs/grid-paper.webp",
+    sourceAsset: "Generated from Paper 002",
+    sourceUrl: "https://ambientcg.com/view?id=Paper002",
+    publisher: "ambientCG",
+    license: "CC0-1.0",
+    downloadedAt: "2026-06-16",
+    originalFileName: "generated-grid-paper.webp",
+    sha256: "5d6867ea6f5c69de45e1543b21e8cc4aa0c7e0e313f8815d462847324b8e9151"
+  },
+  {
+    id: "dotted-paper",
+    label: "Dotted Paper",
+    paperType: "dotted-paper",
+    assetFile: "dotted-paper.webp",
+    thumbnailFile: "thumbs/dotted-paper.webp",
+    sourceAsset: "Generated from Paper 002",
+    sourceUrl: "https://ambientcg.com/view?id=Paper002",
+    publisher: "ambientCG",
+    license: "CC0-1.0",
+    downloadedAt: "2026-06-16",
+    originalFileName: "generated-dotted-paper.webp",
+    sha256: "a42e787044d398e654596129854c21db4ec3125157293619c75e73101bbb351e"
   }
 ];
 
+const bundledSurfaceAliases: Record<string, BundledSurfaceManifestEntry["paperType"]> = {
+  paper: "paper",
+  "crumpled-paper": "crumpled-paper",
+  "grid-paper": "grid-paper",
+  "dotted-paper": "dotted-paper",
+  "fine-grain": "paper",
+  "matte-photo": "paper",
+  recycled: "paper",
+  handmade: "crumpled-paper",
+  canvas: "crumpled-paper"
+};
+
+export function resolveBundledSurfaceType(type: string) {
+  return bundledSurfaceAliases[type];
+}
+
 export function surfaceManifestIsComplete(entries = bundledSurfaceManifest) {
   const ids = new Set(entries.map((entry) => entry.id));
-  return entries.length === 5
+  return entries.length === 4
     && ids.size === entries.length
     && entries.every((entry) => Boolean(entry.label && entry.assetFile && entry.thumbnailFile && entry.sourceUrl && entry.license));
 }
 
-
 export function surfaceManifestEntryForPaperType(type: string) {
-  return bundledSurfaceManifest.find((entry) => entry.paperType === type);
+  const resolved = resolveBundledSurfaceType(type);
+  return resolved ? bundledSurfaceManifest.find((entry) => entry.paperType === resolved) : undefined;
 }
