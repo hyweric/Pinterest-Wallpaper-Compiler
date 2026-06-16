@@ -3840,3 +3840,48 @@ textarea:focus-visible {
   color: #486f80;
   font-weight: 850;
 }
+
+/* Phase 16.3: transform the logical canvas as one composited surface. */
+.canvas-stage {
+  overscroll-behavior: contain;
+}
+
+.canvas-zoom-shell {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.canvas-zoom-shell > .canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  contain: layout paint style;
+}
+
+.canvas-stage.zoom-gesture-active .canvas-zoom-shell > .canvas {
+  will-change: transform;
+}
+
+.canvas-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.canvas-zoom-controls button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0 6px;
+}
+
+.canvas-zoom-controls .zoom-readout {
+  min-width: 46px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-zoom-controls .fit-zoom-button {
+  gap: 5px;
+  min-width: 48px;
+}

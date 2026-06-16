@@ -19,6 +19,8 @@ import {
   LayoutTemplate,
   Lock,
   MoreHorizontal,
+  Minus,
+  Maximize2,
   PanelLeft,
   PencilLine,
   Plus,
@@ -83,6 +85,14 @@ import {
 } from "./project";
 import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
 import { placeTooltip } from "../shared/ui";
+import {
+  canvasPointAtClient,
+  clampCanvasZoom,
+  fitCanvasZoom,
+  normalizeWheelDelta,
+  zoomAfterStep,
+  zoomAfterWheel
+} from "../shared/canvas-zoom";
 import { clampCropTransform, computeImagePlacement, removeBackgroundImage, resizeCanvasAndLayers } from "../shared/geometry";
 import { paperFrameClipPath, paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { projectAfterExportSet } from "../shared/export-set";
@@ -844,7 +854,14 @@ function App() {
   const dragRef = useRef<DragState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
+  const canvasZoomShellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const zoomReadoutRef = useRef<HTMLSpanElement>(null);
+  const zoomRef = useRef(zoom);
+  const zoomFrameRef = useRef<number | undefined>(undefined);
+  const zoomCommitTimerRef = useRef<number | undefined>(undefined);
+  const wheelDeltaRef = useRef(0);
+  const wheelAnchorRef = useRef({ clientX: 0, clientY: 0 });
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
@@ -918,6 +935,8 @@ function App() {
   useEffect(() => () => {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
+    if (zoomFrameRef.current !== undefined) window.cancelAnimationFrame(zoomFrameRef.current);
+    if (zoomCommitTimerRef.current !== undefined) window.clearTimeout(zoomCommitTimerRef.current);
     wallpaperOperationRef.current?.clear();
     applyInFlightRef.current = false;
   }, []);
@@ -1028,11 +1047,6 @@ function App() {
     if (projectPath) localStorage.setItem(filePathKey, projectPath);
     else localStorage.removeItem(filePathKey);
   }, [projectPath]);
-
-  const scaled = useMemo(
-    () => ({ width: project.canvas.width * zoom, height: project.canvas.height * zoom }),
-    [project.canvas.width, project.canvas.height, zoom]
-  );
 
   const commitProject = useCallback((
     updater: (current: WallpaperProject) => WallpaperProject,
@@ -2498,8 +2512,8 @@ function App() {
     if (marquee) {
       const canvas = event.currentTarget as HTMLElement;
       const rect = canvas.getBoundingClientRect();
-      const currentX = clamp((event.clientX - rect.left) / zoom, 0, project.canvas.width);
-      const currentY = clamp((event.clientY - rect.top) / zoom, 0, project.canvas.height);
+      const currentX = clamp((event.clientX - rect.left) / zoomRef.current, 0, project.canvas.width);
+      const currentY = clamp((event.clientY - rect.top) / zoomRef.current, 0, project.canvas.height);
       const next: SelectionMarquee = {
         ...marquee,
         x: Math.min(marquee.startX, currentX),
@@ -2517,8 +2531,8 @@ function App() {
     }
     const drag = dragRef.current;
     if (!drag) return;
-    const dx = (event.clientX - drag.startX) / zoom;
-    const dy = (event.clientY - drag.startY) / zoom;
+    const dx = (event.clientX - drag.startX) / zoomRef.current;
+    const dy = (event.clientY - drag.startY) / zoomRef.current;
 
     if (drag.mode === "move") {
       const snapped = snapLayer(drag.layer, drag.layer.x + dx, drag.layer.y + dy);
@@ -2568,8 +2582,8 @@ function App() {
     }
 
     if (drag.mode === "rotate") {
-      const cx = (drag.layer.x + drag.layer.width / 2) * zoom;
-      const cy = (drag.layer.y + drag.layer.height / 2) * zoom;
+      const cx = (drag.layer.x + drag.layer.width / 2) * zoomRef.current;
+      const cy = (drag.layer.y + drag.layer.height / 2) * zoomRef.current;
       const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
       const angle = Math.atan2(event.clientY - rect.top - cy, event.clientX - rect.left - cx) * (180 / Math.PI) + 90;
       patchLayer(drag.id, { rotation: Math.round(angle) }, false);
@@ -2638,32 +2652,79 @@ function App() {
     });
   }
 
-  function fitCanvas() {
-    setZoom(0.36);
+  function canvasViewportCenter() {
+    const stage = stageRef.current;
+    if (!stage) return { clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 };
+    const rect = stage.getBoundingClientRect();
+    return { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
   }
 
-  function zoomAtPoint(nextZoom: number, clientX: number, clientY: number) {
+  function scheduleZoomCommit() {
+    if (zoomCommitTimerRef.current !== undefined) window.clearTimeout(zoomCommitTimerRef.current);
+    zoomCommitTimerRef.current = window.setTimeout(() => {
+      const settledZoom = zoomRef.current;
+      setZoom((current) => Math.abs(current - settledZoom) < 0.0001 ? current : settledZoom);
+      stageRef.current?.classList.remove("zoom-gesture-active");
+      zoomCommitTimerRef.current = undefined;
+    }, 120);
+  }
+
+  function applyCanvasZoom(nextZoom: number, clientX: number, clientY: number) {
     const stage = stageRef.current;
-    if (!stage) {
-      setZoom(nextZoom);
+    const shell = canvasZoomShellRef.current;
+    const canvas = canvasRef.current;
+    const normalized = clampCanvasZoom(nextZoom);
+    const previous = zoomRef.current;
+    if (Math.abs(previous - normalized) < 0.00001) return;
+
+    if (!stage || !shell || !canvas) {
+      zoomRef.current = normalized;
+      setZoom(normalized);
       return;
     }
-    const rect = stage.getBoundingClientRect();
-    const contentX = stage.scrollLeft + clientX - rect.left;
-    const contentY = stage.scrollTop + clientY - rect.top;
-    const ratio = nextZoom / zoom;
-    setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      stage.scrollLeft = contentX * ratio - (clientX - rect.left);
-      stage.scrollTop = contentY * ratio - (clientY - rect.top);
-    });
+
+    const canvasSettings = projectRef.current.canvas;
+    const beforeRect = canvas.getBoundingClientRect();
+    const anchor = canvasPointAtClient(
+      clientX,
+      clientY,
+      beforeRect,
+      previous,
+      canvasSettings.width,
+      canvasSettings.height
+    );
+
+    stage.classList.add("zoom-gesture-active");
+    shell.style.width = `${canvasSettings.width * normalized}px`;
+    shell.style.height = `${canvasSettings.height * normalized}px`;
+    canvas.style.transform = `scale(${normalized})`;
+    zoomRef.current = normalized;
+    if (zoomReadoutRef.current) zoomReadoutRef.current.textContent = `${Math.round(normalized * 100)}%`;
+
+    const afterRect = canvas.getBoundingClientRect();
+    stage.scrollLeft += afterRect.left + anchor.x * normalized - clientX;
+    stage.scrollTop += afterRect.top + anchor.y * normalized - clientY;
+    scheduleZoomCommit();
   }
 
-  function onCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (!event.metaKey && !event.ctrlKey) return;
-    event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
-    zoomAtPoint(clamp(zoom + direction * 0.06, 0.12, 1.6), event.clientX, event.clientY);
+  function zoomCanvasByStep(direction: -1 | 1) {
+    const anchor = canvasViewportCenter();
+    applyCanvasZoom(zoomAfterStep(zoomRef.current, direction), anchor.clientX, anchor.clientY);
+  }
+
+  function resetCanvasZoom() {
+    const anchor = canvasViewportCenter();
+    applyCanvasZoom(1, anchor.clientX, anchor.clientY);
+  }
+
+  function fitCanvas() {
+    const stage = stageRef.current;
+    const anchor = canvasViewportCenter();
+    const canvasSettings = projectRef.current.canvas;
+    const next = stage
+      ? fitCanvasZoom(stage.clientWidth, stage.clientHeight, canvasSettings.width, canvasSettings.height)
+      : 1;
+    applyCanvasZoom(next, anchor.clientX, anchor.clientY);
   }
 
   function canvasPointFromClient(clientX: number, clientY: number): CanvasDropPoint | undefined {
@@ -2672,8 +2733,8 @@ function App() {
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return undefined;
     return {
-      x: clamp((clientX - rect.left) / zoom, 0, projectRef.current.canvas.width),
-      y: clamp((clientY - rect.top) / zoom, 0, projectRef.current.canvas.height)
+      x: clamp((clientX - rect.left) / zoomRef.current, 0, projectRef.current.canvas.width),
+      y: clamp((clientY - rect.top) / zoomRef.current, 0, projectRef.current.canvas.height)
     };
   }
 
@@ -3078,38 +3139,55 @@ function App() {
   }
 
   useEffect(() => {
-    let lastGestureScale = 1;
-    function onGestureStart(event: Event) {
+    if (view !== "editor") return;
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    function onWheel(event: WheelEvent) {
+      if (!event.metaKey && !event.ctrlKey) return;
       event.preventDefault();
-      lastGestureScale = 1;
+      wheelDeltaRef.current += normalizeWheelDelta(event.deltaY, event.deltaMode, stage!.clientHeight);
+      wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
+      if (zoomFrameRef.current !== undefined) return;
+      zoomFrameRef.current = window.requestAnimationFrame(() => {
+        zoomFrameRef.current = undefined;
+        const delta = Math.min(240, Math.max(-240, wheelDeltaRef.current));
+        wheelDeltaRef.current = 0;
+        const anchor = wheelAnchorRef.current;
+        applyCanvasZoom(zoomAfterWheel(zoomRef.current, delta), anchor.clientX, anchor.clientY);
+      });
     }
-    function onGestureChange(event: Event) {
-      const gesture = event as Event & { scale?: number; clientX?: number; clientY?: number };
-      event.preventDefault();
-      const scale = gesture.scale ?? 1;
-      const delta = scale - lastGestureScale;
-      lastGestureScale = scale;
-      zoomAtPoint(
-        clamp(zoom + delta * 0.25, 0.12, 1.6),
-        gesture.clientX ?? window.innerWidth / 2,
-        gesture.clientY ?? window.innerHeight / 2
-      );
-    }
+
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      stage.removeEventListener("wheel", onWheel);
+      if (zoomFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(zoomFrameRef.current);
+        zoomFrameRef.current = undefined;
+      }
+      wheelDeltaRef.current = 0;
+    };
+  }, [view]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const command = event.metaKey || event.ctrlKey;
       if (isTypingTarget(event.target) && !(command && event.key.toLowerCase() === "s")) return;
-      if (command && (event.key === "=" || event.key === "+")) {
+      if (view === "editor" && command && (event.key === "=" || event.key === "+")) {
         event.preventDefault();
-        zoomAtPoint(clamp(zoom + 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
-      } else if (command && event.key === "-") {
+        zoomCanvasByStep(1);
+      } else if (view === "editor" && command && event.key === "-") {
         event.preventDefault();
-        zoomAtPoint(clamp(zoom - 0.08, 0.12, 1.6), window.innerWidth / 2, window.innerHeight / 2);
-      } else if (command && event.key === "0") {
+        zoomCanvasByStep(-1);
+      } else if (view === "editor" && command && event.shiftKey && event.key === "0") {
         event.preventDefault();
         fitCanvas();
-      } else if (command && event.key === "1") {
+      } else if (view === "editor" && command && event.key === "0") {
         event.preventDefault();
-        setZoom(1);
+        resetCanvasZoom();
+      } else if (view === "editor" && command && event.key === "1") {
+        event.preventDefault();
+        fitCanvas();
       } else if (command && event.key.toLowerCase() === "z" && event.shiftKey) {
         event.preventDefault();
         redo();
@@ -3164,14 +3242,10 @@ function App() {
       }
     }
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("gesturestart", onGestureStart);
-    window.addEventListener("gesturechange", onGestureChange);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("gesturestart", onGestureStart);
-      window.removeEventListener("gesturechange", onGestureChange);
     };
-  }, [selectedLayer, selectedLayers, clipboardLayers, cropModeLayerId, project, projectPath, selectedLayerIds]);
+  }, [selectedLayer, selectedLayers, clipboardLayers, cropModeLayerId, project, projectPath, selectedLayerIds, view]);
 
   if (view === "home") {
     return (
@@ -3518,10 +3592,14 @@ function App() {
         <div
           ref={stageRef}
           className="canvas-stage"
-          onWheel={onCanvasWheel}
         >
           <div className={`floating-canvas-status ${cropModeLayerId ? "cropping" : ""}`}>
-            <span>{Math.round(zoom * 100)}%</span>
+            <div className="canvas-zoom-controls" role="group" aria-label="Canvas zoom">
+              <button className="tooltip-anchor" data-tooltip="Zoom out" aria-label="Zoom out" onClick={() => zoomCanvasByStep(-1)}><Minus size={14} /></button>
+              <span ref={zoomReadoutRef} className="zoom-readout" aria-live="polite">{Math.round(zoomRef.current * 100)}%</span>
+              <button className="tooltip-anchor" data-tooltip="Zoom in" aria-label="Zoom in" onClick={() => zoomCanvasByStep(1)}><Plus size={14} /></button>
+              <button className="fit-zoom-button tooltip-anchor" data-tooltip="Fit canvas" aria-label="Fit canvas" onClick={fitCanvas}><Maximize2 size={14} /> Fit</button>
+            </div>
             {cropModeLayerId && <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>}
           </div>
           {selectedLayer && !selectedLayer.locked && cropModeLayerId === selectedLayer.id ? (
@@ -3541,17 +3619,26 @@ function App() {
             />
           ) : null}
           <div
+            ref={canvasZoomShellRef}
+            className="canvas-zoom-shell"
+            style={{
+              width: project.canvas.width * zoomRef.current,
+              height: project.canvas.height * zoomRef.current
+            }}
+          >
+          <div
             ref={canvasRef}
             className={`canvas ${cropModeLayerId ? "crop-active" : ""} ${dropFeedback?.target === "canvas" ? `drag-active ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
             style={{
-              width: scaled.width,
-              height: scaled.height,
+              width: project.canvas.width,
+              height: project.canvas.height,
+              transform: `scale(${zoomRef.current})`,
               backgroundColor: project.canvas.backgroundBaseMode === "transparent" ? "transparent" : project.canvas.backgroundColor,
               backgroundImage: project.canvas.backgroundBaseMode === "transparent"
                 ? "linear-gradient(45deg, #f1f1ef 25%, transparent 25%), linear-gradient(-45deg, #f1f1ef 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #f1f1ef 75%), linear-gradient(-45deg, transparent 75%, #f1f1ef 75%)"
                 : undefined,
-              backgroundSize: project.canvas.backgroundBaseMode === "transparent" ? `${16 * zoom}px ${16 * zoom}px` : undefined,
-              backgroundPosition: project.canvas.backgroundBaseMode === "transparent" ? `0 0, 0 ${8 * zoom}px, ${8 * zoom}px ${-8 * zoom}px, ${-8 * zoom}px 0px` : undefined
+              backgroundSize: project.canvas.backgroundBaseMode === "transparent" ? "16px 16px" : undefined,
+              backgroundPosition: project.canvas.backgroundBaseMode === "transparent" ? "0 0, 0 8px, 8px -8px, -8px 0px" : undefined,
             }}
             onDragEnter={(event) => updateDropFeedback(event, "canvas")}
             onDragOver={(event) => updateDropFeedback(event, "canvas")}
@@ -3564,8 +3651,8 @@ function App() {
               if (event.target !== event.currentTarget) return;
               if (event.shiftKey) {
                 const rect = event.currentTarget.getBoundingClientRect();
-                const startX = clamp((event.clientX - rect.left) / zoom, 0, project.canvas.width);
-                const startY = clamp((event.clientY - rect.top) / zoom, 0, project.canvas.height);
+                const startX = clamp((event.clientX - rect.left) / zoomRef.current, 0, project.canvas.width);
+                const startY = clamp((event.clientY - rect.top) / zoomRef.current, 0, project.canvas.height);
                 const marquee: SelectionMarquee = { startX, startY, x: startX, y: startY, width: 0, height: 0, baseIds: selectedLayerIds };
                 marqueeRef.current = marquee;
                 setSelectionMarquee(marquee);
@@ -3575,7 +3662,7 @@ function App() {
               }
             }}
           >
-            <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} zoom={zoom} />
+            <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} />
             {dropFeedback?.target === "canvas" && !dropFeedback.valid && (
               <div className="drop-feedback-overlay canvas-drop-feedback invalid">
                 <Upload size={24} />
@@ -3591,10 +3678,10 @@ function App() {
                     className="canvas-drop-placement-preview"
                     key={`drop-preview-${index}`}
                     style={{
-                      left: placement.x * zoom,
-                      top: placement.y * zoom,
-                      width: placement.width * zoom,
-                      height: placement.height * zoom,
+                      left: placement.x,
+                      top: placement.y,
+                      width: placement.width,
+                      height: placement.height,
                       zIndex: 50 + index
                     }}
                   >
@@ -3609,9 +3696,9 @@ function App() {
                   </div>
                 );
               })}
-            {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x * zoom }} />}
-            {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y * zoom }} />}
-            {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x * zoom, top: selectionMarquee.y * zoom, width: selectionMarquee.width * zoom, height: selectionMarquee.height * zoom }} />}
+            {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x }} />}
+            {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y }} />}
+            {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x, top: selectionMarquee.y, width: selectionMarquee.width, height: selectionMarquee.height }} />}
             {project.layers.map((layer) => {
               const image = getImageForLayer(project, layer);
               if (layer.hidden) return null;
@@ -3628,14 +3715,14 @@ function App() {
                   className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
                   key={layer.id}
                   style={{
-                    left: layer.x * zoom,
-                    top: layer.y * zoom,
-                    width: layer.width * zoom,
-                    height: layer.height * zoom,
+                    left: layer.x,
+                    top: layer.y,
+                    width: layer.width,
+                    height: layer.height,
                     transform: `rotate(${layer.rotation + paperFrameRotation(paperFrame)}deg)`,
-                    borderWidth: layer.borderWidth * zoom,
+                    borderWidth: layer.borderWidth,
                     borderColor: hexWithOpacity(layer.borderColor, layer.borderOpacity),
-                    borderRadius: paperActive ? Math.min(18, paperFrame.borderWidth * 0.4) * zoom : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius * zoom,
+                    borderRadius: paperActive ? Math.min(18, paperFrame.borderWidth * 0.4) : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
                     overflow: rough ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame) : undefined,
                     opacity: layer.opacity,
@@ -3682,11 +3769,11 @@ function App() {
                   <div
                     className="placeholder-image-area"
                     style={{
-                      left: insets.left * zoom,
-                      top: insets.top * zoom,
-                      width: innerWidth * zoom,
-                      height: innerHeight * zoom,
-                      borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)) * zoom,
+                      left: insets.left,
+                      top: insets.top,
+                      width: innerWidth,
+                      height: innerHeight,
+                      borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)),
                       backgroundColor: layer.effects.backgroundColor,
                       boxShadow: layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
                     }}
@@ -3699,7 +3786,6 @@ function App() {
                         mode={layer.cropMode}
                         alignment={layer.alignment}
                         crop={layer.crop}
-                        zoom={zoom}
                         filter={cssFilter(layer.effects.filters)}
                         onNatural={(natural) => { imageNaturalRef.current[layer.id] = natural; }}
                       />
@@ -3713,6 +3799,7 @@ function App() {
                 </div>
               );
             })}
+          </div>
           </div>
         </div>
         <footer className="status">{message}</footer>
@@ -3982,7 +4069,6 @@ function FramedImage({
   mode,
   alignment,
   crop,
-  zoom,
   filter,
   onNatural
 }: {
@@ -3992,7 +4078,6 @@ function FramedImage({
   mode: CropMode;
   alignment: ImageAlignment;
   crop: PlaceholderLayer["crop"];
-  zoom: number;
   filter?: string;
   onNatural?: (natural: { width: number; height: number }) => void;
 }) {
@@ -4013,8 +4098,8 @@ function FramedImage({
         style={{
           backgroundImage: cssImageUrl(src),
           backgroundRepeat: "repeat",
-          backgroundSize: `${placement.width * zoom}px ${placement.height * zoom}px`,
-          backgroundPosition: `${placement.x * zoom}px ${placement.y * zoom}px`,
+          backgroundSize: `${placement.width}px ${placement.height}px`,
+          backgroundPosition: `${placement.x}px ${placement.y}px`,
           filter
         }}
       >
@@ -4029,17 +4114,17 @@ function FramedImage({
       className="framed-image"
       onLoad={(event) => rememberNatural(event.currentTarget)}
       style={placement ? {
-        left: placement.x * zoom,
-        top: placement.y * zoom,
-        width: placement.width * zoom,
-        height: placement.height * zoom,
+        left: placement.x,
+        top: placement.y,
+        width: placement.width,
+        height: placement.height,
         filter
       } : { opacity: 0 }}
     />
   );
 }
 
-function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"]; zoom: number }) {
+function BackgroundImageView({ canvas, customTextures }: { canvas: CanvasSettings; customTextures: WallpaperProject["customTextures"] }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const showImage = canvas.backgroundBaseMode === "image" && Boolean(canvas.backgroundImage);
   const backgroundSrc = canvas.backgroundImage ? renderableLocalFileUrl(canvas.backgroundImage.url) : undefined;
@@ -4054,7 +4139,7 @@ function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasS
         { offsetX: canvas.backgroundOffsetX, offsetY: canvas.backgroundOffsetY, zoom: canvas.backgroundScale }
       )
     : undefined;
-  const filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur * zoom}px)`;
+  const filter = `brightness(${canvas.backgroundBrightness}%) contrast(${canvas.backgroundContrast}%) blur(${canvas.backgroundBlur}px)`;
   return (
     <>
       {showImage && canvas.backgroundImage && (placement?.tile ? (
@@ -4063,8 +4148,8 @@ function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasS
           style={{
             backgroundImage: cssImageUrl(backgroundSrc),
             backgroundRepeat: "repeat",
-            backgroundSize: `${placement.width * zoom}px ${placement.height * zoom}px`,
-            backgroundPosition: `${placement.x * zoom}px ${placement.y * zoom}px`,
+            backgroundSize: `${placement.width}px ${placement.height}px`,
+            backgroundPosition: `${placement.x}px ${placement.y}px`,
             filter,
             opacity: canvas.backgroundOpacity
           }}
@@ -4077,10 +4162,10 @@ function BackgroundImageView({ canvas, customTextures, zoom }: { canvas: CanvasS
           src={backgroundSrc}
           onLoad={(event) => setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
           style={placement ? {
-            left: placement.x * zoom,
-            top: placement.y * zoom,
-            width: placement.width * zoom,
-            height: placement.height * zoom,
+            left: placement.x,
+            top: placement.y,
+            width: placement.width,
+            height: placement.height,
             filter,
             opacity: canvas.backgroundOpacity
           } : { opacity: 0 }}
