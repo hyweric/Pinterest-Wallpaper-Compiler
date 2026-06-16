@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, systemPreferences, Tray } from "electron";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -12,8 +12,6 @@ import type {
   WallpaperSetCleanupResult,
   WallpaperSetFinalizePayload,
   WallpaperSetFinalizeResult,
-  ImageSource,
-  LocalImageRef,
   WallpaperApplyDiagnostics,
   PathImportResult,
   PinterestImportProgress,
@@ -32,6 +30,7 @@ import type {
   TrayRuntimeState
 } from "../shared/types.js";
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
+import { finderImageExtensions, importLocalPaths } from "./local-source-import.js";
 import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, persistWallpaperAsset, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
 import { localFileProtocolScheme, pathFromRenderableLocalFileUrl } from "../shared/local-file-url.js";
@@ -379,66 +378,60 @@ function pinterestProvider() {
   return new PinterestBoardProvider(path.join(app.getPath("userData"), "Image Cache", "Pinterest"), loadPublicPinterestBoard);
 }
 
-async function readImagesFromFolder(folderPath: string, includeSubfolders = false): Promise<LocalImageRef[]> {
-  const entries = await readdir(folderPath, { withFileTypes: true });
-  const images: LocalImageRef[] = [];
-
-  for (const entry of entries) {
-    const filePath = path.join(folderPath, entry.name);
-    if (entry.isDirectory() && includeSubfolders) {
-      images.push(...(await readImagesFromFolder(filePath, includeSubfolders)));
-      continue;
+async function canDecodeImportedImage(filePath: string) {
+  try {
+    const image = nativeImage.createFromPath(filePath);
+    if (!image.isEmpty()) {
+      const size = image.getSize();
+      if (size.width && size.height) {
+        image.toBitmap();
+        return true;
+      }
     }
-    if (!entry.isFile()) continue;
-    const extension = path.extname(entry.name).toLowerCase();
-    if (!imageExtensions.has(extension) && !videoExtensions.has(extension)) continue;
-    const fileStat = await stat(filePath);
-    images.push({
-      id: `${filePath}:${entry.name}`,
-      name: entry.name,
-      path: filePath,
-      url: pathToFileURL(filePath).toString(),
-      modifiedAt: fileStat.mtime.toISOString(),
-      size: fileStat.size,
-      mediaType: videoExtensions.has(extension) ? "video" : "image",
-      videoThumbnail: videoExtensions.has(extension) ? false : undefined
-    });
+  } catch {
+    // Chromium can decode some formats that nativeImage cannot. Validate their
+    // container signatures below instead of rejecting them outright.
   }
 
-  return images.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-async function sourceFromFolder(folderPath: string): Promise<ImageSource> {
-  const images = await readImagesFromFolder(folderPath);
-  return {
-    id: `source-${crypto.randomUUID()}`,
-    providerId: "local-folder",
-    type: "local-folder",
-    name: path.basename(folderPath),
-    path: folderPath,
-    images,
-    mediaPolicy: "images-only",
-    mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
-    importStatus: "ready",
-    importLog: [`Scanned ${images.length} supported images.`],
-    lastScannedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-}
-
-async function imageFromFilePath(filePath: string): Promise<LocalImageRef> {
-  const fileStat = await stat(filePath);
   const extension = path.extname(filePath).toLowerCase();
-  return {
-    id: `${filePath}:${path.basename(filePath)}`,
-    name: path.basename(filePath),
-    path: filePath,
-    url: pathToFileURL(filePath).toString(),
-    modifiedAt: fileStat.mtime.toISOString(),
-    size: fileStat.size,
-    mediaType: videoExtensions.has(extension) ? "video" : "image",
-    videoThumbnail: videoExtensions.has(extension) ? false : undefined
-  };
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+    const fileStat = await handle.stat();
+    if (fileStat.size < 12) return false;
+    const head = Buffer.alloc(Math.min(32, fileStat.size));
+    await handle.read(head, 0, head.length, 0);
+    if (extension === ".png") {
+      return head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        && head.subarray(12, 16).toString("ascii") === "IHDR";
+    }
+    if (extension === ".gif") {
+      const signature = head.subarray(0, 6).toString("ascii");
+      return (signature === "GIF87a" || signature === "GIF89a") && head.readUInt16LE(6) > 0 && head.readUInt16LE(8) > 0;
+    }
+    if (extension === ".webp") {
+      return head.subarray(0, 4).toString("ascii") === "RIFF" && head.subarray(8, 12).toString("ascii") === "WEBP";
+    }
+    if (extension === ".heic" || extension === ".heif") {
+      const brand = head.subarray(8, 12).toString("ascii");
+      return head.subarray(4, 8).toString("ascii") === "ftyp" && ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand);
+    }
+    if (extension === ".jpg" || extension === ".jpeg") {
+      if (head[0] !== 0xff || head[1] !== 0xd8 || fileStat.size < 4) return false;
+      const tail = Buffer.alloc(2);
+      await handle.read(tail, 0, 2, fileStat.size - 2);
+      return tail[0] === 0xff && tail[1] === 0xd9;
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function importValidatedLocalPaths(paths: unknown) {
+  return importLocalPaths(paths, { validateImage: canDecodeImportedImage });
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
@@ -724,36 +717,37 @@ ipcMain.handle("dialog:choose-folder", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
-  const folderPath = result.filePaths[0];
-  try {
-    const folderStat = await stat(folderPath);
-    if (!folderStat.isDirectory()) {
-      return { canceled: false, error: "Selected path is not a folder." };
-    }
-    const images = await readImagesFromFolder(folderPath);
-    return {
-      canceled: false,
-      path: folderPath,
-      name: path.basename(folderPath),
-      images
-    };
-  } catch (error) {
-    return { canceled: false, error: error instanceof Error ? error.message : "Unable to read folder." };
-  }
+  const imported = await importValidatedLocalPaths([result.filePaths[0]]);
+  const source = imported.sources.find((item) => item.type === "local-folder");
+  return {
+    canceled: false,
+    path: source?.path,
+    name: source?.name,
+    images: source?.images,
+    source,
+    summary: imported.summary,
+    warnings: imported.warnings,
+    error: imported.error
+  };
 });
 
 ipcMain.handle("dialog:choose-image-file", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
     title: "Choose Image",
-    filters: [{ name: "Images", extensions: [...imageExtensions].map((ext) => ext.slice(1)) }]
+    filters: [{ name: "Images", extensions: [...finderImageExtensions].map((ext) => ext.slice(1)) }]
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
-  const filePath = result.filePaths[0];
+  const imported = await importValidatedLocalPaths(result.filePaths);
   return {
     canceled: false,
-    image: await imageFromFilePath(filePath)
+    image: imported.images[0],
+    images: imported.images,
+    source: imported.sources.find((item) => item.type === "local-file"),
+    summary: imported.summary,
+    warnings: imported.warnings,
+    error: imported.error
   };
 });
 
@@ -761,41 +755,31 @@ ipcMain.handle("dialog:choose-image-files", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile", "multiSelections"],
     title: "Choose Images",
-    filters: [{ name: "Images", extensions: [...imageExtensions].map((ext) => ext.slice(1)) }]
+    filters: [{ name: "Images", extensions: [...finderImageExtensions].map((ext) => ext.slice(1)) }]
   });
   if (result.canceled || result.filePaths.length === 0) return { canceled: true };
 
-  const images = await Promise.all(result.filePaths.map((filePath) => imageFromFilePath(filePath)));
-
-  return { canceled: false, images };
+  const imported = await importValidatedLocalPaths(result.filePaths);
+  return {
+    canceled: false,
+    image: imported.images[0],
+    images: imported.images,
+    source: imported.sources.find((item) => item.type === "local-file"),
+    summary: imported.summary,
+    warnings: imported.warnings,
+    error: imported.error
+  };
 });
 
-ipcMain.handle("source:import-paths", async (_event, paths: string[]): Promise<PathImportResult> => {
-  const sources: ImageSource[] = [];
-  const images: LocalImageRef[] = [];
-
-  for (const itemPath of paths) {
-    try {
-      const itemStat = await stat(itemPath);
-      if (itemStat.isDirectory()) {
-        sources.push(await sourceFromFolder(itemPath));
-      } else if (itemStat.isFile() && (imageExtensions.has(path.extname(itemPath).toLowerCase()) || videoExtensions.has(path.extname(itemPath).toLowerCase()))) {
-        images.push(await imageFromFilePath(itemPath));
-      }
-    } catch {
-      // Ignore individual missing paths; the caller shows a summary.
-    }
-  }
-
-  if (sources.length === 0 && images.length === 0) {
-    return { sources: [], images: [], error: "No supported image, video, or folder items were found in the drop." };
-  }
-
-  return { sources, images };
+ipcMain.handle("source:import-paths", async (_event, paths: unknown): Promise<PathImportResult> => {
+  return importValidatedLocalPaths(paths);
 });
 
-ipcMain.handle("source:rescan-folder", async (_event, folderPath: string) => {
-  return sourceFromFolder(folderPath);
+ipcMain.handle("source:rescan-folder", async (_event, folderPath: unknown) => {
+  const imported = await importValidatedLocalPaths([folderPath]);
+  const source = imported.sources.find((item) => item.type === "local-folder");
+  if (!source) throw new Error(imported.error ?? "Unable to rescan folder.");
+  return source;
 });
 
 ipcMain.handle("source:show-in-folder", (_event, itemPath: string) => {

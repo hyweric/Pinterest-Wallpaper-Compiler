@@ -331,6 +331,7 @@ export interface SourceShuffleState {
 
 export interface ImageSource {
   id: string;
+  identityKey?: string;
   name: string;
   type: "local-folder" | "local-file" | "pinterest-board" | "mock-web";
   path?: string;
@@ -509,11 +510,26 @@ export interface OpenProjectResult {
   error?: string;
 }
 
+export interface LocalImportSummary {
+  requestedPathCount: number;
+  importedFolderCount: number;
+  importedLooseImageCount: number;
+  discoveredImageCount: number;
+  skippedUnsupportedCount: number;
+  skippedUnreadableCount: number;
+  skippedMissingCount: number;
+  duplicatePathCount: number;
+  emptyFolders: string[];
+}
+
 export interface FolderResult {
   canceled: boolean;
   path?: string;
   name?: string;
   images?: LocalImageRef[];
+  source?: ImageSource;
+  summary?: LocalImportSummary;
+  warnings?: string[];
   error?: string;
 }
 
@@ -521,6 +537,8 @@ export interface PathImportResult {
   canceled?: boolean;
   sources: ImageSource[];
   images: LocalImageRef[];
+  summary?: LocalImportSummary;
+  warnings?: string[];
   error?: string;
 }
 
@@ -528,6 +546,9 @@ export interface ImageFileResult {
   canceled: boolean;
   image?: LocalImageRef;
   images?: LocalImageRef[];
+  source?: ImageSource;
+  summary?: LocalImportSummary;
+  warnings?: string[];
   error?: string;
 }
 

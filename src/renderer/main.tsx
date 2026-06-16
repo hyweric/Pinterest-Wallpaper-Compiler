@@ -46,6 +46,7 @@ import type {
   ImageSelectionMode,
   ImageSource,
   LocalImageRef,
+  LocalImportSummary,
   MacOSWallpaperDiagnosticReport,
   PaperFrameType,
   SourceMediaPolicy,
@@ -100,6 +101,7 @@ import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
+import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
 
@@ -136,6 +138,17 @@ type DragState = {
   layer: PlaceholderLayer;
   groupLayers: PlaceholderLayer[];
   historyProject: WallpaperProject;
+};
+
+type ExternalDropTarget = "sources" | "canvas" | "placeholder";
+
+type DropFeedback = {
+  target: ExternalDropTarget;
+  layerId?: string;
+  label: string;
+  valid: boolean;
+  placementCount?: number;
+  canvasPoint?: CanvasDropPoint;
 };
 
 type SelectionMarquee = {
@@ -236,13 +249,88 @@ function sourceLocationLabel(source: ImageSource) {
   return source.path ?? source.url ?? source.cachePath ?? "Stored in project";
 }
 
+const finderDropImageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"]);
+
 function getDroppedPaths(event: React.DragEvent) {
   const filePaths = Array.from(event.dataTransfer.files)
-    .map((file) => (file as File & { path?: string }).path)
+    .map((file) => {
+      try {
+        return window.wallpaperApi.getPathForFile(file);
+      } catch {
+        return "";
+      }
+    })
     .filter((filePath): filePath is string => Boolean(filePath));
-  const textPath = event.dataTransfer.getData("text/plain");
-  if (filePaths.length === 0 && textPath.startsWith("/")) return [textPath];
-  return filePaths;
+  if (filePaths.length > 0) return [...new Set(filePaths)];
+  const textPaths = event.dataTransfer.getData("text/plain")
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter((value) => value.startsWith("/"));
+  return [...new Set(textPaths)];
+}
+
+type FinderEntryLike = { isDirectory?: boolean; isFile?: boolean };
+
+function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): Pick<DropFeedback, "label" | "valid" | "placementCount"> {
+  const types = Array.from(dataTransfer.types);
+  if (types.includes("application/x-pwc-source-id")) {
+    return target === "placeholder"
+      ? { label: "Assign source to this placeholder", valid: true, placementCount: 1 }
+      : target === "canvas"
+        ? { label: "Release to place source here", valid: true, placementCount: 1 }
+        : { label: "Source already belongs to the library", valid: false };
+  }
+
+  let folders = 0;
+  let supportedImages = 0;
+  let unsupported = 0;
+  for (const item of Array.from(dataTransfer.items)) {
+    if (item.kind !== "file") continue;
+    const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => FinderEntryLike | null }).webkitGetAsEntry?.();
+    if (entry?.isDirectory) {
+      folders += 1;
+      continue;
+    }
+    const file = item.getAsFile();
+    const extension = file?.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
+    if (finderDropImageExtensions.has(extension)) supportedImages += 1;
+    else if (!extension && !file?.type) folders += 1;
+    else unsupported += 1;
+  }
+
+  if (folders === 0 && supportedImages === 0 && dataTransfer.files.length > 0) {
+    for (const file of Array.from(dataTransfer.files)) {
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      if (finderDropImageExtensions.has(extension)) supportedImages += 1;
+    }
+  }
+
+  const valid = folders > 0 || supportedImages > 0;
+  if (!valid && types.includes("text/uri-list") && target === "sources") return { label: "Add linked source", valid: true };
+  if (!valid) return { label: unsupported > 0 ? "Unsupported files cannot be imported" : "Drop image files or folders", valid: false };
+
+  // Finder groups all loose images into one reusable source. Each folder is
+  // its own source, so mixed and multi-folder drops can place several frames.
+  const placementCount = folders + (supportedImages > 0 ? 1 : 0);
+  if (target === "placeholder") {
+    if (folders > 0 && supportedImages > 0) return { label: "Assign folders and images to this placeholder", valid: true, placementCount };
+    if (folders > 1) return { label: `Assign ${folders} folders to this placeholder`, valid: true, placementCount };
+    if (folders === 1) return { label: "Assign folder to this placeholder", valid: true, placementCount: 1 };
+    if (supportedImages === 1) return { label: "Assign image to this placeholder", valid: true, placementCount: 1 };
+    return { label: `Assign ${supportedImages} images to this placeholder`, valid: true, placementCount: 1 };
+  }
+  if (target === "canvas") {
+    if (folders > 0 && supportedImages > 0) return { label: "Release to place imported sources here", valid: true, placementCount };
+    if (folders > 1) return { label: `Release to place ${folders} folder sources here`, valid: true, placementCount };
+    if (folders === 1) return { label: "Release to place folder here", valid: true, placementCount: 1 };
+    if (supportedImages === 1) return { label: "Release to place image here", valid: true, placementCount: 1 };
+    return { label: `Release to place ${supportedImages} images here`, valid: true, placementCount: 1 };
+  }
+  if (folders > 0 && supportedImages > 0) return { label: "Add folders and images as sources", valid: true, placementCount };
+  if (folders > 1) return { label: `Add ${folders} folders as sources`, valid: true, placementCount };
+  if (folders === 1) return { label: "Add folder as source", valid: true, placementCount: 1 };
+  if (supportedImages === 1) return { label: "Add image as source", valid: true, placementCount: 1 };
+  return { label: `Add ${supportedImages} images as source`, valid: true, placementCount: 1 };
 }
 
 function getDroppedPinterestUrl(event: React.DragEvent) {
@@ -254,32 +342,61 @@ function getDroppedSourceId(event: React.DragEvent) {
   return event.dataTransfer.getData("application/x-pwc-source-id") || undefined;
 }
 
+function normalizedSourcePath(value: string) {
+  const normalized = value.replace(/\\/g, "/").replace(/\/+$|\s+$/g, "");
+  return /^\/?[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 function sourceIdentity(source: ImageSource) {
-  if (source.type === "local-folder" && source.path) return `folder:${source.path}`;
+  if (source.identityKey) return source.identityKey;
+  if (source.type === "local-folder" && source.path) return `local-folder:${normalizedSourcePath(source.path)}`;
   if (source.type === "pinterest-board" && source.url) return `pinterest:${source.url.replace(/\/$/, "").toLowerCase()}`;
   if (source.type === "local-file") {
-    return `files:${source.images.map((image) => image.path).sort().join("|")}`;
+    return `local-file:${source.images.map((image) => normalizedSourcePath(image.path)).sort().join("|")}`;
   }
   return `${source.type}:${source.id}`;
+}
+
+function localFilePathSet(source: ImageSource) {
+  return new Set(source.images.map((image) => normalizedSourcePath(image.path)));
+}
+
+function reusableSourceIndex(sources: ImageSource[], candidate: ImageSource) {
+  const exactKey = sourceIdentity(candidate);
+  const exact = sources.findIndex((source) => sourceIdentity(source) === exactKey);
+  if (exact >= 0) return exact;
+  if (candidate.type !== "local-file") return -1;
+  const candidatePaths = localFilePathSet(candidate);
+  return sources.findIndex((source) => {
+    if (source.type !== "local-file") return false;
+    const currentPaths = localFilePathSet(source);
+    return candidatePaths.size > 0 && [...candidatePaths].every((item) => currentPaths.has(item));
+  });
 }
 
 function mergeReusableSources(existing: ImageSource[], incoming: ImageSource[]) {
   const sources = [...existing];
   const resolved: ImageSource[] = [];
+  const addedIds = new Set<string>();
+  const reusedIds = new Set<string>();
   for (const candidate of incoming) {
-    const key = sourceIdentity(candidate);
-    const index = sources.findIndex((source) => sourceIdentity(source) === key);
+    const index = reusableSourceIndex(sources, candidate);
     if (index >= 0) {
       const current = sources[index];
-      const updated = { ...current, ...candidate, id: current.id, name: current.name };
+      const exactMatch = sourceIdentity(current) === sourceIdentity(candidate);
+      const updated = exactMatch
+        ? { ...current, ...candidate, id: current.id, name: current.name, identityKey: current.identityKey ?? candidate.identityKey }
+        : current;
       sources[index] = updated;
       resolved.push(updated);
+      reusedIds.add(updated.id);
     } else {
       sources.push(candidate);
       resolved.push(candidate);
+      addedIds.add(candidate.id);
     }
   }
-  return { sources, resolved };
+  return { sources, resolved, addedIds, reusedIds };
 }
 
 function prepareGeneratedProject(current: WallpaperProject, templateId = current.templates.activeTemplateId) {
@@ -433,7 +550,7 @@ function App() {
   const [clipboardLayers, setClipboardLayers] = useState<PlaceholderLayer[]>([]);
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({});
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarquee | undefined>();
-  const [dragActive, setDragActive] = useState(false);
+  const [dropFeedback, setDropFeedback] = useState<DropFeedback | undefined>();
   const [wallpaperHistoryIndex, setWallpaperHistoryIndex] = useState(0);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | undefined>();
@@ -479,6 +596,7 @@ function App() {
   const dragRef = useRef<DragState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
@@ -554,6 +672,16 @@ function App() {
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
     wallpaperOperationRef.current?.clear();
     applyInFlightRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    const clearDropFeedback = () => setDropFeedback(undefined);
+    window.addEventListener("dragend", clearDropFeedback);
+    window.addEventListener("drop", clearDropFeedback);
+    return () => {
+      window.removeEventListener("dragend", clearDropFeedback);
+      window.removeEventListener("drop", clearDropFeedback);
+    };
   }, []);
 
   useEffect(() => {
@@ -918,7 +1046,11 @@ function App() {
 
   async function chooseBackground() {
     const result = await window.wallpaperApi.chooseImageFile();
-    if (result.canceled || !result.image) return;
+    if (result.canceled) return;
+    if (result.error || !result.image) {
+      setMessage(result.error ?? "The selected image could not be read.");
+      return;
+    }
     commitProject((current) => ({
       ...current,
       canvas: {
@@ -1023,80 +1155,75 @@ function App() {
   async function addFolderSource() {
     const result = await window.wallpaperApi.chooseFolder();
     if (result.canceled) return;
-    if (result.error || !result.path || !result.images) {
+    if (result.error || !result.source) {
       setMessage(result.error ?? "Unable to add folder.");
       return;
     }
-    const source: ImageSource = {
-      id: uid("source"),
-      providerId: "local-folder",
-      type: "local-folder",
-      name: result.name ?? "Local folder",
-      path: result.path,
-      images: result.images,
-      importStatus: "ready",
-      mediaPolicy: "images-only",
-      mediaCounts: { total: result.images.length, images: result.images.filter((image) => image.mediaType !== "video").length, videos: result.images.filter((image) => image.mediaType === "video").length },
-      importLog: [`Imported ${result.images.length} local items from ${result.path}.`],
-      updatedAt: new Date().toISOString()
-    };
-    const [resolved] = addSourcesToProject([source]);
+    const merged = addSourcesToProjectDetailed([result.source], true, false);
+    const resolved = merged.resolved[0];
     if (resolved) {
       setSelectedSourceId(resolved.id);
-      setMessage(`${resolved.id === source.id ? "Added" : "Updated"} ${resolved.images.length} images from ${resolved.name}`);
+      setMessage(importResultMessage(result.summary, merged, result.warnings));
     }
   }
 
-  function addSourcesToProject(sources: ImageSource[], images: LocalImageRef[] = [], linkToTemplate = true) {
-    if (sources.length === 0 && images.length === 0) return [];
-    const imageSource: ImageSource | undefined =
-      images.length > 0
-        ? {
-            id: uid("source"),
-            providerId: "local-file",
-            type: "local-file",
-            name: images.length === 1 ? images[0].name : `${images.length} local images`,
-            images,
-            importStatus: "ready",
-            mediaPolicy: "images-only",
-            mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
-            importLog: [`Imported ${images.length} local files as one collection.`],
-            updatedAt: new Date().toISOString()
-          }
-        : undefined;
-    const nextSources = [...sources, ...(imageSource ? [imageSource] : [])];
-    const merged = mergeReusableSources(project.sources, nextSources);
-    commitProject((current) => {
-      const resolved = mergeReusableSources(current.sources, nextSources);
-      let next = { ...current, sources: resolved.sources };
-      if (linkToTemplate) {
-        for (const source of resolved.resolved) next = linkSourceToActiveTemplate(next, source.id);
-      }
-      return next;
-    });
+  function addSourcesToProjectDetailed(sources: ImageSource[], linkToTemplate = true, announce = true) {
+    const before = projectRef.current;
+    if (sources.length === 0) return { sources: before.sources, resolved: [] as ImageSource[], addedIds: new Set<string>(), reusedIds: new Set<string>() };
+    const merged = mergeReusableSources(before.sources, sources);
+    let next = { ...before, sources: merged.sources };
+    if (linkToTemplate) {
+      for (const source of merged.resolved) next = linkSourceToActiveTemplate(next, source.id);
+    }
+    next = touchProject(updateActiveTemplateSnapshot(normalizeProject(next)));
+    setHistory((stack) => ({ past: [...stack.past, cloneProject(before)].slice(-historyLimit), future: [] }));
+    projectRef.current = next;
+    setProject(next);
     setSelectedSourceId(merged.resolved[0]?.id);
     if (linkToTemplate) setSourceLibraryView("linked");
-    setMessage(`${merged.resolved.length} reusable source${merged.resolved.length === 1 ? "" : "s"} ready${linkToTemplate ? " and linked to this template" : ""}.`);
-    return merged.resolved;
+    if (announce) {
+      setMessage(`${merged.resolved.length} reusable source${merged.resolved.length === 1 ? "" : "s"} ready${linkToTemplate ? " and linked to this template" : ""}.`);
+    }
+    return merged;
   }
 
-  function projectWithSourceAssignment(base: WallpaperProject, source: ImageSource, layerId: string) {
+  function addSourcesToProject(sources: ImageSource[], images: LocalImageRef[] = [], linkToTemplate = true) {
+    const imageSource: ImageSource | undefined = images.length > 0 ? {
+      id: uid("source"),
+      providerId: "local-file",
+      type: "local-file",
+      name: images.length === 1 ? images[0].name : `${images.length} local images`,
+      images,
+      importStatus: "ready",
+      mediaPolicy: "images-only",
+      mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
+      importLog: [`Imported ${images.length} local files as one collection.`],
+      updatedAt: new Date().toISOString()
+    } : undefined;
+    return addSourcesToProjectDetailed([...sources, ...(imageSource ? [imageSource] : [])], linkToTemplate).resolved;
+  }
+
+  function projectWithSourcesAssignment(base: WallpaperProject, sources: ImageSource[], layerId: string) {
     const layer = base.layers.find((item) => item.id === layerId);
     if (!layer || layer.locked) return undefined;
-    const eligibleImages = sourceImagesForPolicy(source);
+    const eligibleImages = sources.flatMap(sourceImagesForPolicy);
     if (eligibleImages.length === 0) return undefined;
     const singleImage = eligibleImages.length === 1;
-    let next = linkedSourceIds.includes(source.id) ? base : linkSourceToActiveTemplate(base, source.id);
+    const linkedIds = new Set(activeTemplateSourceIds(base));
+    let next = base;
+    for (const source of sources) {
+      if (!linkedIds.has(source.id)) next = linkSourceToActiveTemplate(next, source.id);
+    }
     next = {
       ...next,
       layers: next.layers.map((item) => item.id === layerId ? {
         ...item,
-        sourceId: source.id,
+        sourceId: sources[0]?.id,
         selectedImageId: singleImage ? eligibleImages[0]?.id : undefined,
         generatedImageId: undefined,
         sourceState: {
           ...item.sourceState,
-          sourceIds: [source.id],
+          sourceIds: sources.map((source) => source.id),
           mode: singleImage ? "fixed" : "shuffle",
           currentIndex: 0,
           shuffleQueue: [],
@@ -1115,21 +1242,33 @@ function App() {
     return touchProject(updateActiveTemplateSnapshot(normalizeProject(next)));
   }
 
-  function assignSourceToLayer(source: ImageSource, layer: PlaceholderLayer) {
+  function projectWithSourceAssignment(base: WallpaperProject, source: ImageSource, layerId: string) {
+    return projectWithSourcesAssignment(base, [source], layerId);
+  }
+
+  function assignSourcesToLayer(sources: ImageSource[], layer: PlaceholderLayer, messageOverride?: string) {
     if (layer.locked) {
       setMessage("Unlock the layer before changing its source.");
-      return;
+      return false;
     }
-    const next = projectWithSourceAssignment(projectRef.current, source, layer.id);
+    const before = projectRef.current;
+    const next = projectWithSourcesAssignment(before, sources, layer.id);
     if (!next) {
-      setMessage(`${source.name} has no items allowed by its media filter.`);
-      return;
+      setMessage("The imported source has no images allowed by its media filter.");
+      return false;
     }
-    setHistory((stack) => ({ past: [...stack.past, cloneProject(projectRef.current)].slice(-historyLimit), future: [] }));
+    setHistory((stack) => ({ past: [...stack.past, cloneProject(before)].slice(-historyLimit), future: [] }));
     projectRef.current = next;
     setProject(next);
-    setSelectedSourceId(source.id);
-    setMessage(`Assigned ${source.name} to ${layer.name}.`);
+    setSelectedSourceId(sources[0]?.id);
+    setMessage(messageOverride ?? (sources.length === 1
+      ? `Assigned ${sources[0].name} to ${layer.name}.`
+      : `Assigned ${sources.length} sources to ${layer.name}.`));
+    return true;
+  }
+
+  function assignSourceToLayer(source: ImageSource, layer: PlaceholderLayer) {
+    return assignSourcesToLayer([source], layer);
   }
 
   function handleSourceClick(source: ImageSource) {
@@ -1177,52 +1316,156 @@ function App() {
     sourceApplyTimerRef.current = window.setTimeout(() => void runLatestSourceApply(), 320);
   }
 
+  function skippedImportCount(summary?: LocalImportSummary) {
+    if (!summary) return 0;
+    return summary.skippedUnsupportedCount + summary.skippedUnreadableCount + summary.skippedMissingCount;
+  }
+
+  function importResultMessage(
+    summary: LocalImportSummary | undefined,
+    merged: ReturnType<typeof mergeReusableSources>,
+    warnings: string[] | undefined,
+    assignmentLayer?: PlaceholderLayer
+  ) {
+    const reused = merged.reusedIds.size;
+    const added = merged.addedIds.size;
+    const skipped = skippedImportCount(summary);
+    let message: string;
+    if (assignmentLayer) {
+      const plural = merged.resolved.length > 1;
+      message = reused > 0 && added === 0
+        ? `Existing source${plural ? "s" : ""} assigned to ${assignmentLayer.name}`
+        : `Source${plural ? "s" : ""} assigned to ${assignmentLayer.name}`;
+    } else if (merged.resolved.length === 1 && merged.resolved[0].type === "local-folder") {
+      const source = merged.resolved[0];
+      message = `${reused > 0 ? "Folder source reused" : "Folder source added"} — ${source.images.length} images`;
+    } else if (merged.resolved.length === 1 && merged.resolved[0].type === "local-file") {
+      const count = merged.resolved[0].images.length;
+      message = reused > 0 ? `Existing image source reused — ${count} image${count === 1 ? "" : "s"}` : `${count} image${count === 1 ? "" : "s"} added as a source`;
+    } else {
+      message = `${added} source${added === 1 ? "" : "s"} added${reused ? `, ${reused} reused` : ""} — ${summary?.discoveredImageCount ?? merged.resolved.reduce((total, source) => total + source.images.length, 0)} images`;
+    }
+    if (skipped > 0) message += `; ${skipped} unsupported or unreadable item${skipped === 1 ? "" : "s"} skipped`;
+    if (summary?.emptyFolders.length) message += `; ${summary.emptyFolders.length} empty folder${summary.emptyFolders.length === 1 ? "" : "s"} skipped`;
+    if (!summary && warnings?.length) message += `; ${warnings[0]}`;
+    return message;
+  }
+
   async function importDroppedPaths(paths: string[]) {
-    if (paths.length === 0) return;
+    if (paths.length === 0) {
+      setMessage("No Finder file paths were available for this drop.");
+      return;
+    }
     const result = await window.wallpaperApi.importPaths(paths);
     if (result.error) {
       setMessage(result.error);
       return;
     }
-    addSourcesToProject(result.sources, result.images);
+    const merged = addSourcesToProjectDetailed(result.sources, true, false);
+    setMessage(importResultMessage(result.summary, merged, result.warnings));
   }
 
   async function assignDroppedPathsToLayer(paths: string[], layer: PlaceholderLayer) {
+    if (paths.length === 0) {
+      setMessage("No Finder file paths were available for this drop.");
+      return;
+    }
     const result = await window.wallpaperApi.importPaths(paths);
     if (result.error) {
       setMessage(result.error);
       return;
     }
-    const addedSources = addSourcesToProject(result.sources, result.images);
-    const source = addedSources[0];
-    if (!source) return;
-    assignSourceToLayer(source, layer);
+    const merged = addSourcesToProjectDetailed(result.sources, true, false);
+    if (merged.resolved.length === 0) return;
+    assignSourcesToLayer(merged.resolved, layer, importResultMessage(result.summary, merged, result.warnings, layer));
+  }
+
+  function placeSourcesAtCanvasPoint(
+    incomingSources: ImageSource[],
+    point: CanvasDropPoint,
+    summary?: LocalImportSummary,
+    warnings?: string[]
+  ) {
+    const before = projectRef.current;
+    const merged = mergeReusableSources(before.sources, incomingSources);
+    if (merged.resolved.length === 0) {
+      setMessage("No supported source was available to place.");
+      return false;
+    }
+
+    let next: WallpaperProject = { ...before, sources: merged.sources };
+    const createdLayerIds: string[] = [];
+    const placedSourceNames: string[] = [];
+
+    for (const source of merged.resolved) {
+      if (sourceImagesForPolicy(source).length === 0) continue;
+      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length);
+      const layer = createPlaceholder(next.canvas, next.layers.length + 1);
+      Object.assign(layer, placement, { name: source.name });
+      next = { ...next, layers: [...next.layers, layer] };
+      const assigned = projectWithSourcesAssignment(next, [source], layer.id);
+      if (!assigned) {
+        next = { ...next, layers: next.layers.filter((item) => item.id !== layer.id) };
+        continue;
+      }
+      next = assigned;
+      createdLayerIds.push(layer.id);
+      placedSourceNames.push(source.name);
+    }
+
+    if (createdLayerIds.length === 0) {
+      setMessage("The dropped source has no images allowed by its media filter.");
+      return false;
+    }
+
+    setHistory((stack) => ({ past: [...stack.past, cloneProject(before)].slice(-historyLimit), future: [] }));
+    projectRef.current = next;
+    setProject(next);
+    setSelectedLayerIds(createdLayerIds);
+    setSelectedLayerId(createdLayerIds.at(-1));
+    setSelectedSourceId(merged.resolved[0]?.id);
+    setSourceLibraryView("linked");
+
+    const added = merged.addedIds.size;
+    const reused = merged.reusedIds.size;
+    const skipped = skippedImportCount(summary);
+    let message = createdLayerIds.length === 1
+      ? `Placed ${placedSourceNames[0]} at the drop position.`
+      : `Placed ${createdLayerIds.length} sources at the drop position.`;
+    if (added > 0) message += ` ${added} source${added === 1 ? " was" : "s were"} added to the library.`;
+    else if (reused > 0) message += ` Existing source${reused === 1 ? " was" : "s were"} reused.`;
+    if (skipped > 0) message += ` ${skipped} unsupported or unreadable item${skipped === 1 ? " was" : "s were"} skipped.`;
+    if (summary?.emptyFolders.length) message += ` ${summary.emptyFolders.length} empty folder${summary.emptyFolders.length === 1 ? " was" : "s were"} skipped.`;
+    if (!summary && warnings?.length) message += ` ${warnings[0]}`;
+    setMessage(message);
+    return true;
+  }
+
+  async function importDroppedPathsAtCanvasPoint(paths: string[], point: CanvasDropPoint) {
+    if (paths.length === 0) {
+      setMessage("No Finder file paths were available for this drop.");
+      return;
+    }
+    const result = await window.wallpaperApi.importPaths(paths);
+    if (result.error) {
+      setMessage(result.error);
+      return;
+    }
+    placeSourcesAtCanvasPoint(result.sources, point, result.summary, result.warnings);
   }
 
   async function addLocalImagesSource() {
     const result = await window.wallpaperApi.chooseImageFiles();
     if (result.canceled) return;
-    const images = result.images ?? (result.image ? [result.image] : []);
-    if (result.error || images.length === 0) {
+    if (result.error || !result.source) {
       setMessage(result.error ?? "No images selected.");
       return;
     }
-    const source: ImageSource = {
-      id: uid("source"),
-      providerId: "local-file",
-      type: "local-file",
-      name: images.length === 1 ? images[0].name : `${images.length} local images`,
-      images,
-      importStatus: "ready",
-      mediaPolicy: "images-only",
-      mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
-      importLog: [`Imported ${images.length} individual local files.`],
-      updatedAt: new Date().toISOString()
-    };
-    const [resolved] = addSourcesToProject([source]);
+    const merged = addSourcesToProjectDetailed([result.source], true, false);
+    const resolved = merged.resolved[0];
     if (resolved) {
       setSelectedSourceId(resolved.id);
-      setMessage(`${resolved.id === source.id ? "Added" : "Reused"} ${resolved.name}`);
+      setMessage(importResultMessage(result.summary, merged, result.warnings));
     }
   }
 
@@ -2172,9 +2415,55 @@ function App() {
     zoomAtPoint(clamp(zoom + direction * 0.06, 0.12, 1.6), event.clientX, event.clientY);
   }
 
+  function canvasPointFromClient(clientX: number, clientY: number): CanvasDropPoint | undefined {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return undefined;
+    return {
+      x: clamp((clientX - rect.left) / zoom, 0, projectRef.current.canvas.width),
+      y: clamp((clientY - rect.top) / zoom, 0, projectRef.current.canvas.height)
+    };
+  }
+
+  function updateDropFeedback(event: React.DragEvent, target: ExternalDropTarget, layerId?: string) {
+    event.preventDefault();
+    if (target === "placeholder") event.stopPropagation();
+    const described = describeDrop(event.dataTransfer, target);
+    const canvasPoint = target === "canvas" && described.valid
+      ? canvasPointFromClient(event.clientX, event.clientY)
+      : undefined;
+    event.dataTransfer.dropEffect = described.valid ? "copy" : "none";
+    setDropFeedback((current) => {
+      const next: DropFeedback = { target, layerId, ...described, canvasPoint };
+      const samePoint = (!current?.canvasPoint && !next.canvasPoint)
+        || (Boolean(current?.canvasPoint && next.canvasPoint)
+          && Math.abs((current?.canvasPoint?.x ?? 0) - (next.canvasPoint?.x ?? 0)) < 1
+          && Math.abs((current?.canvasPoint?.y ?? 0) - (next.canvasPoint?.y ?? 0)) < 1);
+      return current?.target === next.target
+        && current.layerId === next.layerId
+        && current.label === next.label
+        && current.valid === next.valid
+        && current.placementCount === next.placementCount
+        && samePoint
+        ? current
+        : next;
+    });
+  }
+
+  function leaveDropTarget(event: React.DragEvent, target: ExternalDropTarget, layerId?: string) {
+    const related = event.relatedTarget;
+    if (related instanceof Node && event.currentTarget.contains(related)) return;
+    setDropFeedback((current) => current?.target === target && current.layerId === layerId ? undefined : current);
+  }
+
   async function handleSourceDrop(event: React.DragEvent) {
     event.preventDefault();
-    setDragActive(false);
+    setDropFeedback(undefined);
+    if (getDroppedSourceId(event)) {
+      setMessage("This source is already in the library.");
+      return;
+    }
     const pinterestUrl = getDroppedPinterestUrl(event);
     if (pinterestUrl) {
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
@@ -2185,62 +2474,37 @@ function App() {
 
   async function handleCanvasDrop(event: React.DragEvent) {
     event.preventDefault();
-    setDragActive(false);
+    const point = canvasPointFromClient(event.clientX, event.clientY);
+    setDropFeedback(undefined);
+    if (!point) {
+      setMessage("Drop the source directly on the canvas to position it.");
+      return;
+    }
+
     const existingSourceId = getDroppedSourceId(event);
     if (existingSourceId) {
-      const source = project.sources.find((item) => item.id === existingSourceId);
-      if (!source) return;
-      commitProject((current) => {
-        const layer = createPlaceholder(current.canvas, current.layers.length + 1);
-        layer.name = source.name;
-        layer.sourceId = source.id;
-        layer.selectedImageId = source.images.length === 1 ? source.images[0]?.id : undefined;
-        layer.generatedImageId = undefined;
-        layer.sourceState = {
-          ...layer.sourceState,
-          sourceIds: [source.id],
-          mode: source.images.length === 1 ? "fixed" : "shuffle",
-          preventDuplicates: source.images.length > 1
-        };
-        selectOnlyLayer(layer.id);
-        return { ...current, layers: [...current.layers, layer] };
-      });
+      const source = projectRef.current.sources.find((item) => item.id === existingSourceId);
+      if (source) placeSourcesAtCanvasPoint([source], point);
       return;
     }
-    const paths = getDroppedPaths(event);
-    if (paths.length === 0) return;
-    const result = await window.wallpaperApi.importPaths(paths);
-    if (result.error) {
-      setMessage(result.error);
+
+    const pinterestUrl = getDroppedPinterestUrl(event);
+    if (pinterestUrl) {
+      setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
+      setMessage("Import the Pinterest board, then drag its source onto the canvas to position it.");
       return;
     }
-    const addedSources = addSourcesToProject(result.sources, result.images);
-    const source = addedSources[0];
-    if (!source) return;
-    commitProject((current) => {
-      const layer = createPlaceholder(current.canvas, current.layers.length + 1);
-      layer.name = source.name;
-      layer.sourceId = source.id;
-      layer.selectedImageId = source.images.length === 1 ? source.images[0]?.id : undefined;
-      layer.generatedImageId = undefined;
-      layer.sourceState = {
-        ...layer.sourceState,
-        sourceIds: [source.id],
-        mode: source.images.length === 1 ? "fixed" : "shuffle",
-        preventDuplicates: source.images.length > 1
-      };
-      selectOnlyLayer(layer.id);
-      return { ...current, layers: [...current.layers, layer] };
-    });
+
+    await importDroppedPathsAtCanvasPoint(getDroppedPaths(event), point);
   }
 
   async function handlePlaceholderDrop(event: React.DragEvent, layer: PlaceholderLayer) {
     event.preventDefault();
     event.stopPropagation();
-    setDragActive(false);
+    setDropFeedback(undefined);
     const existingSourceId = getDroppedSourceId(event);
     if (existingSourceId) {
-      const source = project.sources.find((item) => item.id === existingSourceId);
+      const source = projectRef.current.sources.find((item) => item.id === existingSourceId);
       if (source) assignSourceToLayer(source, layer);
       return;
     }
@@ -2490,12 +2754,16 @@ function App() {
       setMessage("Only local folder sources can be rescanned.");
       return;
     }
-    const refreshed = await window.wallpaperApi.rescanFolder(source.path);
-    commitProject((current) => ({
-      ...current,
-      sources: current.sources.map((item) => (item.id === source.id ? { ...refreshed, id: source.id, name: source.name } : item))
-    }));
-    setMessage(`Rescanned ${refreshed.images.length} images.`);
+    try {
+      const refreshed = await window.wallpaperApi.rescanFolder(source.path);
+      commitProject((current) => ({
+        ...current,
+        sources: current.sources.map((item) => (item.id === source.id ? { ...refreshed, id: source.id, name: source.name } : item))
+      }));
+      setMessage(`Rescanned ${refreshed.images.length} images.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to rescan this folder.");
+    }
   }
 
   async function showSourceInFolder(source: ImageSource) {
@@ -2709,15 +2977,19 @@ function App() {
         </div>
 
         <section
-          className={`source-library drop-zone ${leftPanelTab === "sources" ? "" : "hidden-panel"} ${dragActive ? "drag-active" : ""}`}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragActive(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragActive(false)}
+          className={`source-library drop-zone ${leftPanelTab === "sources" ? "" : "hidden-panel"} ${dropFeedback?.target === "sources" ? `drag-active ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
+          onDragEnter={(event) => updateDropFeedback(event, "sources")}
+          onDragOver={(event) => updateDropFeedback(event, "sources")}
+          onDragLeave={(event) => leaveDropTarget(event, "sources")}
           onDrop={(event) => void handleSourceDrop(event)}
         >
+          {dropFeedback?.target === "sources" && (
+            <div className={`drop-feedback-overlay ${dropFeedback.valid ? "valid" : "invalid"}`}>
+              <Upload size={22} />
+              <strong>{dropFeedback.label}</strong>
+              <span>Folders become reusable pools. Multiple images become one source.</span>
+            </div>
+          )}
           <div className="library-heading">
             <div>
               <span className="eyebrow">COLLECTIONS</span>
@@ -2994,14 +3266,7 @@ function App() {
 
         <div
           ref={stageRef}
-          className={`canvas-stage ${dragActive ? "drag-active" : ""}`}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragActive(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragActive(false)}
-          onDrop={(event) => void handleCanvasDrop(event)}
+          className="canvas-stage"
           onWheel={onCanvasWheel}
         >
           <div className={`floating-canvas-status ${cropModeLayerId ? "cropping" : ""}`}>
@@ -3025,7 +3290,8 @@ function App() {
             />
           ) : null}
           <div
-            className={`canvas ${cropModeLayerId ? "crop-active" : ""}`}
+            ref={canvasRef}
+            className={`canvas ${cropModeLayerId ? "crop-active" : ""} ${dropFeedback?.target === "canvas" ? `drag-active ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
             style={{
               width: scaled.width,
               height: scaled.height,
@@ -3036,6 +3302,10 @@ function App() {
               backgroundSize: project.canvas.backgroundBaseMode === "transparent" ? `${16 * zoom}px ${16 * zoom}px` : undefined,
               backgroundPosition: project.canvas.backgroundBaseMode === "transparent" ? `0 0, 0 ${8 * zoom}px, ${8 * zoom}px ${-8 * zoom}px, ${-8 * zoom}px 0px` : undefined
             }}
+            onDragEnter={(event) => updateDropFeedback(event, "canvas")}
+            onDragOver={(event) => updateDropFeedback(event, "canvas")}
+            onDragLeave={(event) => leaveDropTarget(event, "canvas")}
+            onDrop={(event) => void handleCanvasDrop(event)}
             onPointerMove={onCanvasPointerMove}
             onPointerUp={endDrag}
             onPointerLeave={endDrag}
@@ -3055,6 +3325,39 @@ function App() {
             }}
           >
             <BackgroundImageView canvas={project.canvas} customTextures={project.customTextures} zoom={zoom} />
+            {dropFeedback?.target === "canvas" && !dropFeedback.valid && (
+              <div className="drop-feedback-overlay canvas-drop-feedback invalid">
+                <Upload size={24} />
+                <strong>{dropFeedback.label}</strong>
+                <span>Drop a supported image file, folder, or existing source.</span>
+              </div>
+            )}
+            {dropFeedback?.target === "canvas" && dropFeedback.valid && dropFeedback.canvasPoint &&
+              Array.from({ length: Math.min(4, Math.max(1, dropFeedback.placementCount ?? 1)) }).map((_, index) => {
+                const placement = placementForCanvasDrop(project.canvas, dropFeedback.canvasPoint!, index);
+                return (
+                  <div
+                    className="canvas-drop-placement-preview"
+                    key={`drop-preview-${index}`}
+                    style={{
+                      left: placement.x * zoom,
+                      top: placement.y * zoom,
+                      width: placement.width * zoom,
+                      height: placement.height * zoom,
+                      zIndex: 50 + index
+                    }}
+                  >
+                    {index === 0 && (
+                      <div className="canvas-drop-placement-copy">
+                        <Upload size={18} />
+                        <strong>{dropFeedback.label}</strong>
+                        <span>Release to create and select the placeholder here.</span>
+                        {(dropFeedback.placementCount ?? 1) > 1 && <b>{dropFeedback.placementCount} placeholders</b>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x * zoom }} />}
             {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y * zoom }} />}
             {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x * zoom, top: selectionMarquee.y * zoom, width: selectionMarquee.width * zoom, height: selectionMarquee.height * zoom }} />}
@@ -3071,7 +3374,7 @@ function App() {
               const rough = paperFrameIsRough(paperFrame);
               return (
                 <div
-                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""}`}
+                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
                   key={layer.id}
                   style={{
                     left: layer.x * zoom,
@@ -3096,10 +3399,18 @@ function App() {
                     event.stopPropagation();
                     if (!layer.locked) setCropModeLayerId(layer.id);
                   }}
-                  onDragOver={(event) => event.preventDefault()}
+                  onDragEnter={(event) => updateDropFeedback(event, "placeholder", layer.id)}
+                  onDragOver={(event) => updateDropFeedback(event, "placeholder", layer.id)}
+                  onDragLeave={(event) => leaveDropTarget(event, "placeholder", layer.id)}
                   onDrop={(event) => void handlePlaceholderDrop(event, layer)}
                   onPointerDown={(event) => beginDrag(event, layer, cropping ? "crop" : "move")}
                 >
+                  {dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id && (
+                    <div className={`placeholder-drop-label ${dropFeedback.valid ? "valid" : "invalid"}`}>
+                      <Upload size={16} />
+                      <span>{dropFeedback.label}</span>
+                    </div>
+                  )}
                   {!cropping && (
                     <div className={`on-canvas-layer-controls ${selected ? "visible" : ""}`} onPointerDown={(event) => event.stopPropagation()}>
                       <button

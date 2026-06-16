@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   CustomTextureResult,
   ExportPayload,
@@ -33,6 +33,7 @@ const api = {
   chooseFolder: (): Promise<FolderResult> => ipcRenderer.invoke("dialog:choose-folder"),
   chooseImageFile: (): Promise<ImageFileResult> => ipcRenderer.invoke("dialog:choose-image-file"),
   chooseImageFiles: (): Promise<ImageFileResult> => ipcRenderer.invoke("dialog:choose-image-files"),
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   importPaths: (paths: string[]): Promise<PathImportResult> => ipcRenderer.invoke("source:import-paths", paths),
   rescanFolder: (path: string) => ipcRenderer.invoke("source:rescan-folder", path),
   showInFolder: (path: string): Promise<boolean> => ipcRenderer.invoke("source:show-in-folder", path),

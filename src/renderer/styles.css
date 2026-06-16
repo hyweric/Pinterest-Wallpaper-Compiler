@@ -3572,3 +3572,158 @@ textarea:focus-visible {
     grid-column: auto;
   }
 }
+
+/* Phase 16.1 Finder drag-and-drop feedback */
+.drop-zone,
+.canvas-stage {
+  position: relative;
+}
+
+.drop-zone.drop-invalid,
+.canvas-stage.drop-invalid {
+  outline-color: rgba(187, 78, 78, 0.72);
+  background: rgba(255, 238, 238, 0.38);
+}
+
+.drop-feedback-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 40;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 20px;
+  border: 2px dashed rgba(111, 157, 176, 0.7);
+  border-radius: 16px;
+  background: rgba(244, 250, 252, 0.94);
+  backdrop-filter: blur(12px);
+  color: #35464f;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 18px 55px rgba(46, 62, 70, 0.12);
+}
+
+.drop-feedback-overlay strong {
+  max-width: 300px;
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.drop-feedback-overlay span {
+  max-width: 320px;
+  color: #75828a;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.drop-feedback-overlay.invalid {
+  border-color: rgba(187, 78, 78, 0.62);
+  background: rgba(255, 245, 245, 0.95);
+  color: #873f3f;
+}
+
+.canvas-drop-feedback {
+  inset: 24px;
+  z-index: 30;
+  min-height: 130px;
+}
+
+.placeholder.drop-target {
+  outline: 4px solid rgba(94, 157, 184, 0.92);
+  outline-offset: 5px;
+  box-shadow: 0 0 0 10px rgba(94, 157, 184, 0.16), 0 18px 42px rgba(43, 86, 104, 0.2) !important;
+}
+
+.placeholder.drop-target.drop-invalid {
+  outline-color: rgba(187, 78, 78, 0.82);
+  box-shadow: 0 0 0 10px rgba(187, 78, 78, 0.14) !important;
+}
+
+.placeholder-drop-label {
+  position: absolute;
+  inset: 8px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px;
+  border: 2px dashed rgba(89, 148, 173, 0.75);
+  border-radius: 12px;
+  background: rgba(244, 250, 252, 0.93);
+  color: #35464f;
+  font-size: 12px;
+  font-weight: 850;
+  text-align: center;
+  pointer-events: none;
+}
+
+.placeholder-drop-label.invalid {
+  border-color: rgba(187, 78, 78, 0.72);
+  background: rgba(255, 245, 245, 0.94);
+  color: #873f3f;
+}
+
+/* Phase 16.1.2 positioned source placement */
+.canvas.drag-active {
+  outline: 2px dashed rgba(111, 157, 176, 0.72);
+  outline-offset: -8px;
+}
+
+.canvas.drag-active.drop-invalid {
+  outline-color: rgba(187, 78, 78, 0.78);
+}
+
+.canvas-drop-placement-preview {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border: 3px dashed rgba(76, 145, 174, 0.92);
+  border-radius: 18px;
+  background: rgba(225, 242, 248, 0.42);
+  box-shadow: 0 0 0 7px rgba(76, 145, 174, 0.12), 0 22px 60px rgba(38, 78, 94, 0.18);
+  pointer-events: none;
+  overflow: visible;
+}
+
+.canvas-drop-placement-preview + .canvas-drop-placement-preview {
+  background: rgba(225, 242, 248, 0.3);
+}
+
+.canvas-drop-placement-copy {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  max-width: min(280px, 86%);
+  padding: 12px 16px;
+  border: 1px solid rgba(73, 128, 151, 0.28);
+  border-radius: 12px;
+  background: rgba(250, 253, 254, 0.94);
+  color: #314852;
+  text-align: center;
+  box-shadow: 0 14px 36px rgba(38, 74, 88, 0.16);
+  backdrop-filter: blur(12px);
+}
+
+.canvas-drop-placement-copy strong {
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.canvas-drop-placement-copy span,
+.canvas-drop-placement-copy b {
+  color: #6f8088;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.canvas-drop-placement-copy b {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(92, 157, 183, 0.13);
+  color: #486f80;
+  font-weight: 850;
+}
