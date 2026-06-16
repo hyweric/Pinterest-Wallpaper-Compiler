@@ -607,9 +607,9 @@ export interface WallpaperSetCleanupResult {
   ok: boolean;
   canceled?: boolean;
   rootPath?: string;
-  deletedSetCount?: number;
-  deletedTemporaryCount?: number;
-  keptSetCount?: number;
+  deletedEntryCount?: number;
+  deletedDirectoryCount?: number;
+  deletedFileCount?: number;
   freedBytes?: number;
   error?: string;
 }

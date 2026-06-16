@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   cleanupManagedWallpaperSets,
+  eraseWallpaperSetRootContents,
   listManagedWallpaperSets,
   safeWallpaperSetName,
   uniqueWallpaperSetPath,
@@ -49,4 +50,21 @@ test("cleanup deletes only managed old sets and keeps the newest five", async ()
   const after = await listManagedWallpaperSets(root);
   assert.equal(after.length, 5);
   assert.equal(await readFile(path.join(unrelated, "keep.txt"), "utf8"), "keep");
+});
+
+
+test("erase all removes every child entry but preserves the Wallpaper Sets root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pwc-set-erase-all-"));
+  const firstSet = path.join(root, "Set One");
+  const nested = path.join(firstSet, "nested");
+  await mkdir(nested, { recursive: true });
+  await writeFile(path.join(nested, "wallpaper.png"), Buffer.alloc(12));
+  await writeFile(path.join(root, "loose-file.txt"), "delete me");
+  await mkdir(path.join(root, ".pwc-wallpaper-set-incomplete"));
+
+  const summary = await eraseWallpaperSetRootContents(root);
+  assert.equal(summary.deletedEntryCount, 3);
+  assert.equal(summary.deletedDirectoryCount, 2);
+  assert.equal(summary.deletedFileCount, 1);
+  assert.deepEqual(await readdir(root), []);
 });

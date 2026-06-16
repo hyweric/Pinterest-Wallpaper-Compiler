@@ -28,11 +28,14 @@ test("Generate and Apply opens set creation for manual inactive-Space requests",
   assert.match(renderer, /Automatic all-desktop application is replaced by macOS folder shuffle/);
 });
 
-test("cleanup is manifest-scoped and keeps the five newest sets", async () => {
+test("wallpaper set deletion requires explicit confirmation and preserves the parent folder", async () => {
   const main = await source("src/main/main.ts");
   const sets = await source("src/main/wallpaper-sets.ts");
-  assert.match(main, /sets\.slice\(5\)/);
-  assert.match(main, /Personal folders without a Pinterest Wallpaper Compiler manifest will never be touched/);
-  assert.match(sets, /manifest\.kind !== "pwc-macos-wallpaper-set"/);
-  assert.match(main, /cleanupManagedWallpaperSets\(rootPath, 5\)/);
+  assert.match(main, /Are you sure you want to erase everything inside the Wallpaper Sets folder/);
+  assert.match(main, /Erase All Contents/);
+  assert.match(main, /This cannot be undone/);
+  assert.match(main, /safeWallpaperSetEraseRoot/);
+  assert.match(sets, /eraseWallpaperSetRootContents/);
+  assert.match(sets, /await rm\(entry\.entryPath, \{ recursive: true, force: true \}\)/);
+  assert.doesNotMatch(sets, /await rm\(rootPath/);
 });

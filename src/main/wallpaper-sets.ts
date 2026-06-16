@@ -19,6 +19,20 @@ export interface WallpaperSetCleanupSummary {
   keptSetCount: number;
 }
 
+export interface WallpaperSetRootEraseSummary {
+  deletedEntryCount: number;
+  deletedDirectoryCount: number;
+  deletedFileCount: number;
+  freedBytes: number;
+}
+
+export interface WallpaperSetRootEntry {
+  entryPath: string;
+  entryName: string;
+  kind: "directory" | "file" | "other";
+  sizeBytes: number;
+}
+
 export function safeWallpaperSetName(value: string, fallback = "Wallpaper Set") {
   const normalized = value
     .normalize("NFKC")
@@ -139,3 +153,51 @@ export async function cleanupManagedWallpaperSets(rootPath: string, keepNewest =
     keptSetCount: Math.min(sets.length, Math.max(0, keepNewest))
   };
 }
+
+export async function listWallpaperSetRootEntries(rootPath: string): Promise<WallpaperSetRootEntry[]> {
+  let entries;
+  try {
+    entries = await readdir(rootPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const inspected: WallpaperSetRootEntry[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    let sizeBytes = 0;
+    try {
+      if (entry.isDirectory()) sizeBytes = await directorySize(entryPath);
+      else if (entry.isFile()) sizeBytes = (await stat(entryPath)).size;
+    } catch {
+      // The item can still be removed even if its size cannot be measured.
+    }
+    inspected.push({
+      entryPath,
+      entryName: entry.name,
+      kind: entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other",
+      sizeBytes
+    });
+  }
+  return inspected;
+}
+
+export async function eraseWallpaperSetRootContents(rootPath: string): Promise<WallpaperSetRootEraseSummary> {
+  await mkdir(rootPath, { recursive: true });
+  const entries = await listWallpaperSetRootEntries(rootPath);
+  let freedBytes = 0;
+  let deletedDirectoryCount = 0;
+  let deletedFileCount = 0;
+  for (const entry of entries) {
+    await rm(entry.entryPath, { recursive: true, force: true });
+    freedBytes += entry.sizeBytes;
+    if (entry.kind === "directory") deletedDirectoryCount += 1;
+    else deletedFileCount += 1;
+  }
+  return {
+    deletedEntryCount: entries.length,
+    deletedDirectoryCount,
+    deletedFileCount,
+    freedBytes
+  };
+}
+

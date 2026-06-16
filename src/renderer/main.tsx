@@ -497,6 +497,254 @@ function GlobalTooltip() {
   );
 }
 
+
+type AddSourceControlProps = {
+  onAddFolder: () => void;
+  onAddImages: () => void;
+  onAddPinterest: () => void;
+};
+
+type AddSourceMenuPosition = {
+  left: number;
+  top: number;
+  ready: boolean;
+};
+
+function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourceControlProps) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<AddSourceMenuPosition>({ left: 0, top: 0, ready: false });
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const openTimerRef = useRef<number | undefined>(undefined);
+  const closeTimerRef = useRef<number | undefined>(undefined);
+  const pendingFocusRef = useRef<number | undefined>(undefined);
+  const menuId = "add-source-menu";
+
+  const items = useMemo(() => [
+    {
+      id: "folder",
+      label: "Local Folder",
+      description: "Use images from a folder",
+      icon: <FolderOpen size={18} />,
+      action: onAddFolder
+    },
+    {
+      id: "images",
+      label: "Local Images",
+      description: "Select one or more image files",
+      icon: <ImagePlus size={18} />,
+      action: onAddImages
+    },
+    {
+      id: "pinterest",
+      label: "Pinterest Board",
+      description: "Import images from a board",
+      icon: <Sparkles size={18} />,
+      action: onAddPinterest
+    }
+  ], [onAddFolder, onAddImages, onAddPinterest]);
+
+  const clearOpenTimer = useCallback(() => {
+    if (openTimerRef.current !== undefined) window.clearTimeout(openTimerRef.current);
+    openTimerRef.current = undefined;
+  }, []);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== undefined) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = undefined;
+  }, []);
+
+  const closeMenu = useCallback((restoreFocus = false) => {
+    clearOpenTimer();
+    clearCloseTimer();
+    pendingFocusRef.current = undefined;
+    setOpen(false);
+    setPosition((current) => ({ ...current, ready: false }));
+    if (restoreFocus) requestAnimationFrame(() => buttonRef.current?.focus());
+  }, [clearCloseTimer, clearOpenTimer]);
+
+  const openMenu = useCallback((focusIndex?: number) => {
+    clearOpenTimer();
+    clearCloseTimer();
+    pendingFocusRef.current = focusIndex;
+    setOpen(true);
+  }, [clearCloseTimer, clearOpenTimer]);
+
+  const scheduleOpen = useCallback(() => {
+    clearCloseTimer();
+    if (open || openTimerRef.current !== undefined) return;
+    openTimerRef.current = window.setTimeout(() => {
+      openTimerRef.current = undefined;
+      setOpen(true);
+    }, 120);
+  }, [clearCloseTimer, open]);
+
+  const scheduleClose = useCallback(() => {
+    clearOpenTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = undefined;
+      setOpen(false);
+      setPosition((current) => ({ ...current, ready: false }));
+    }, 220);
+  }, [clearCloseTimer, clearOpenTimer]);
+
+  const updatePosition = useCallback(() => {
+    if (!open || !buttonRef.current || !menuRef.current) return;
+    const anchor = buttonRef.current.getBoundingClientRect();
+    const menu = menuRef.current.getBoundingClientRect();
+    const margin = 10;
+    const gap = 8;
+    let left = anchor.right - menu.width;
+    left = clamp(left, margin, Math.max(margin, window.innerWidth - menu.width - margin));
+    const below = anchor.bottom + gap;
+    const above = anchor.top - menu.height - gap;
+    let top = below;
+    if (below + menu.height > window.innerHeight - margin && above >= margin) top = above;
+    top = clamp(top, margin, Math.max(margin, window.innerHeight - menu.height - margin));
+    setPosition({ left, top, ready: true });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      updatePosition();
+      const focusIndex = pendingFocusRef.current;
+      pendingFocusRef.current = undefined;
+      if (focusIndex !== undefined) itemRefs.current[focusIndex]?.focus();
+    });
+    const reposition = () => updatePosition();
+    const outsidePointer = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      closeMenu(false);
+    };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    document.addEventListener("pointerdown", outsidePointer, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      document.removeEventListener("pointerdown", outsidePointer, true);
+    };
+  }, [closeMenu, open, updatePosition]);
+
+  useEffect(() => () => {
+    clearOpenTimer();
+    clearCloseTimer();
+  }, [clearCloseTimer, clearOpenTimer]);
+
+  function runAction(action: () => void) {
+    closeMenu(false);
+    action();
+  }
+
+  function focusMenuItem(index: number) {
+    const count = items.length;
+    if (!count) return;
+    itemRefs.current[(index + count) % count]?.focus();
+  }
+
+  function handleMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const currentIndex = itemRefs.current.findIndex((item) => item === document.activeElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusMenuItem(currentIndex < 0 ? 0 : currentIndex + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusMenuItem(currentIndex < 0 ? items.length - 1 : currentIndex - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      focusMenuItem(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      focusMenuItem(items.length - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+    } else if (event.key === "Tab") {
+      closeMenu(false);
+    }
+  }
+
+  const menu = open ? createPortal(
+    <div
+      id={menuId}
+      ref={menuRef}
+      className={`add-source-menu ${position.ready ? "ready" : ""}`}
+      role="menu"
+      aria-label="Add source options"
+      style={{ left: position.left, top: position.top }}
+      onPointerEnter={clearCloseTimer}
+      onPointerLeave={scheduleClose}
+      onKeyDown={handleMenuKeyDown}
+    >
+      {items.map((item, index) => (
+        <button
+          key={item.id}
+          ref={(element) => { itemRefs.current[index] = element; }}
+          type="button"
+          role="menuitem"
+          className="add-source-menu-item"
+          onClick={() => runAction(item.action)}
+        >
+          <span className="add-source-menu-icon" aria-hidden="true">{item.icon}</span>
+          <span className="add-source-menu-copy">
+            <strong>{item.label}</strong>
+            <small>{item.description}</small>
+          </span>
+        </button>
+      ))}
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <div
+      ref={rootRef}
+      className="add-source-control"
+      onPointerEnter={scheduleOpen}
+      onPointerLeave={scheduleClose}
+      onFocus={clearCloseTimer}
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        if (next instanceof Node && (rootRef.current?.contains(next) || menuRef.current?.contains(next))) return;
+        scheduleClose();
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        className="add-source-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => open ? closeMenu(false) : openMenu()}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            openMenu(0);
+          } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            openMenu(items.length - 1);
+          } else if (event.key === "Escape" && open) {
+            event.preventDefault();
+            closeMenu(false);
+          }
+        }}
+      >
+        <Plus size={15} aria-hidden="true" />
+        <span>Add Source</span>
+      </button>
+      {menu}
+    </div>
+  );
+}
+
 class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error?: string }> {
   state: { error?: string } = {};
 
@@ -1984,20 +2232,23 @@ function App() {
   }
 
   async function cleanupWallpaperSets() {
+    setToolbarMenuOpen(false);
     setExportSet((current) => ({ ...current, cleanupBusy: true, error: undefined }));
     const result = await window.wallpaperApi.cleanupExportSets(exportSet.destinationPath);
     if (!result.ok) {
-      setExportSet((current) => ({ ...current, cleanupBusy: false, error: result.error ?? "Unable to clean up wallpaper sets." }));
+      const error = result.error ?? "Unable to delete wallpaper sets.";
+      setMessage(error);
+      setExportSet((current) => ({ ...current, cleanupBusy: false, error }));
       return;
     }
     if (result.canceled) {
       setExportSet((current) => ({ ...current, cleanupBusy: false }));
       return;
     }
-    const deleted = (result.deletedSetCount ?? 0) + (result.deletedTemporaryCount ?? 0);
+    const deleted = result.deletedEntryCount ?? 0;
     setMessage(deleted
-      ? `Cleaned up ${result.deletedSetCount ?? 0} old wallpaper set${result.deletedSetCount === 1 ? "" : "s"} and ${result.deletedTemporaryCount ?? 0} incomplete folder${result.deletedTemporaryCount === 1 ? "" : "s"}.`
-      : "No old managed wallpaper sets needed cleanup.");
+      ? `Deleted all ${deleted} item${deleted === 1 ? "" : "s"} inside the Wallpaper Sets folder.`
+      : "The Wallpaper Sets folder is already empty.");
     setExportSet((current) => ({ ...current, cleanupBusy: false }));
   }
 
@@ -2995,11 +3246,11 @@ function App() {
               <span className="eyebrow">COLLECTIONS</span>
               <h2>Sources</h2>
             </div>
-            <div className="compact-actions">
-              <button className="icon-button tooltip-anchor" data-tooltip="Add folder pool" aria-label="Add folder pool" onClick={addFolderSource}><FolderOpen size={17} /></button>
-              <button className="icon-button tooltip-anchor" data-tooltip="Add Pinterest board" aria-label="Add Pinterest board" onClick={() => setPinterestDialog((current) => ({ ...current, open: true }))}><Sparkles size={17} /></button>
-              <button className="icon-button tooltip-anchor" data-tooltip="Add local image collection" aria-label="Add local image collection" onClick={addLocalImagesSource}><ImagePlus size={17} /></button>
-            </div>
+            <AddSourceControl
+              onAddFolder={() => void addFolderSource()}
+              onAddImages={() => void addLocalImagesSource()}
+              onAddPinterest={() => setPinterestDialog((current) => ({ ...current, open: true }))}
+            />
           </div>
 
           <div className="source-tabs" role="tablist" aria-label="Source library">
@@ -3255,7 +3506,7 @@ function App() {
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   <button onClick={() => exportWallpaper("jpeg")}><Download size={16} /> Export JPEG</button>
                   <button onClick={() => openExportSet()}><Images size={16} /> Create macOS Wallpaper Set</button>
-                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
+                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Delete All Wallpaper Sets…</button>
                   <button onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={16} /> Toggle Left Panel</button>
                   <button onClick={() => setRightPanelOpen((value) => !value)}><SlidersHorizontal size={16} /> Toggle Inspector</button>
                 </div>
@@ -4175,7 +4426,7 @@ function ExportSetDialog({
               <div className="destination-actions">
                 <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
                 <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
-                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up…"}</button>
+                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Delete All Sets…"}</button>
               </div>
             </div>
 
@@ -4438,7 +4689,6 @@ function CanvasDesignPanel({
 
   return (
     <section className="panel canvas-design-panel settings-section">
-      <h2>Settings</h2>
       <details>
         <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>

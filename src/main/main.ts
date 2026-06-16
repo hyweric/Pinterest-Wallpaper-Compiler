@@ -36,9 +36,8 @@ import { cleanupGeneratedWallpapers, persistWallpaperAsset, safeWallpaperFileNam
 import { localFileProtocolScheme, pathFromRenderableLocalFileUrl } from "../shared/local-file-url.js";
 import { planFadeOverlayAssignments, selectWallpaperTargets } from "../shared/wallpaper.js";
 import {
-  cleanupManagedWallpaperSets,
-  listManagedWallpaperSets,
-  listStaleTemporaryWallpaperSets,
+  eraseWallpaperSetRootContents,
+  listWallpaperSetRootEntries,
   safeWallpaperSetName,
   uniqueWallpaperSetPath,
   wallpaperSetFolderName,
@@ -84,6 +83,23 @@ function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function safeWallpaperSetEraseRoot(requestedRootPath?: string) {
+  const resolved = path.resolve(requestedRootPath?.trim() || defaultWallpaperSetsRoot());
+  const protectedRoots = new Set([
+    path.parse(resolved).root,
+    app.getPath("home"),
+    app.getPath("pictures"),
+    app.getPath("documents"),
+    app.getPath("desktop"),
+    app.getPath("downloads"),
+    app.getPath("userData")
+  ].map((item) => path.resolve(item)));
+  if (protectedRoots.has(resolved)) {
+    throw new Error("For safety, choose the dedicated Wallpaper Sets folder rather than a home or system folder.");
+  }
+  return resolved;
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -1012,41 +1028,37 @@ ipcMain.handle("export-set:open-wallpaper-settings", async () => {
 
 ipcMain.handle("export-set:cleanup", async (_event, requestedRootPath?: string): Promise<WallpaperSetCleanupResult> => {
   try {
-    const rootPath = requestedRootPath?.trim() || defaultWallpaperSetsRoot();
+    const rootPath = safeWallpaperSetEraseRoot(requestedRootPath);
     await mkdir(rootPath, { recursive: true });
-    const sets = await listManagedWallpaperSets(rootPath);
-    const staleTemporary = await listStaleTemporaryWallpaperSets(rootPath);
-    const removable = sets.slice(5);
-    const removableBytes = removable.reduce((total, set) => total + set.sizeBytes, 0)
-      + staleTemporary.reduce((total, folder) => total + folder.sizeBytes, 0);
-    if (removable.length === 0 && staleTemporary.length === 0) {
+    const entries = await listWallpaperSetRootEntries(rootPath);
+    if (entries.length === 0) {
       return {
         ok: true,
         rootPath,
-        deletedSetCount: 0,
-        deletedTemporaryCount: 0,
-        keptSetCount: sets.length,
+        deletedEntryCount: 0,
+        deletedDirectoryCount: 0,
+        deletedFileCount: 0,
         freedBytes: 0
       };
     }
-    const cleanupButtonLabel = removable.length > 0
-      ? `Delete ${removable.length} Old Set${removable.length === 1 ? "" : "s"}`
-      : `Delete ${staleTemporary.length} Incomplete Export${staleTemporary.length === 1 ? "" : "s"}`;
+    const totalBytes = entries.reduce((total, entry) => total + entry.sizeBytes, 0);
+    const directoryCount = entries.filter((entry) => entry.kind === "directory").length;
+    const fileCount = entries.length - directoryCount;
     const response = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      buttons: ["Cancel", cleanupButtonLabel],
+      buttons: ["Cancel", "Erase All Contents"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      title: "Clean Up Wallpaper Sets",
-      message: "Delete old app-created wallpaper sets?",
-      detail: `The five newest sets will be kept. ${removable.length} older managed set${removable.length === 1 ? "" : "s"} and ${staleTemporary.length} incomplete temporary folder${staleTemporary.length === 1 ? "" : "s"} will be deleted, freeing about ${formatBytes(removableBytes)}.\n\nBefore continuing, make sure macOS is not currently using one of the old sets. Personal folders without a Pinterest Wallpaper Compiler manifest will never be touched.`
+      title: "Delete All Wallpaper Sets",
+      message: "Are you sure you want to erase everything inside the Wallpaper Sets folder?",
+      detail: `This permanently deletes all ${entries.length} top-level item${entries.length === 1 ? "" : "s"}, including every subfolder and every file stored inside them. ${directoryCount} folder${directoryCount === 1 ? "" : "s"} and ${fileCount} file${fileCount === 1 ? "" : "s"} will be removed, freeing about ${formatBytes(totalBytes)}.\n\nFolder:\n${rootPath}\n\nThe Wallpaper Sets folder itself will remain. This cannot be undone. Make sure macOS is not currently using one of these folders before continuing.`
     });
     if (response.response !== 1) return { ok: true, canceled: true, rootPath };
-    const summary = await cleanupManagedWallpaperSets(rootPath, 5);
+    const summary = await eraseWallpaperSetRootContents(rootPath);
     return { ok: true, rootPath, ...summary };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Unable to clean up wallpaper sets." };
+    return { ok: false, error: error instanceof Error ? error.message : "Unable to delete wallpaper sets." };
   }
 });
 
