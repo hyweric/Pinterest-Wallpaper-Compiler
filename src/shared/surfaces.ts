@@ -1,3 +1,6 @@
+
+
+import type { PaperTextureEffect } from "./types";
 export type BundledSurfaceId = "paper" | "crumpled-paper" | "grid-paper" | "dotted-paper";
 
 export interface BundledSurfaceManifestEntry {
@@ -73,6 +76,55 @@ export const bundledSurfaceManifest: BundledSurfaceManifestEntry[] = [
     sha256: "a42e787044d398e654596129854c21db4ec3125157293619c75e73101bbb351e"
   }
 ];
+
+
+export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperType"], Pick<PaperTextureEffect, "intensity" | "scale" | "rotation" | "opacity" | "blendMode" | "noise" | "roughness" | "tone">> = {
+  paper: {
+    intensity: 100,
+    scale: 0.2,
+    rotation: 0,
+    opacity: 0.66,
+    blendMode: "normal",
+    noise: 100,
+    roughness: 100,
+    tone: 12
+  },
+  "crumpled-paper": {
+    intensity: 67,
+    scale: 0.2,
+    rotation: 39,
+    opacity: 0.36,
+    blendMode: "normal",
+    noise: 68,
+    roughness: 100,
+    tone: 9
+  },
+  "grid-paper": {
+    intensity: 100,
+    scale: 0.95,
+    rotation: 0,
+    opacity: 0.62,
+    blendMode: "normal",
+    noise: 52,
+    roughness: 0,
+    tone: 37
+  },
+  "dotted-paper": {
+    intensity: 100,
+    scale: 0.95,
+    rotation: 0,
+    opacity: 0.9,
+    blendMode: "normal",
+    noise: 52,
+    roughness: 0,
+    tone: 63
+  }
+};
+
+export function surfaceDefaultsForType(type: PaperTextureEffect["type"]) {
+  const resolved = resolveBundledSurfaceType(type);
+  return resolved ? { ...bundledSurfaceDefaults[resolved] } : undefined;
+}
 
 const bundledSurfaceAliases: Record<string, BundledSurfaceManifestEntry["paperType"]> = {
   paper: "paper",

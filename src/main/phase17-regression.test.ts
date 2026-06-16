@@ -17,11 +17,11 @@ test("editor preview and export share the same deterministic surface renderer", 
   assert.doesNotMatch(renderer, /canvas-background-texture/);
 });
 
-test("canvas surface is drawn after every placeholder so it covers the complete composition", async () => {
+test("canvas surface is drawn behind placeholders so uploaded sources remain unaffected", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const exporter = await source("src/renderer/exporter.ts");
-  assert.match(renderer, /project\.layers\.map\([\s\S]*<CanvasSurfaceOverlay canvas=\{project\.canvas\}/);
-  assert.match(exporter, /for \(const layer of project\.layers\) await drawLayer\(context, project, layer\);\n  await drawSurfaceTexture/);
+  assert.match(renderer, /<CanvasSurfaceOverlay canvas=\{project\.canvas\}[\s\S]*project\.layers\.map\(/);
+  assert.match(exporter, /await drawSurfaceTexture\(context, width, height, project\.canvas\.backgroundPaper[\s\S]*for \(const layer of project\.layers\) await drawLayer/);
 });
 
 test("all requested surface controls update persisted canvas settings", async () => {

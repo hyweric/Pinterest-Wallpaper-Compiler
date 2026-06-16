@@ -269,8 +269,8 @@ async function renderProjectToCanvas(project: WallpaperProject, format: "png" | 
   if (!context) throw new Error("Canvas rendering is unavailable.");
 
   await drawBackground(context, project, format);
-  for (const layer of project.layers) await drawLayer(context, project, layer);
   await drawSurfaceTexture(context, width, height, project.canvas.backgroundPaper, customTexture(project, project.canvas.backgroundPaper));
+  for (const layer of project.layers) await drawLayer(context, project, layer);
   drawCanvasVignette(context, project.canvas);
   return output;
 }

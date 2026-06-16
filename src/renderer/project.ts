@@ -187,7 +187,7 @@ export function createDefaultPaper(): PaperTextureEffect {
     scale: 1,
     rotation: 0,
     opacity: 0,
-    blendMode: "multiply",
+    blendMode: "normal",
     seed: 1,
     noise: 18,
     roughness: 20,

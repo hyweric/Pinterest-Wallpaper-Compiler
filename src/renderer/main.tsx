@@ -110,7 +110,9 @@ import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeou
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
+import { resizeRectAroundCenter, type ResizeHandle } from "../shared/resize-geometry";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
+import { surfaceDefaultsForType } from "../shared/surfaces";
 import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-renderer";
 import { nextSurfaceSeed, normalizeSurfaceEffect, surfaceEffectIsVisible } from "../shared/surface-rendering";
 import "./styles.css";
@@ -747,7 +749,10 @@ function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourc
           }
         }}
       >
-        <Plus size={15} aria-hidden="true" />
+        <span className={`add-source-trigger-icon ${open ? "open" : ""}`} aria-hidden="true">
+          <Plus className="add-source-trigger-plus" size={15} />
+          <ChevronDown className="add-source-trigger-chevron" size={15} />
+        </span>
         <span>Add Source</span>
       </button>
       {menu}
@@ -2590,43 +2595,19 @@ function App() {
       return;
     }
 
-    resizeLayer(drag, dx, dy, event.shiftKey || drag.layer.keepAspectRatio, event.altKey);
+    resizeLayer(drag, dx, dy, event.shiftKey || drag.layer.keepAspectRatio);
   }
 
-  function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean, fromCenter: boolean) {
-    const layer = drag.layer;
-    let { x, y, width, height } = layer;
-    if (drag.mode.includes("e")) width += dx;
-    if (drag.mode.includes("s")) height += dy;
-    if (drag.mode.includes("w")) {
-      x += dx;
-      width -= dx;
-    }
-    if (drag.mode.includes("n")) {
-      y += dy;
-      height -= dy;
-    }
-    if (fromCenter) {
-      x -= dx / 2;
-      y -= dy / 2;
-      width += Math.abs(dx);
-      height += Math.abs(dy);
-    }
-    if (preserveAspect) {
-      const aspect = layer.width / layer.height;
-      if (Math.abs(dx) > Math.abs(dy)) height = width / aspect;
-      else width = height * aspect;
-    }
-    patchLayer(
-      drag.id,
-      {
-        x: Math.round(clamp(x, 0, project.canvas.width - 40)),
-        y: Math.round(clamp(y, 0, project.canvas.height - 40)),
-        width: Math.round(clamp(width, 40, project.canvas.width)),
-        height: Math.round(clamp(height, 40, project.canvas.height))
-      },
-      false
+  function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean) {
+    const next = resizeRectAroundCenter(
+      drag.layer,
+      drag.mode as ResizeHandle,
+      dx,
+      dy,
+      preserveAspect,
+      { width: project.canvas.width, height: project.canvas.height, minSize: 40 }
     );
+    patchLayer(drag.id, next, false);
   }
 
   function endDrag() {
@@ -3662,6 +3643,7 @@ function App() {
             }}
           >
             <BackgroundImageView canvas={project.canvas} />
+            <CanvasSurfaceOverlay canvas={project.canvas} customTextures={project.customTextures} />
             {dropFeedback?.target === "canvas" && !dropFeedback.valid && (
               <div className="drop-feedback-overlay canvas-drop-feedback invalid">
                 <Upload size={24} />
@@ -3710,9 +3692,9 @@ function App() {
               const paperActive = paperFrame.type !== "none";
               const rough = paperFrameIsRough(paperFrame);
               return (
+                <React.Fragment key={layer.id}>
                 <div
                   className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
-                  key={layer.id}
                   style={{
                     left: layer.x,
                     top: layer.y,
@@ -3794,11 +3776,24 @@ function App() {
                     <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
                   </div>
                   {cropping && <span className="crop-mode-badge">CROP MODE</span>}
-                  {selectedLayerId === layer.id && !layer.locked && !cropping && <SelectionHandles layer={layer} onBeginDrag={beginDrag} />}
                 </div>
+                {selectedLayerId === layer.id && !layer.locked && !cropping && (
+                  <div
+                    className="selection-handles-overlay"
+                    style={{
+                      left: layer.x,
+                      top: layer.y,
+                      width: layer.width,
+                      height: layer.height,
+                      transform: `rotate(${layer.rotation + paperFrameRotation(paperFrame)}deg)`
+                    }}
+                  >
+                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} />
+                  </div>
+                )}
+                </React.Fragment>
               );
             })}
-            <CanvasSurfaceOverlay canvas={project.canvas} customTextures={project.customTextures} />
           </div>
           </div>
         </div>
@@ -4274,11 +4269,17 @@ function textureStyle(layer: PlaceholderLayer, customTextures: WallpaperProject[
 
 function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void }) {
   const handles: DragMode[] = ["resize-nw", "resize-n", "resize-ne", "resize-e", "resize-se", "resize-s", "resize-sw", "resize-w"];
+  function startControlDrag(event: PointerEvent, mode: DragMode) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
+    onBeginDrag(event, layer, mode);
+  }
   return (
     <>
-      <button className="rotate-handle" onPointerDown={(event) => onBeginDrag(event, layer, "rotate")} aria-label="Rotate"><RotateCw size={13} /></button>
+      <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={13} /></button>
       {handles.map((handle) => (
-        <button key={handle} className={`resize-handle ${handle}`} onPointerDown={(event) => onBeginDrag(event, layer, handle)} aria-label={handle} />
+        <button key={handle} className={`resize-handle ${handle}`} onPointerDown={(event) => startControlDrag(event, handle)} aria-label={handle} />
       ))}
     </>
   );
@@ -4821,11 +4822,15 @@ function CanvasDesignPanel({
   const surface = normalizeSurfaceEffect(canvas.backgroundPaper);
 
   function setSurfaceEnabled(enabled: boolean) {
+    if (!enabled) {
+      patchPaper({ enabled: false });
+      return;
+    }
+    const targetType = surface.type === "none" ? "paper" : surface.type;
     patchPaper({
-      enabled,
-      type: enabled && surface.type === "none" ? "paper" : surface.type,
-      intensity: enabled ? Math.max(45, surface.intensity) : surface.intensity,
-      opacity: enabled ? Math.max(.5, surface.opacity) : surface.opacity
+      enabled: true,
+      type: targetType,
+      ...(surface.type === "none" ? surfaceDefaultsForType(targetType) : undefined)
     });
   }
 
@@ -4835,11 +4840,11 @@ function CanvasDesignPanel({
       return;
     }
     patchPaper({
+      ...surfaceDefaultsForType(type),
       enabled: true,
       type,
       customTextureId,
-      intensity: Math.max(45, surface.intensity),
-      opacity: Math.max(.5, surface.opacity)
+      seed: surface.seed
     });
   }
 

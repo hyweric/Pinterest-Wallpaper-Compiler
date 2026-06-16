@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { access } from "node:fs/promises";
 import path from "node:path";
-import { bundledSurfaceManifest, resolveBundledSurfaceType, surfaceManifestEntryForPaperType, surfaceManifestIsComplete } from "../shared/surfaces.js";
+import { bundledSurfaceDefaults, bundledSurfaceManifest, resolveBundledSurfaceType, surfaceDefaultsForType, surfaceManifestEntryForPaperType, surfaceManifestIsComplete } from "../shared/surfaces.js";
 
 test("bundled surface manifest is complete and uses CC0 provenance", () => {
   assert.equal(surfaceManifestIsComplete(), true);
@@ -29,4 +29,18 @@ test("surface aliases keep older projects compatible while the editor shows the 
   assert.equal(surfaceManifestEntryForPaperType("handmade")?.id, "crumpled-paper");
   assert.equal(resolveBundledSurfaceType("matte-photo"), "paper");
   assert.equal(resolveBundledSurfaceType("canvas"), "crumpled-paper");
+});
+
+
+test("bundled surfaces expose the requested default controls for each sourced texture", () => {
+  assert.deepEqual(surfaceDefaultsForType("paper"), bundledSurfaceDefaults.paper);
+  assert.deepEqual(surfaceDefaultsForType("crumpled-paper"), bundledSurfaceDefaults["crumpled-paper"]);
+  assert.deepEqual(surfaceDefaultsForType("grid-paper"), bundledSurfaceDefaults["grid-paper"]);
+  assert.deepEqual(surfaceDefaultsForType("dotted-paper"), bundledSurfaceDefaults["dotted-paper"]);
+  assert.equal(surfaceDefaultsForType("custom"), undefined);
+});
+
+
+test("bundled surface presets default to normal blending", () => {
+  assert.ok(Object.values(bundledSurfaceDefaults).every((defaults) => defaults.blendMode === "normal"));
 });
