@@ -4,9 +4,12 @@ import path from "node:path";
 import test from "node:test";
 import { compactProjectForAutosave, createProject } from "../renderer/project.js";
 
-test("normal editor UI exposes exactly one Generate and Apply button", async () => {
+test("normal editor UI separates current-desktop preview from wallpaper-set export", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  assert.equal((source.match(/Generate and Apply/g) ?? []).length, 1);
+  assert.match(source, /Preview on Current Desktop/);
+  assert.match(source, /Create Wallpaper Set/);
+  assert.match(source, /onClick=\{\(\) => void previewOnCurrentDesktop\(\)\}/);
+  assert.doesNotMatch(source, />Generate and Apply</);
 });
 
 test("main process registers generation and apply-file IPC handlers", async () => {

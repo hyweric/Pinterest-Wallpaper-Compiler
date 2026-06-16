@@ -43,7 +43,7 @@ export function createDefaultWallpaperSettings(): WallpaperSettings {
     monitorMode: "all",
     scope: "same-all-desktops",
     targetMode: "all-visible-monitors",
-    allSpacesRefreshMode: "silent-observer",
+    allSpacesRefreshMode: "native-global-setting",
     targetTemplateMode: "single-template",
     targetTemplateIds: {},
     targetPlaylistIds: {},

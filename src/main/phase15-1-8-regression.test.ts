@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { chooseMacOSWallpaperStrategy } from "./macos-spaces.js";
+import { chooseMacOSWallpaperStrategy, nativeGlobalAllSpacesEligibility } from "./macos-spaces.js";
 
 const root = process.cwd();
 
@@ -32,12 +32,11 @@ test("modern Store is the only inactive-Space strategy and refresh never restart
 
   const macOS = await source("src/main/macos-spaces.ts");
   assert.doesNotMatch(macOS, /killall[\s\S]{0,80}Dock/);
-  assert.match(macOS, /request\.refreshMode \|\| 'silent-observer'/);
-  assert.match(macOS, /refreshMode === 'force-wallpaperagent-restart'/);
+  assert.match(macOS, /PWC_NATIVE_GLOBAL_ALL_SPACES_V1/);
+  assert.match(macOS, /macos-native-show-on-all-spaces/);
   assert.doesNotMatch(macOS, /refreshMode === 'active-space-walk'/);
   assert.doesNotMatch(macOS, /CGSManagedDisplaySetCurrentSpace/);
-  assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
-  assert.match(macOS, /wallpaperagent-restart/);
+  assert.doesNotMatch(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
   assert.doesNotMatch(macOS, /applyLegacyWallpaperDatabase/);
   assert.doesNotMatch(macOS, /desktoppicture\.db path is diagnostic-only[\s\S]*restart Dock/);
 });
@@ -52,76 +51,61 @@ test("desktop overlay architecture is completely removed", async () => {
   assert.doesNotMatch(renderer, /desktopLayer|Silent desktop-layer coverage/);
 });
 
-test("compiled Swift bridge is built, packaged outside asar, and never opens windows or restarts processes", async () => {
-  const macOS = await source("src/main/macos-spaces.ts");
-  const helper = await source("src/main/pwc-wallpaper-bridge.swift");
-  const buildScript = await source("scripts/build-macos-wallpaper-bridge.cjs");
+test("obsolete private bridge and desktop overlay architecture are not part of the build", async () => {
   const packageJson = JSON.parse(await source("package.json")) as { scripts: Record<string, string>; build: { asarUnpack?: string[] } };
-  assert.match(macOS, /app\.asar\.unpacked/);
-  assert.match(macOS, /if \(\s*\/app\\\.asar\[\\\\\/\]\/\.test\(candidate\)\s*\) continue/);
-  assert.match(helper, /Wallpaper\.framework/);
-  assert.match(helper, /WallpaperFoundation\.framework/);
-  assert.match(helper, /WallpaperExtensionKit\.framework/);
-  assert.match(helper, /Wallpaper\.AgentXPCProtocol/);
-  assert.match(helper, /updateDesktopWallpaperUserSettings/);
-  assert.doesNotMatch(helper, /DistributedNotificationCenter|CFNotificationCenterPostNotification/);
-  assert.doesNotMatch(helper, /NSWindow|BrowserWindow|killall|pkill|SIGKILL|terminate\(/);
-  assert.match(buildScript, /require\(["']node:child_process["']\)/);
-  assert.match(buildScript, /const \{ spawnSync \} = require\(["']node:child_process["']\)/);
-  assert.doesNotMatch(buildScript, /spawnSync[^\n]*require\(["']node:fs["']\)/);
-  assert.match(buildScript, /swiftc/);
-  assert.match(packageJson.scripts["build:electron"], /build-macos-wallpaper-bridge/);
-  assert.deepEqual(packageJson.build.asarUnpack, ["dist/main/helpers/pwc-wallpaper-bridge"]);
+  assert.doesNotMatch(packageJson.scripts["build:electron"], /build-macos-wallpaper-bridge/);
+  assert.ok(!packageJson.build.asarUnpack || !packageJson.build.asarUnpack.some((entry) => entry.includes("pwc-wallpaper-bridge")));
 });
 
-test("failed direct bridge falls back to the active-Space observer without process restarts", async () => {
+test("legacy native global controller remains bounded while the renderer uses immutable wallpaper sets", async () => {
   const macOS = await source("src/main/macos-spaces.ts");
   const wallpaper = await source("src/main/wallpaper.ts");
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(macOS, /Direct private wallpaper bridge is unavailable/);
-  assert.match(macOS, /The direct private wallpaper bridge could not get WallpaperAgent to accept a native refresh request/);
-  assert.match(macOS, /no WallpaperAgent restart was used to avoid black flash/);
-  assert.doesNotMatch(macOS, /refreshMode === 'active-space-walk'/);
-  assert.doesNotMatch(macOS, /visitSpacesAndApply/);
-  assert.doesNotMatch(macOS, /reloadMethod = 'active-space-walk'/);
-  assert.match(macOS, /force-wallpaperagent-restart/);
-  assert.match(macOS, /runTask\('\/usr\/bin\/killall', \['WallpaperAgent'\]\)/);
-  assert.match(macOS, /reloadMethod = 'wallpaperagent-restart'/);
-  assert.match(macOS, /copyReplacing\(backupPath, indexPath\)/);
-  assert.match(macOS, /All desktop Store records were verified/);
-  assert.match(macOS, /No Dock restart, WallpaperAgent restart, or overlay was used/);
-  assert.match(wallpaper, /advancedObserverFallback = !advancedImmediate && observerStarted/);
-  assert.match(wallpaper, /observer-fallback/);
-  assert.match(wallpaper, /active-Space observer will apply this wallpaper to each Mission Control desktop as you visit it/);
-  assert.match(renderer, /active Space-change observer will repair inactive Mission Control desktops as you visit them/);
-  assert.match(renderer, /No wallpaper process was restarted/);
-  assert.match(renderer, /Safe silent refresh/);
-  assert.match(renderer, /No wallpaper process restarts, overlay windows, or Space switching/);
-  assert.doesNotMatch(renderer, /Immediate all desktops/);
-  assert.doesNotMatch(renderer, /Visit desktops now/);
-  assert.doesNotMatch(macOS, /macos-mission-control-space-sweep/);
-  assert.doesNotMatch(macOS, /Application\('System Events'\)\.keyCode/);
-  assert.doesNotMatch(renderer, /Sweep desktops now/);
-  assert.doesNotMatch(macOS, /macos-space-visit-appkit-apply/);
+  const controllerStart = macOS.lastIndexOf("export async function applyMacOSWallpapersAcrossSpaces(");
+  const controllerEnd = macOS.indexOf("export async function getMacOSReferencedWallpaperPaths", controllerStart);
+  const controller = macOS.slice(controllerStart, controllerEnd);
+  assert.match(controller, /applyNativeGlobalAllSpacesSetting/);
+  assert.match(controller, /globalWallpaperReferenceMatches/);
+  assert.match(macOS, /x-apple\.systempreferences:com\.apple\.Wallpaper-Settings\.extension/);
+  assert.match(macOS, /Show on all Spaces/);
+  assert.doesNotMatch(controller, /applyStableAssetSlots/);
+  assert.doesNotMatch(controller, /applyModernWallpaperStore/);
+  assert.doesNotMatch(controller, /copyFile\(/);
+  assert.doesNotMatch(controller, /killall/);
   assert.doesNotMatch(macOS, /CGSManagedDisplaySetCurrentSpace/);
+  assert.doesNotMatch(wallpaper, /this\.spaceObserver\.start\(/);
+  assert.match(renderer, /macOS Wallpaper Set mode/);
+  assert.match(renderer, /new immutable folder/);
+  assert.match(renderer, /Create Wallpaper Set/);
 });
 
-test("direct bridge telemetry is presented honestly", async () => {
+test("native global eligibility protects per-monitor and different-image batches", () => {
+  const same = [{ displayId: "1", filePath: "/tmp/wallpaper.png" }];
+  assert.equal(nativeGlobalAllSpacesEligibility(same, "all-desktops-current-monitor", 1).ok, true);
+  assert.equal(nativeGlobalAllSpacesEligibility(same, "all-desktops-current-monitor", 2).ok, false);
+  assert.equal(nativeGlobalAllSpacesEligibility([
+    { displayId: "1", filePath: "/tmp/a.png" },
+    { displayId: "2", filePath: "/tmp/b.png" }
+  ], "all-desktops-all-monitors", 2).ok, false);
+  assert.equal(nativeGlobalAllSpacesEligibility([
+    { displayId: "1", filePath: "/tmp/a.png" },
+    { displayId: "2", filePath: "/tmp/a.png" }
+  ], "all-desktops-all-monitors", 2).ok, true);
+});
+
+test("legacy native global telemetry stays typed but is no longer the primary all-Space UI", async () => {
   const types = await source("src/shared/types.ts");
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(types, /directBridgeAttempted/);
-  assert.match(types, /directBridgeAvailable/);
-  assert.match(types, /directBridgeRequestAccepted/);
-  assert.match(types, /directBridgeMechanism/);
-  assert.match(types, /fallbackToVisibleMonitors/);
-  assert.match(renderer, /Direct bridge attempted/);
-  assert.match(renderer, /Direct bridge available/);
-  assert.match(renderer, /Request accepted/);
-  assert.match(renderer, /Mechanism/);
-  assert.match(renderer, /Overlay created: no/);
+  assert.match(types, /nativeGlobalSettingAttempted/);
+  assert.match(types, /nativeGlobalSettingEnabled/);
+  assert.match(types, /nativeGlobalSettingRearmed/);
+  assert.match(types, /nativeGlobalSettingPermissionDenied/);
+  assert.match(renderer, /macOS folder shuffle/);
+  assert.match(renderer, /Show on all Spaces/);
+  assert.doesNotMatch(renderer, /Run macOS diagnostic/);
 });
 
-test("fade overlays stay disabled while safe all-desktop refresh is the default", async () => {
+test("fade overlays stay disabled while native desktop refresh is the default", async () => {
   const main = await source("src/main/main.ts");
   assert.match(main, /const fadeOverlayTransitionsEnabled = false/);
   assert.doesNotMatch(main, /activeFadeOverlayWindows/);

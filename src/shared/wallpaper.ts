@@ -18,7 +18,7 @@ export function wallpaperTargetModeNeedsInactiveSpaces(mode: WallpaperTargetMode
 }
 
 export function normalizeAllSpacesRefreshMode(mode?: WallpaperAllSpacesRefreshMode): Exclude<WallpaperAllSpacesRefreshMode, "immediate-restart"> {
-  return "silent-observer";
+  return "native-global-setting";
 }
 
 export function wallpaperTargetModeLabel(mode: WallpaperTargetMode) {

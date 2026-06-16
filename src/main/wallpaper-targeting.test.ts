@@ -74,7 +74,7 @@ test("macOS all-desktop implementation is diagnostic-driven, transactional, and 
   assert.match(spacesSource, /NSWorkspaceDidWakeNotification/);
 });
 
-test("targeting UI presents all requested modes and reports live diagnostic and verification counts", async () => {
+test("targeting UI presents all requested modes and routes inactive Spaces to folder shuffle", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   for (const mode of [
     "current-desktop",
@@ -85,8 +85,9 @@ test("targeting UI presents all requested modes and reports live diagnostic and 
   ]) {
     assert.match(source, new RegExp(`value=\"${mode}\"`));
   }
-  assert.match(source, /Run macOS diagnostic/);
-  assert.match(source, /recommendedStrategy/);
-  assert.match(source, /verifiedSpaceCount/);
+  assert.match(source, /macOS Wallpaper Set mode/);
+  assert.match(source, /Choose Folder/);
+  assert.match(source, /Show on all Spaces/);
+  assert.match(source, /Automatic all-desktop application is replaced by macOS folder shuffle/);
   assert.doesNotMatch(source, /Advanced macOS mode: inactive Spaces are updated immediately/);
 });

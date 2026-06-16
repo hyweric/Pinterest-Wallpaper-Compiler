@@ -35,6 +35,9 @@ export type WallpaperTargetMode =
   | "all-desktops-all-monitors";
 export type WallpaperTargetTemplateMode = "single-template" | "different-template" | "playlist";
 export type WallpaperAllSpacesRefreshMode =
+  | "native-global-setting"
+  | "stable-asset-slots"
+  | "system-events"
   | "silent-observer"
   | "force-wallpaperagent-restart"
   | "immediate-restart";
@@ -77,6 +80,8 @@ export interface MacOSWallpaperStoreDiagnostic {
   desktopRecordCount: number;
   displayKeys: string[];
   spaceDisplayUUIDs: Record<string, string[]>;
+  displayPaths?: Record<string, string>;
+  spaceDisplayPaths?: Record<string, Record<string, string>>;
   references: MacOSWallpaperFileReferenceDiagnostic[];
   error?: string;
 }
@@ -117,7 +122,7 @@ export interface MacOSWallpaperDiagnosticReport {
 }
 
 export interface MacOSAllSpacesApplyAttempt {
-  id: "active-record-clone" | "path-only-store" | "global-all-spaces" | "legacy-current-row-bridge";
+  id: "native-global-all-spaces" | "stable-asset-slots" | "active-record-clone" | "path-only-store" | "global-all-spaces" | "system-events-desktop-api" | "legacy-current-row-bridge";
   label: string;
   ok: boolean;
   targetSpaceCount?: number;
@@ -145,7 +150,7 @@ export interface MacOSAllSpacesApplyStatus {
   legacyDatabaseVerified: boolean;
   wallpaperAgentReloaded: boolean;
   dockReloaded: boolean;
-  reloadMethod: "none" | "native-wallpaper-agent-xpc" | "wallpaperagent-restart" | "visible-monitors-fallback" | "observer-fallback";
+  reloadMethod: "none" | "native-global-setting" | "stable-asset-slots" | "native-wallpaper-agent-xpc" | "system-events-desktop-api" | "wallpaperagent-restart" | "visible-monitors-fallback" | "observer-fallback";
   visibleApplyPassCount: number;
   observerSuppressedDuringTransaction: boolean;
   operationDurationMs: number;
@@ -158,6 +163,19 @@ export interface MacOSAllSpacesApplyStatus {
   directBridgeRequestAccepted?: boolean;
   directBridgeXPCServices?: string[];
   directBridgeSelectors?: string[];
+  systemEventsAttempted?: boolean;
+  systemEventsAccepted?: boolean;
+  nativeGlobalSettingAttempted?: boolean;
+  nativeGlobalSettingEnabled?: boolean;
+  nativeGlobalSettingRearmed?: boolean;
+  nativeGlobalSettingOpenedUI?: boolean;
+  nativeGlobalSettingPermissionDenied?: boolean;
+  nativeGlobalSettingControlLabel?: string;
+  stableStoreVerificationPassed?: boolean;
+  stableAssetSlotsAttempted?: boolean;
+  stableAssetSlotsVerified?: boolean;
+  stableAssetSlotCount?: number;
+  stableAssetSlotPaths?: string[];
   fallbackToVisibleMonitors?: boolean;
   observerStarted: boolean;
   observerFallback: boolean;
@@ -519,17 +537,59 @@ export interface ExportPayload {
   suggestedName: string;
 }
 
+export interface WallpaperSetBeginPayload {
+  rootPath?: string;
+  setName: string;
+  projectName: string;
+  templateName: string;
+  format: ExportFormat;
+  variationCount: number;
+  canvasWidth: number;
+  canvasHeight: number;
+}
+
+export interface WallpaperSetBeginResult {
+  ok: boolean;
+  sessionId?: string;
+  rootPath?: string;
+  stagingPath?: string;
+  finalPath?: string;
+  folderName?: string;
+  error?: string;
+}
+
 export interface ExportSetFilePayload {
-  destinationPath: string;
+  sessionId: string;
   dataUrl: string;
   fileName: string;
-  overwrite: boolean;
 }
 
 export interface ExportSetFileResult {
   ok: boolean;
-  skipped?: boolean;
   filePath?: string;
+  error?: string;
+}
+
+export interface WallpaperSetFinalizePayload {
+  sessionId: string;
+}
+
+export interface WallpaperSetFinalizeResult {
+  ok: boolean;
+  finalPath?: string;
+  manifestPath?: string;
+  fileCount?: number;
+  error?: string;
+}
+
+export interface WallpaperSetCleanupResult {
+  ok: boolean;
+  canceled?: boolean;
+  rootPath?: string;
+  deletedSetCount?: number;
+  deletedTemporaryCount?: number;
+  keptSetCount?: number;
+  freedBytes?: number;
   error?: string;
 }
 

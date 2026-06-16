@@ -3,13 +3,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-test("scheduled runs defer without creating a one-second retry loop", async () => {
+test("renderer scheduling is removed while wallpaper operations remain single-flight", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  assert.match(source, /scheduledRunDeferredRef\.current = true/);
-  assert.match(source, /finishWallpaperOperation\(operationToken\)/);
   assert.match(source, /SingleFlightWallpaperOperation/);
-  assert.doesNotMatch(source, /Date\.now\(\) \+ 1_000/);
-  assert.doesNotMatch(source, /nextScheduledAt: retryAt/);
+  assert.match(source, /finishWallpaperOperation\(operationToken\)/);
+  assert.doesNotMatch(source, /SingleRunScheduler/);
+  assert.doesNotMatch(source, /scheduledRunDeferredRef/);
+  assert.doesNotMatch(source, /<summary>Schedule/);
+  assert.match(source, /interval: "manual"/);
 });
 
 test("wallpaper controller is process-wide so the active-Space observer is not duplicated", async () => {
@@ -38,6 +39,6 @@ test("failed inactive-Space adoption rolls back to a visible-preserving Store ba
   assert.match(source, /bridgeResult\.privateFrameworksAvailable/);
   assert.match(source, /return candidates\.find\(\(section\) => desktopReferencesPath\(get\(section, 'Desktop'\), assignment\.filePath\)\) \|\| candidates\[0\] \|\| null/);
   assert.doesNotMatch(source, /copyReplacing\(indexPath, backupPath\);\s*const initial = readMutablePlist\(indexPath\)/);
-  assert.match(renderer, /visible fallback verified/);
-  assert.match(renderer, /inactive Mission Control desktops remain unconfirmed/);
+  assert.match(renderer, /macOS Wallpaper Set mode/);
+  assert.match(renderer, /Preview button intentionally changes only the current desktop/);
 });

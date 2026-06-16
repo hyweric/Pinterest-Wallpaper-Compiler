@@ -20,9 +20,7 @@ import {
   Lock,
   MoreHorizontal,
   PanelLeft,
-  Pause,
   PencilLine,
-  Play,
   Plus,
   Repeat,
   RefreshCcw,
@@ -90,20 +88,17 @@ import { projectAfterExportSet } from "../shared/export-set";
 import { renderableLocalFileUrl } from "../shared/local-file-url";
 import {
   appendAppliedHistory,
-  formatWallpaperCountdown,
   generationStateAfterApplication,
   nextHistoryIndex,
-  nextScheduledAt,
   planTemplateRotation,
   previousHistoryIndex,
   normalizeAllSpacesRefreshMode,
   selectWallpaperTargets,
-  wallpaperIntervalToMs,
   wallpaperTargetModeNeedsInactiveSpaces
 } from "../shared/wallpaper";
 import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
-import { SingleFlightWallpaperOperation, SingleRunScheduler } from "../shared/scheduler";
+import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import "./styles.css";
@@ -113,6 +108,7 @@ const filePathKey = "pwc.filePath.v1";
 const backgroundAdvancedKey = "pwc.backgroundAdvanced.v1";
 const historyLimit = 80;
 const snapDistance = 8;
+const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
 
 function cssImageUrl(src?: string) {
   if (!src) return undefined;
@@ -192,20 +188,20 @@ type RenameState =
 type ExportSetState = {
   open: boolean;
   templateId?: string;
+  setName: string;
   count: number;
   format: "png" | "jpeg";
   quality: number;
   destinationPath?: string;
-  includeTemplateName: boolean;
-  includeTimestamp: boolean;
   avoidRepeats: boolean;
   advanceLiveState: boolean;
-  overwrite: boolean;
   busy: boolean;
+  cleanupBusy: boolean;
   cancelRequested: boolean;
   completed: number;
   skipped: number;
   failed: number;
+  finalPath?: string;
   error?: string;
 };
 
@@ -455,7 +451,6 @@ function App() {
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
   const [backgroundAdvancedOpen, setBackgroundAdvancedOpen] = useState(() => localStorage.getItem(backgroundAdvancedKey) === "true");
-  const [nowTick, setNowTick] = useState(Date.now());
   const [history, setHistory] = useState<{ past: WallpaperProject[]; future: WallpaperProject[] }>({ past: [], future: [] });
   const [pinterestDialog, setPinterestDialog] = useState<PinterestDialogState>({
     open: false,
@@ -468,15 +463,14 @@ function App() {
   });
   const [exportSet, setExportSet] = useState<ExportSetState>({
     open: false,
+    setName: "Wallpaper Set",
     count: 10,
     format: "png",
     quality: 0.92,
-    includeTemplateName: true,
-    includeTimestamp: false,
     avoidRepeats: true,
     advanceLiveState: false,
-    overwrite: false,
     busy: false,
+    cleanupBusy: false,
     cancelRequested: false,
     completed: 0,
     skipped: 0,
@@ -488,22 +482,12 @@ function App() {
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
-  const scheduledRunDeferredRef = useRef(false);
   const wallpaperOperationRef = useRef<SingleFlightWallpaperOperation | undefined>(undefined);
   if (!wallpaperOperationRef.current) wallpaperOperationRef.current = new SingleFlightWallpaperOperation(() => Date.now());
-  const loginRotationTriggeredRef = useRef(false);
   const exportCancelRef = useRef(false);
   const sourceApplyTimerRef = useRef<number | undefined>(undefined);
   const autosaveTimerRef = useRef<number | undefined>(undefined);
   const sourceApplyVersionRef = useRef(0);
-  const wallpaperSchedulerRef = useRef<SingleRunScheduler | undefined>(undefined);
-  if (!wallpaperSchedulerRef.current) {
-    wallpaperSchedulerRef.current = new SingleRunScheduler(
-      (callback, delayMs) => window.setTimeout(callback, delayMs),
-      (timer) => window.clearTimeout(timer as number),
-      () => Date.now()
-    );
-  }
   const selectedLayers = project.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId) ?? selectedLayers.at(-1);
   const linkedSourceIds = activeTemplateSourceIds(project);
@@ -521,25 +505,6 @@ function App() {
     }
     return templates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }, [project.templates.templates, templateFilter]);
-
-  function wallpaperMs(wallpaper = project.wallpaper) {
-    return wallpaperIntervalToMs(
-      wallpaper.interval,
-      wallpaper.customIntervalMinutes,
-      wallpaper.customIntervalValue,
-      wallpaper.customIntervalUnit
-    );
-  }
-
-  function scheduleFor(wallpaper = project.wallpaper, from = new Date()) {
-    return nextScheduledAt(
-      wallpaper.interval,
-      wallpaper.customIntervalMinutes,
-      from,
-      wallpaper.customIntervalValue,
-      wallpaper.customIntervalUnit
-    );
-  }
 
   async function runMacOSWallpaperDiagnostic() {
     setMacOSDiagnosticBusy(true);
@@ -559,7 +524,6 @@ function App() {
   function beginWallpaperOperation(kind: "manual" | "scheduled" | "history" | "source-change") {
     const lease = wallpaperOperationRef.current!.begin(kind);
     if (!lease) return undefined;
-    wallpaperSchedulerRef.current?.cancel();
     applyInFlightRef.current = true;
     setWallpaperBusy(true);
     if (lease.recoveredStale) {
@@ -572,22 +536,6 @@ function App() {
     if (!wallpaperOperationRef.current!.finish(token)) return;
     applyInFlightRef.current = false;
     setWallpaperBusy(false);
-
-    const latest = projectRef.current;
-    const currentDue = latest.wallpaper.nextScheduledAt
-      ? Date.parse(latest.wallpaper.nextScheduledAt)
-      : Number.NaN;
-    const needsFreshSchedule = scheduledRunDeferredRef.current
-      || !Number.isFinite(currentDue)
-      || currentDue <= Date.now() + 250;
-    scheduledRunDeferredRef.current = false;
-    if (!latest.wallpaper.enabled || latest.wallpaper.paused || !wallpaperMs(latest.wallpaper) || !needsFreshSchedule) return;
-
-    const scheduled = scheduleFor(latest.wallpaper, new Date());
-    if (!scheduled) return;
-    const next = { ...latest, wallpaper: { ...latest.wallpaper, nextScheduledAt: scheduled } };
-    projectRef.current = next;
-    setProject(next);
   }
 
   useEffect(() => {
@@ -604,34 +552,20 @@ function App() {
   useEffect(() => () => {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
-    wallpaperSchedulerRef.current?.cancel();
     wallpaperOperationRef.current?.clear();
     applyInFlightRef.current = false;
   }, []);
 
   useEffect(() => {
     void window.wallpaperApi.setTrayState({
-      enabled: project.wallpaper.enabled,
-      paused: project.wallpaper.paused,
-      interval: project.wallpaper.interval,
-      customIntervalMinutes: project.wallpaper.customIntervalMinutes,
-      customIntervalValue: project.wallpaper.customIntervalValue,
-      customIntervalUnit: project.wallpaper.customIntervalUnit,
-      nextScheduledAt: project.wallpaper.nextScheduledAt,
+      enabled: false,
+      paused: false,
+      interval: "manual",
+      nextScheduledAt: undefined,
       status: wallpaperStatus,
       lastError: project.wallpaper.lastError
     });
-  }, [
-    project.wallpaper.enabled,
-    project.wallpaper.paused,
-    project.wallpaper.interval,
-    project.wallpaper.customIntervalMinutes,
-    project.wallpaper.customIntervalValue,
-    project.wallpaper.customIntervalUnit,
-    project.wallpaper.nextScheduledAt,
-    project.wallpaper.lastError,
-    wallpaperStatus
-  ]);
+  }, [project.wallpaper.lastError, wallpaperStatus]);
 
   useEffect(() => {
     window.wallpaperApi.getWallpaperTargets()
@@ -640,38 +574,35 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode)) return;
-    void runMacOSWallpaperDiagnostic();
-  }, [project.wallpaper.targetMode]);
+    if (!project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval === "manual" && !project.wallpaper.nextScheduledAt) return;
+    const next = {
+      ...project,
+      wallpaper: {
+        ...project.wallpaper,
+        enabled: false,
+        paused: false,
+        interval: "manual" as const,
+        nextScheduledAt: undefined
+      }
+    };
+    projectRef.current = next;
+    setProject(next);
+  }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval, project.wallpaper.nextScheduledAt]);
 
   useEffect(() => {
     localStorage.setItem(backgroundAdvancedKey, String(backgroundAdvancedOpen));
   }, [backgroundAdvancedOpen]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     return window.wallpaperApi.onTrayCommand((command) => {
-      if (command === "generate-apply") void generateAndApply({ rotateTemplate: true });
+      if (command === "generate-apply") void previewOnCurrentDesktop();
       if (command === "previous") void applyPreviousWallpaper();
-      if (command === "pause") patchWallpaper({ paused: true });
-      if (command === "resume") patchWallpaper({ paused: false });
     });
   }, []);
 
   useEffect(() => {
     void window.wallpaperApi.applyStartupBehavior(projectRef.current.wallpaper.startMinimized);
   }, []);
-
-  useEffect(() => {
-    if (loginRotationTriggeredRef.current) return;
-    if (!project.wallpaper.enabled || project.wallpaper.paused || project.wallpaper.interval !== "login") return;
-    loginRotationTriggeredRef.current = true;
-    void generateAndApply({ rotateTemplate: true, automatic: true });
-  }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval]);
 
   useEffect(() => {
     return window.wallpaperApi.onPinterestProgress((progress) => {
@@ -726,58 +657,6 @@ function App() {
     () => ({ width: project.canvas.width * zoom, height: project.canvas.height * zoom }),
     [project.canvas.width, project.canvas.height, zoom]
   );
-
-  useEffect(() => {
-    const scheduler = wallpaperSchedulerRef.current!;
-    const ms = wallpaperMs(project.wallpaper);
-    if (!project.wallpaper.enabled || project.wallpaper.paused || !ms) {
-      scheduler.cancel();
-      setWallpaperStatus(project.wallpaper.paused ? "paused" : "idle");
-      setProject((current) => current.wallpaper.nextScheduledAt
-        ? { ...current, wallpaper: { ...current.wallpaper, nextScheduledAt: undefined } }
-        : current);
-      return;
-    }
-
-    const parsedCurrent = project.wallpaper.nextScheduledAt
-      ? Date.parse(project.wallpaper.nextScheduledAt)
-      : Number.NaN;
-    const scheduled = Number.isFinite(parsedCurrent)
-      ? project.wallpaper.nextScheduledAt
-      : scheduleFor(project.wallpaper);
-
-    if (scheduled && scheduled !== project.wallpaper.nextScheduledAt) {
-      setProject((current) => ({
-        ...current,
-        wallpaper: { ...current.wallpaper, nextScheduledAt: scheduled }
-      }));
-      return;
-    }
-    if (!scheduled) return;
-
-    setWallpaperStatus((current) => applyInFlightRef.current ? current : "scheduled");
-    scheduler.schedule(Date.parse(scheduled), async () => {
-      const latest = projectRef.current;
-      const latestMs = wallpaperMs(latest.wallpaper);
-      if (!latest.wallpaper.enabled || latest.wallpaper.paused || !latestMs) return;
-      if (applyInFlightRef.current) {
-        scheduledRunDeferredRef.current = true;
-        setMessage("Scheduled wallpaper run deferred until the current operation finishes.");
-        return;
-      }
-      await generateAndApply({ rotateTemplate: true, automatic: true });
-    });
-
-    return () => scheduler.cancel();
-  }, [
-    project.wallpaper.enabled,
-    project.wallpaper.paused,
-    project.wallpaper.interval,
-    project.wallpaper.customIntervalMinutes,
-    project.wallpaper.customIntervalValue,
-    project.wallpaper.customIntervalUnit,
-    project.wallpaper.nextScheduledAt
-  ]);
 
   const commitProject = useCallback((
     updater: (current: WallpaperProject) => WallpaperProject,
@@ -872,27 +751,17 @@ function App() {
   }
 
   function patchWallpaper(patch: Partial<WallpaperProject["wallpaper"]>) {
-    commitProject((current) => {
-      const wallpaper = { ...current.wallpaper, ...patch };
-      const scheduleChanged =
-        "enabled" in patch ||
-        "paused" in patch ||
-        "interval" in patch ||
-        "customIntervalMinutes" in patch ||
-        "customIntervalValue" in patch ||
-        "customIntervalUnit" in patch;
-      return {
-        ...current,
-        wallpaper: {
-          ...wallpaper,
-          nextScheduledAt: scheduleChanged && wallpaper.enabled && !wallpaper.paused
-            ? scheduleFor(wallpaper)
-            : scheduleChanged
-              ? undefined
-              : wallpaper.nextScheduledAt
-        }
-      };
-    });
+    commitProject((current) => ({
+      ...current,
+      wallpaper: {
+        ...current.wallpaper,
+        ...patch,
+        enabled: false,
+        paused: false,
+        interval: "manual",
+        nextScheduledAt: undefined
+      }
+    }));
   }
 
   function patchCanvas(patch: Partial<CanvasSettings>) {
@@ -1419,9 +1288,9 @@ function App() {
     setPinterestDialog((current) => ({ ...current, busy: false, stage: "canceled", error: "Import canceled. Cached pins were preserved." }));
   }
 
-  function recordWallpaperFailure(error: string, automatic: boolean) {
+  function recordWallpaperFailure(error: string, _automatic = false) {
     const failures = (projectRef.current.wallpaper.consecutiveFailures ?? 0) + 1;
-    setWallpaperStatus(automatic && failures >= 3 ? "paused" : "failed");
+    setWallpaperStatus("failed");
     setProject((current) => {
       const next = {
         ...current,
@@ -1429,16 +1298,16 @@ function App() {
           ...current.wallpaper,
           lastError: error,
           consecutiveFailures: failures,
-          paused: automatic && failures >= 3 ? true : current.wallpaper.paused,
-          nextScheduledAt: automatic && failures >= 3
-            ? undefined
-            : scheduleFor(current.wallpaper)
+          enabled: false,
+          paused: false,
+          interval: "manual" as const,
+          nextScheduledAt: undefined
         }
       };
       projectRef.current = next;
       return next;
     });
-    setMessage(automatic && failures >= 3 ? `${error} Rotation paused after repeated failures.` : error);
+    setMessage(error);
   }
 
   async function applyCandidate(
@@ -1517,9 +1386,10 @@ function App() {
           lastAppliedTemplateId: templateId,
           lastError: undefined,
           consecutiveFailures: 0,
-          nextScheduledAt: generatedProject.wallpaper.enabled && !generatedProject.wallpaper.paused
-            ? scheduleFor(generatedProject.wallpaper, new Date(appliedAt))
-            : undefined
+          enabled: false,
+          paused: false,
+          interval: "manual",
+          nextScheduledAt: undefined
         },
         recentCombinations: appendAppliedHistory(generatedProject.recentCombinations, historyEntry)
       }));
@@ -1642,9 +1512,10 @@ function App() {
           lastUpdatedAt: appliedAt,
           lastError: undefined,
           consecutiveFailures: 0,
-          nextScheduledAt: working.wallpaper.enabled && !working.wallpaper.paused
-            ? scheduleFor(working.wallpaper, new Date(appliedAt))
-            : undefined
+          enabled: false,
+          paused: false,
+          interval: "manual",
+          nextScheduledAt: undefined
         },
         recentCombinations: entries.reduce((history, entry) => appendAppliedHistory(history, entry), working.recentCombinations)
       }));
@@ -1684,6 +1555,16 @@ function App() {
     const target = targetTemplateId ? base.templates.templates.find((item) => item.id === targetTemplateId) : undefined;
     if (target) base = normalizeProject(workspaceFromTemplate(base, target));
 
+    if (isMacOS && wallpaperTargetModeNeedsInactiveSpaces(base.wallpaper.targetMode)) {
+      if (options.automatic) {
+        recordWallpaperFailure("Automatic all-desktop application is replaced by macOS folder shuffle. Create a wallpaper set and let macOS rotate it across Spaces.", true);
+        return;
+      }
+      openExportSet(targetTemplateId);
+      setMessage("Choose how many wallpaper variations to create, then select the exported folder in macOS Wallpaper Settings.");
+      return;
+    }
+
     if (base.wallpaper.targetTemplateMode !== "single-template" && !options.templateId) {
       await applyDifferentWallpapers(base, {
         automatic: options.automatic,
@@ -1699,15 +1580,31 @@ function App() {
     });
   }
 
-  async function applyCurrentDesignAsWallpaper() {
+  async function previewOnCurrentDesktop() {
     const current = normalizeProject(projectRef.current);
-    const assignments = Object.fromEntries(
-      current.layers
-        .map((layer) => [layer.id, layer.generatedImageId ?? layer.selectedImageId] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[1]))
-    );
-    const combination = createCombination(assignments, current.templates.activeTemplateId);
-    await applyCandidate(current, combination, { label: "Current preview applied" });
+    const previewBase = normalizeProject({
+      ...current,
+      wallpaper: {
+        ...current.wallpaper,
+        enabled: false,
+        paused: false,
+        interval: "manual",
+        nextScheduledAt: undefined,
+        targetMode: "current-desktop",
+        scope: "current-desktop",
+        monitorMode: "primary",
+        monitorId: undefined,
+        targetTemplateMode: "single-template"
+      }
+    });
+    // Preview is still a generation action: resolve every assigned source pool
+    // before rendering, then constrain only the native apply target. The
+    // previous Phase 15.1.14 implementation rendered the unprepared editor
+    // state, which could leave shuffle placeholders unchanged or empty.
+    const prepared = prepareGeneratedProject(previewBase, previewBase.templates.activeTemplateId);
+    await applyCandidate(normalizeProject(prepared.project), prepared.combination, {
+      label: "Previewed on current desktop"
+    });
   }
 
   async function applyHistoryAt(index: number) {
@@ -1727,17 +1624,17 @@ function App() {
         filePath: entry.filePath,
         apply: (filePath) => window.wallpaperApi.applyWallpaperFile({
           filePath,
-          monitorMode: current.wallpaper.monitorMode,
+          monitorMode: "primary",
           displayMode: current.wallpaper.displayMode,
-          scope: current.wallpaper.scope,
-          targetMode: current.wallpaper.targetMode,
-          monitorId: current.wallpaper.monitorId,
+          scope: "current-desktop",
+          targetMode: "current-desktop",
+          monitorId: undefined,
           allSpacesRefreshMode: normalizeAllSpacesRefreshMode(current.wallpaper.allSpacesRefreshMode),
           transitionEnabled: current.wallpaper.transitionEnabled,
           transitionDurationMs: current.wallpaper.transitionDurationMs
         }),
         onStatus: setWallpaperStatus,
-        timeouts: { applyMs: wallpaperTargetModeNeedsInactiveSpaces(current.wallpaper.targetMode) ? 120_000 : 45_000 }
+        timeouts: { applyMs: 45_000 }
       });
       setLastWallpaperDiagnostics(result.diagnostics);
       const appliedAt = result.appliedAt ?? new Date().toISOString();
@@ -1758,7 +1655,7 @@ function App() {
       });
       setWallpaperHistoryIndex(index);
       setWallpaperStatus("applied");
-      setMessage(`Applied history: ${entry.templateName ?? entry.name}`);
+      setMessage(`Previewed history on current desktop: ${entry.templateName ?? entry.name}`);
     } catch (error) {
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to apply wallpaper history item.", false);
     } finally {
@@ -1807,19 +1704,30 @@ function App() {
     }
   }
 
-  function openExportSet(templateId = project.templates.activeTemplateId) {
+  function openExportSet(templateId = projectRef.current.templates.activeTemplateId) {
     exportCancelRef.current = false;
+    const template = projectRef.current.templates.templates.find((item) => item.id === templateId)
+      ?? projectRef.current.templates.templates.find((item) => item.id === projectRef.current.templates.activeTemplateId);
     setExportSet((current) => ({
       ...current,
       open: true,
       templateId,
+      setName: template?.name || projectRef.current.name || "Wallpaper Set",
       busy: false,
       cancelRequested: false,
       completed: 0,
       skipped: 0,
       failed: 0,
+      finalPath: undefined,
       error: undefined
     }));
+    if (!exportSet.destinationPath) {
+      void window.wallpaperApi.getDefaultExportSetFolder().then((result) => {
+        if (!result.canceled && result.filePath) {
+          setExportSet((current) => current.open && !current.destinationPath ? { ...current, destinationPath: result.filePath } : current);
+        }
+      });
+    }
   }
 
   async function chooseExportSetFolder() {
@@ -1832,36 +1740,87 @@ function App() {
     setExportSet((current) => ({ ...current, cancelRequested: true }));
   }
 
+  async function cleanupWallpaperSets() {
+    setExportSet((current) => ({ ...current, cleanupBusy: true, error: undefined }));
+    const result = await window.wallpaperApi.cleanupExportSets(exportSet.destinationPath);
+    if (!result.ok) {
+      setExportSet((current) => ({ ...current, cleanupBusy: false, error: result.error ?? "Unable to clean up wallpaper sets." }));
+      return;
+    }
+    if (result.canceled) {
+      setExportSet((current) => ({ ...current, cleanupBusy: false }));
+      return;
+    }
+    const deleted = (result.deletedSetCount ?? 0) + (result.deletedTemporaryCount ?? 0);
+    setMessage(deleted
+      ? `Cleaned up ${result.deletedSetCount ?? 0} old wallpaper set${result.deletedSetCount === 1 ? "" : "s"} and ${result.deletedTemporaryCount ?? 0} incomplete folder${result.deletedTemporaryCount === 1 ? "" : "s"}.`
+      : "No old managed wallpaper sets needed cleanup.");
+    setExportSet((current) => ({ ...current, cleanupBusy: false }));
+  }
+
+  async function revealWallpaperSet(folderPath?: string) {
+    const target = folderPath ?? exportSet.finalPath ?? exportSet.destinationPath;
+    if (!target) return;
+    const result = await window.wallpaperApi.revealExportSet(target);
+    if (!result.ok) setMessage(result.error ?? "Unable to open the wallpaper set folder.");
+  }
+
+  async function openMacOSWallpaperSettings() {
+    const result = await window.wallpaperApi.openWallpaperSettings();
+    if (!result.ok) setMessage(result.error ?? "Unable to open macOS Wallpaper Settings.");
+  }
+
   async function runExportSet() {
     const options = exportSet;
     const count = clamp(Math.round(options.count), 1, 500);
-    let destinationPath = options.destinationPath;
-    if (!destinationPath) {
-      const result = await window.wallpaperApi.chooseExportSetFolder();
+    let rootPath = options.destinationPath;
+    if (!rootPath) {
+      const result = await window.wallpaperApi.getDefaultExportSetFolder();
       if (result.canceled || !result.filePath) return;
-      destinationPath = result.filePath;
-      setExportSet((current) => ({ ...current, destinationPath }));
+      rootPath = result.filePath;
+      setExportSet((current) => ({ ...current, destinationPath: rootPath }));
     }
     const template = projectRef.current.templates.templates.find((item) => item.id === options.templateId)
       ?? projectRef.current.templates.templates.find((item) => item.id === projectRef.current.templates.activeTemplateId);
     if (!template) {
-      setExportSet((current) => ({ ...current, error: "Choose a template before exporting." }));
+      setExportSet((current) => ({ ...current, error: "Choose a template before creating a wallpaper set." }));
       return;
     }
 
     exportCancelRef.current = false;
-    setExportSet((current) => ({ ...current, busy: true, cancelRequested: false, completed: 0, skipped: 0, failed: 0, error: undefined }));
+    setExportSet((current) => ({
+      ...current,
+      busy: true,
+      cancelRequested: false,
+      completed: 0,
+      skipped: 0,
+      failed: 0,
+      finalPath: undefined,
+      error: undefined
+    }));
+
+    const begin = await window.wallpaperApi.beginExportSet({
+      rootPath,
+      setName: options.setName || template.name,
+      projectName: projectRef.current.name,
+      templateName: template.name,
+      format: options.format,
+      variationCount: count,
+      canvasWidth: template.project.canvas.width,
+      canvasHeight: template.project.canvas.height
+    });
+    if (!begin.ok || !begin.sessionId) {
+      setExportSet((current) => ({ ...current, busy: false, error: begin.error ?? "Unable to prepare the wallpaper set." }));
+      return;
+    }
+
+    const sessionId = begin.sessionId;
     let exportProject = workspaceFromTemplate(cloneProject(projectRef.current), template);
     const used = new Set<string>();
     const signatures = new Set<string>();
     let completed = 0;
-    let skipped = 0;
     let failed = 0;
     let firstError: string | undefined;
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const baseName = (options.includeTemplateName ? template.name : "Wallpaper")
-      .replace(/[^a-zA-Z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "Wallpaper";
 
     for (let index = 1; index <= count; index += 1) {
       if (exportCancelRef.current) break;
@@ -1875,41 +1834,62 @@ function App() {
       }
       signatures.add(signature);
       exportProject = prepared.project;
-      const suffix = `${String(index).padStart(3, "0")}${options.includeTimestamp ? `-${stamp}` : ""}`;
-      const fileName = `${baseName}-${suffix}.${options.format === "png" ? "png" : "jpg"}`;
+      const fileName = `wallpaper-${String(index).padStart(3, "0")}.${options.format === "png" ? "png" : "jpg"}`;
       try {
         const dataUrl = await renderProjectToDataUrl(exportProject, options.format, options.quality);
-        const result = await window.wallpaperApi.writeExportSetFile({
-          destinationPath,
-          dataUrl,
-          fileName,
-          overwrite: options.overwrite
-        });
-        if (result.ok) completed += 1;
-        else if (result.skipped) skipped += 1;
-        else {
-          failed += 1;
-          firstError ??= result.error ?? `Could not write ${fileName}.`;
-        }
+        const result = await window.wallpaperApi.writeExportSetFile({ sessionId, dataUrl, fileName });
+        if (!result.ok) throw new Error(result.error ?? `Could not write ${fileName}.`);
+        completed += 1;
       } catch (error) {
-        failed += 1;
-        firstError ??= error instanceof Error ? error.message : `Could not export ${fileName}.`;
+        failed = 1;
+        firstError = error instanceof Error ? error.message : `Could not export ${fileName}.`;
+        break;
       }
-      setExportSet((current) => ({ ...current, completed, skipped, failed }));
+      setExportSet((current) => ({ ...current, completed, failed }));
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     }
 
-    if (options.advanceLiveState && !exportCancelRef.current) {
+    if (exportCancelRef.current || failed) {
+      await window.wallpaperApi.abortExportSet(sessionId);
+      const summary = exportCancelRef.current
+        ? `Wallpaper set canceled. No incomplete folder was published.`
+        : `Wallpaper set failed. No incomplete folder was published.`;
+      setMessage(summary);
+      setExportSet((current) => ({
+        ...current,
+        busy: false,
+        cancelRequested: exportCancelRef.current,
+        completed,
+        failed,
+        error: failed ? firstError : undefined
+      }));
+      return;
+    }
+
+    if (options.advanceLiveState) {
       const normalized = touchProject(updateActiveTemplateSnapshot(normalizeProject(exportProject)));
       const nextProject = projectAfterExportSet(projectRef.current, normalized, true);
       projectRef.current = nextProject;
       setProject(nextProject);
     }
-    const summary = exportCancelRef.current
-      ? `Export stopped: ${completed} exported, ${skipped} skipped, ${failed} failed.`
-      : `Export complete: ${completed} exported, ${skipped} skipped, ${failed} failed.`;
-    setMessage(summary);
-    setExportSet((current) => ({ ...current, busy: false, cancelRequested: exportCancelRef.current, completed, skipped, failed, error: failed ? `${failed} variation${failed === 1 ? "" : "s"} failed. ${firstError ?? ""}`.trim() : undefined }));
+
+    const finalized = await window.wallpaperApi.finalizeExportSet({ sessionId });
+    if (!finalized.ok || !finalized.finalPath) {
+      await window.wallpaperApi.abortExportSet(sessionId);
+      setExportSet((current) => ({ ...current, busy: false, failed: 1, error: finalized.error ?? "Unable to finalize the wallpaper set." }));
+      return;
+    }
+
+    setMessage(`Created macOS wallpaper set with ${completed} variation${completed === 1 ? "" : "s"}: ${finalized.finalPath}`);
+    setExportSet((current) => ({
+      ...current,
+      busy: false,
+      cancelRequested: false,
+      completed,
+      failed: 0,
+      finalPath: finalized.finalPath,
+      error: undefined
+    }));
   }
 
   async function saveProject() {
@@ -2419,7 +2399,14 @@ function App() {
   }
 
   async function applyTemplate(template: WallpaperTemplate) {
-    await generateAndApply({ templateId: template.id });
+    const current = normalizeProject(updateActiveTemplateSnapshot(projectRef.current));
+    const workspace = normalizeProject(workspaceFromTemplate({
+      ...current,
+      templates: { ...current.templates, activeTemplateId: template.id }
+    }, template));
+    projectRef.current = workspace;
+    setProject(workspace);
+    await previewOnCurrentDesktop();
   }
 
   function sourceAssignmentCount(sourceId: string) {
@@ -2695,6 +2682,9 @@ function App() {
           onChooseFolder={() => void chooseExportSetFolder()}
           onRun={() => void runExportSet()}
           onCancel={cancelExportSet}
+          onCleanup={() => void cleanupWallpaperSets()}
+          onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
+          onOpenSettings={() => void openMacOSWallpaperSettings()}
           onClose={() => setExportSet((current) => ({ ...current, open: false }))}
         />
         <GlobalTooltip />
@@ -2973,7 +2963,15 @@ function App() {
             <span>{project.canvas.width} x {project.canvas.height}</span>
           </div>
           <div className="toolbar-cluster">
-            <button className="primary-action" disabled={wallpaperBusy} onClick={() => void generateAndApply()}><Wallpaper size={17} /> {wallpaperBusy ? "Working…" : "Generate and Apply"}</button>
+            <button className="secondary-action" disabled={wallpaperBusy} onClick={() => void previewOnCurrentDesktop()}>
+              <Wallpaper size={17} />
+              {wallpaperBusy ? "Working…" : "Preview on Current Desktop"}
+            </button>
+            {isMacOS && (
+              <button className="primary-action" disabled={wallpaperBusy} onClick={() => openExportSet()}>
+                <Images size={17} /> Create Wallpaper Set
+              </button>
+            )}
             <div className="overflow-wrap">
               <button className="icon-button tooltip-anchor" data-tooltip="More actions" aria-label="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
               {toolbarMenuOpen && (
@@ -2984,7 +2982,8 @@ function App() {
                   <button onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   <button onClick={() => exportWallpaper("jpeg")}><Download size={16} /> Export JPEG</button>
-                  <button onClick={() => openExportSet()}><Images size={16} /> Export Set</button>
+                  <button onClick={() => openExportSet()}><Images size={16} /> Create macOS Wallpaper Set</button>
+                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
                   <button onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={16} /> Toggle Left Panel</button>
                   <button onClick={() => setRightPanelOpen((value) => !value)}><SlidersHorizontal size={16} /> Toggle Inspector</button>
                 </div>
@@ -3196,7 +3195,6 @@ function App() {
               targets={wallpaperTargets}
               templates={project.templates.templates}
               runtimeStatus={wallpaperStatus}
-              countdownLabel={formatWallpaperCountdown(project.wallpaper.nextScheduledAt, nowTick)}
             />
           </>
         )}
@@ -3236,6 +3234,9 @@ function App() {
         onChooseFolder={() => void chooseExportSetFolder()}
         onRun={() => void runExportSet()}
         onCancel={cancelExportSet}
+        onCleanup={() => void cleanupWallpaperSets()}
+        onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
+        onOpenSettings={() => void openMacOSWallpaperSettings()}
         onClose={() => setExportSet((current) => ({ ...current, open: false }))}
       />
       <GlobalTooltip />
@@ -3354,7 +3355,7 @@ function TemplateHome({
               <time>{new Date(template.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
             </div>
             <div className="home-template-actions" onClick={(event) => event.stopPropagation()}>
-              <button className="template-apply" onClick={() => onApply(template)}><Wallpaper size={15} /> Apply</button>
+              <button className="template-apply" onClick={() => onApply(template)}><Wallpaper size={15} /> Preview</button>
               <button onClick={() => onOpen(template)}>Edit</button>
               <button onClick={() => onDuplicate(template)}>Duplicate</button>
               <button onClick={() => onRename(template)}>Rename</button>
@@ -3758,6 +3759,9 @@ function ExportSetDialog({
   onChooseFolder,
   onRun,
   onCancel,
+  onCleanup,
+  onReveal,
+  onOpenSettings,
   onClose
 }: {
   state: ExportSetState;
@@ -3765,40 +3769,124 @@ function ExportSetDialog({
   onChooseFolder: () => void;
   onRun: () => void;
   onCancel: () => void;
+  onCleanup: () => void;
+  onReveal: (folderPath?: string) => void;
+  onOpenSettings: () => void;
   onClose: () => void;
 }) {
   if (!state.open) return null;
-  const totalFinished = state.completed + state.skipped + state.failed;
+  const totalFinished = state.completed + state.failed;
   const progress = Math.min(100, (totalFinished / Math.max(1, state.count)) * 100);
+  const ready = Boolean(state.finalPath);
   return (
     <div className="modal-backdrop" onMouseDown={() => !state.busy && onClose()}>
-      <section className="modal export-set-modal" onMouseDown={(event) => event.stopPropagation()}>
+      <section className={`modal export-set-modal ${ready ? "setup-mode" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
-          <div><h2>Export Set</h2><p>Create distinct wallpaper variations without changing the active desktop or live source state.</p></div>
+          <div>
+            <h2>{ready ? "Set Up Your macOS Wallpaper Rotation" : "Create macOS Wallpaper Set"}</h2>
+            <p>{ready
+              ? "Read these steps first. Wallpaper Settings opens only when you click the button below."
+              : "Generate a new immutable folder of variations, then let macOS shuffle it across every desktop Space."}</p>
+          </div>
           <button className="button ghost" disabled={state.busy} onClick={onClose}>Close</button>
         </div>
-        <div className="export-set-grid">
-          <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /></label>
-          <label>Format<select value={state.format} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, format: event.target.value as "png" | "jpeg" }))}><option value="png">PNG</option><option value="jpeg">JPEG</option></select></label>
-          {state.format === "jpeg" && <label>JPEG quality<input type="range" min="0.4" max="1" step="0.02" value={state.quality} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, quality: Number(event.target.value) }))} /><span>{Math.round(state.quality * 100)}%</span></label>}
-        </div>
-        <div className="destination-row"><span title={state.destinationPath}>{state.destinationPath ?? "Choose a destination folder"}</span><button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose Folder</button></div>
-        <div className="export-options">
-          <label><input type="checkbox" checked={state.includeTemplateName} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTemplateName: event.target.checked }))} /> Include template name</label>
-          <label><input type="checkbox" checked={state.includeTimestamp} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, includeTimestamp: event.target.checked }))} /> Include timestamp</label>
-          <label><input type="checkbox" checked={state.avoidRepeats} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, avoidRepeats: event.target.checked }))} /> Avoid repeated combinations</label>
-          <label><input type="checkbox" checked={state.advanceLiveState} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, advanceLiveState: event.target.checked }))} /> Advance live source state</label>
-          <label><input type="checkbox" checked={state.overwrite} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, overwrite: event.target.checked }))} /> Replace existing files</label>
-        </div>
-        {(state.busy || totalFinished > 0) && <>
-          <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
-          <div className="export-summary"><span>{state.completed} exported</span><span>{state.skipped} skipped</span><span>{state.failed} failed</span></div>
-        </>}
-        {state.error && <p className="dialog-error">{state.error}</p>}
-        <div className="dialog-actions">
-          {state.busy ? <button className="button destructive" onClick={onCancel}>Cancel</button> : <button className="button primary" onClick={onRun}>Export Variations</button>}
-          {!state.busy && <button className="button ghost" onClick={onClose}>Done</button>}
-        </div>
+
+        {ready && state.finalPath ? (
+          <div className="wallpaper-setup-guide">
+            <div className="wallpaper-setup-banner">
+              <strong>Your wallpaper set is ready.</strong>
+              <span>Keep this instruction window open while completing the setup in System Settings.</span>
+            </div>
+
+            <div className="wallpaper-set-path-card">
+              <span>Folder to select</span>
+              <code>{state.finalPath}</code>
+              <button className="button ghost" onClick={() => void navigator.clipboard.writeText(state.finalPath ?? "")}>Copy Folder Path</button>
+            </div>
+
+            <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
+              <div className="wallpaper-setup-step">
+                <span className="setup-step-number">1</span>
+                <div><strong>Locate the exported folder</strong><p>Click Show Set in Finder below. Leave that Finder window open so the correct folder is easy to identify.</p></div>
+              </div>
+              <div className="wallpaper-setup-step">
+                <span className="setup-step-number">2</span>
+                <div><strong>Open Wallpaper Settings</strong><p>Click Open Wallpaper Settings only after you have read these instructions.</p></div>
+              </div>
+              <div className="wallpaper-setup-step">
+                <span className="setup-step-number">3</span>
+                <div><strong>Add the folder</strong><p>Scroll to Your Photos, choose Add Photo, choose Choose Folder, then select the exact folder shown above.</p></div>
+              </div>
+              <div className="wallpaper-setup-step">
+                <span className="setup-step-number">4</span>
+                <div><strong>Enable the rotation</strong><p>Select Shuffle, choose the interval you want, and turn on Show on all Spaces.</p></div>
+              </div>
+            </div>
+
+            <div className="wallpaper-setup-actions">
+              <button className="button secondary" onClick={() => onReveal(state.finalPath)}>Show Set in Finder</button>
+              <button className="button primary" onClick={onOpenSettings}>Open Wallpaper Settings</button>
+            </div>
+
+            <p className="settings-warning wallpaper-set-retention-warning">
+              Keep this folder in place while macOS is using it. Before deleting an old set, select a different wallpaper folder in System Settings.
+            </p>
+
+            <div className="dialog-actions">
+              <button className="button secondary" onClick={() => onChange((current) => ({
+                ...current,
+                finalPath: undefined,
+                completed: 0,
+                failed: 0,
+                error: undefined
+              }))}>Back to Set Options</button>
+              <button className="button ghost" onClick={onClose}>Done</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="wallpaper-set-note">
+              Each run creates a new versioned folder. Existing sets are never overwritten, preventing stale macOS folder caches.
+            </div>
+
+            <div className="export-set-grid">
+              <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
+              <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
+              <label>Format<select value={state.format} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, format: event.target.value as "png" | "jpeg" }))}><option value="png">PNG</option><option value="jpeg">JPEG</option></select></label>
+              {state.format === "jpeg" && <label>JPEG quality<input type="range" min="0.4" max="1" step="0.02" value={state.quality} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, quality: Number(event.target.value) }))} /><span>{Math.round(state.quality * 100)}%</span></label>}
+            </div>
+
+            <div className="destination-row wallpaper-set-destination">
+              <div>
+                <strong>Wallpaper Sets parent folder</strong>
+                <span title={state.destinationPath}>{state.destinationPath ?? "Loading default Pictures folder…"}</span>
+              </div>
+              <div className="destination-actions">
+                <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
+                <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
+                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up…"}</button>
+              </div>
+            </div>
+
+            <div className="export-options">
+              <label><input type="checkbox" checked={state.avoidRepeats} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, avoidRepeats: event.target.checked }))} /> Avoid repeated combinations when possible</label>
+              <label><input type="checkbox" checked={state.advanceLiveState} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, advanceLiveState: event.target.checked }))} /> Continue the source shuffle state after export</label>
+            </div>
+
+            {(state.busy || totalFinished > 0) && <>
+              <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
+              <div className="export-summary"><span>{state.completed} of {state.count} generated</span><span>{state.failed} failed</span></div>
+            </>}
+            {state.error && <p className="dialog-error">{state.error}</p>}
+
+            <div className="dialog-actions">
+              {state.busy
+                ? <button className="button destructive" onClick={onCancel}>Cancel and Remove Temporary Files</button>
+                : <button className="button primary" onClick={onRun}>{`Generate ${Math.max(1, Math.round(state.count))} Wallpapers`}</button>}
+              {!state.busy && <button className="button ghost" onClick={onClose}>Cancel</button>}
+            </div>
+          </>
+        )}
       </section>
     </div>
   );
@@ -3873,8 +3961,7 @@ function WallpaperPanel({
   onRunMacOSDiagnostic,
   targets,
   templates,
-  runtimeStatus,
-  countdownLabel
+  runtimeStatus
 }: {
   project: WallpaperProject;
   onPatch: (patch: Partial<WallpaperProject["wallpaper"]>) => void;
@@ -3888,23 +3975,9 @@ function WallpaperPanel({
   targets: WallpaperTarget[];
   templates: WallpaperTemplate[];
   runtimeStatus: WallpaperRuntimeStatus;
-  countdownLabel: string;
 }) {
-  const rotationActive = project.wallpaper.enabled && !project.wallpaper.paused && project.wallpaper.interval !== "manual";
   const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
   const allSpacesRefreshMode = normalizeAllSpacesRefreshMode(project.wallpaper.allSpacesRefreshMode);
-
-  function toggleRotation() {
-    if (rotationActive) {
-      onPatch({ paused: true });
-      return;
-    }
-    onPatch({
-      enabled: true,
-      paused: false,
-      interval: project.wallpaper.interval === "manual" ? "15m" : project.wallpaper.interval
-    });
-  }
 
   return (
     <section className="panel wallpaper-panel settings-section">
@@ -3914,10 +3987,12 @@ function WallpaperPanel({
           Apply to
           <select value={project.wallpaper.targetMode} onChange={(event) => {
             const targetMode = event.target.value as WallpaperProject["wallpaper"]["targetMode"];
+            const inactiveSpaces = isMacOS && wallpaperTargetModeNeedsInactiveSpaces(targetMode);
             onPatch({
               targetMode,
               scope: targetMode === "current-desktop" || targetMode === "current-monitor" ? "current-desktop" : "same-all-desktops",
-              monitorMode: targetMode === "all-visible-monitors" || targetMode === "all-desktops-all-monitors" ? "all" : "primary"
+              monitorMode: targetMode === "all-visible-monitors" || targetMode === "all-desktops-all-monitors" ? "all" : "primary",
+              ...(inactiveSpaces ? { enabled: false, paused: false, interval: "manual" as const } : {})
             });
           }}>
             <option value="current-desktop">Current desktop only</option>
@@ -3938,64 +4013,14 @@ function WallpaperPanel({
           </label>
         )}
         {wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode) && (
-          <div className="macos-space-status">
-            <label>
-              Refresh all desktops
-              <select value={allSpacesRefreshMode} onChange={(event) => onPatch({ allSpacesRefreshMode: event.target.value as WallpaperProject["wallpaper"]["allSpacesRefreshMode"] })}>
-                <option value="silent-observer">Safe silent refresh</option>
-              </select>
-            </label>
+          <div className="macos-space-status wallpaper-set-target-note">
+            <strong>macOS Wallpaper Set mode</strong>
             <p className="settings-hint">
-              No wallpaper process restarts, overlay windows, or Space switching. Visible monitors update now; inactive desktops update when macOS visits them.
+              Use Create Wallpaper Set to export a new immutable folder of variations. The Preview button intentionally changes only the current desktop.
             </p>
-            <div className="compact-action-row">
-              <button className="button ghost" disabled={macOSDiagnosticBusy} onClick={onRunMacOSDiagnostic}>
-                <RefreshCcw size={14} /> {macOSDiagnosticBusy ? "Inspecting…" : "Run macOS diagnostic"}
-              </button>
-            </div>
-            {!macOSDiagnostic && <p className="settings-warning">Run the diagnostic to verify which all-desktop refresh strategy is available on this Mac.</p>}
-            {macOSDiagnostic && (
-              <>
-                <p className={macOSDiagnostic.recommendedStrategy === "observer-only" || macOSDiagnostic.recommendedStrategy === "unsupported" ? "settings-warning" : "settings-success"}>
-                  Detected {macOSDiagnostic.displays.length} monitor{macOSDiagnostic.displays.length === 1 ? "" : "s"} and {macOSDiagnostic.totalSpaceCount} Mission Control desktop{macOSDiagnostic.totalSpaceCount === 1 ? "" : "s"}. {macOSDiagnostic.sharedSpaceCount ? `${macOSDiagnostic.sharedSpaceCount} shared wallpaper Store record${macOSDiagnostic.sharedSpaceCount === 1 ? "" : "s"} excluded from the desktop count. ` : ""}Strategy: {macOSDiagnostic.recommendedStrategy}.
-                </p>
-                {macOSDiagnostic.warnings.map((warning) => <p className="settings-warning" key={warning}>{warning}</p>)}
-                {macOSDiagnostic.errors.map((error) => <p className="status-error" key={error}>{error}</p>)}
-              </>
-            )}
-            {diagnostics?.macOSAllSpaces && (
-              <>
-                <p className={diagnostics.macOSAllSpaces.modernStoreVerified ? "settings-success" : "settings-warning"}>
-	                  {diagnostics.macOSAllSpaces.observerFallback
-	                    ? `Last apply: visible apply verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so the active Space-change observer will repair inactive Mission Control desktops as you visit them.`
-	                    : diagnostics.macOSAllSpaces.fallbackToVisibleMonitors
-	                      ? `Last apply: visible fallback verified ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records and preserved ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} Store desktop records for the current visible Space. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}Direct inactive-Space control was unavailable, so inactive Mission Control desktops remain unconfirmed.`
-		                    : `Last apply: verified ${diagnostics.macOSAllSpaces.verifiedSpaceCount} of ${diagnostics.macOSAllSpaces.targetSpaceCount} system desktop records and ${diagnostics.macOSAllSpaces.verifiedDisplayCount} of ${diagnostics.macOSAllSpaces.targetDisplayCount} display records. ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount ? `Shared Store records: ${diagnostics.macOSAllSpaces.verifiedSharedSpaceCount} of ${diagnostics.macOSAllSpaces.updatedSharedSpaceCount} verified. ` : ""}${diagnostics.macOSAllSpaces.observerStarted ? "Direct update succeeded; the observer is running only for maintenance." : "Direct update completed without an observer."}`}
-	                </p>
-	                <p className="settings-hint">
-	                  Background method: {diagnostics.macOSAllSpaces.reloadMethod}. WallpaperAgent restarted: {diagnostics.macOSAllSpaces.wallpaperAgentReloaded ? "yes" : "no"}. Dock restarted: {diagnostics.macOSAllSpaces.dockReloaded ? "yes" : "no"}. Overlay created: no. Visible redraw passes: {diagnostics.macOSAllSpaces.visibleApplyPassCount}. Direct bridge attempted: {diagnostics.macOSAllSpaces.directBridgeAttempted ? "yes" : "no"}. Direct bridge available: {diagnostics.macOSAllSpaces.directBridgeAvailable ? "yes" : "no"}. Request accepted: {diagnostics.macOSAllSpaces.directBridgeRequestAccepted ? "yes" : "no"}. Mechanism: {diagnostics.macOSAllSpaces.directBridgeMechanism || "none"}. Duration: {diagnostics.macOSAllSpaces.operationDurationMs} ms.
-	                </p>
-	                {diagnostics.macOSAllSpaces.modernStoreVerified && diagnostics.macOSAllSpaces.observerFallback && (
-	                  <p className="settings-hint">
-	                    All desktop records are verified. No wallpaper process was restarted, so inactive desktops update silently when the active Space-change observer sees them.
-	                  </p>
-	                )}
-                {(diagnostics.macOSAllSpaces.attempts ?? []).length > 0 && (
-                  <details className="diagnostics">
-                    <summary>Last all-desktop strategy attempts <ChevronDown size={14} /></summary>
-                    <div className="strategy-attempt-list">
-                      {(diagnostics.macOSAllSpaces.attempts ?? []).map((attempt) => (
-                        <p className={attempt.ok ? "settings-success" : "settings-warning"} key={attempt.id}>
-                          <strong>{attempt.label}:</strong> {attempt.ok ? "accepted" : attempt.error || "failed"}
-                          {typeof attempt.verifiedSpaceCount === "number" && typeof attempt.targetSpaceCount === "number" ? ` · ${attempt.verifiedSpaceCount}/${attempt.targetSpaceCount} desktops` : ""}
-                        </p>
-                      ))}
-                    </div>
-                  </details>
-                )}
-              </>
-            )}
-            {macOSDiagnostic && <details className="diagnostics"><summary>macOS wallpaper diagnostic <ChevronDown size={14} /></summary><pre>{JSON.stringify(macOSDiagnostic, null, 2)}</pre></details>}
+            <p className="settings-warning">
+              After export, follow the setup instructions, select the folder in macOS Wallpaper Settings, choose Shuffle, and turn on Show on all Spaces.
+            </p>
           </div>
         )}
         <p className="settings-hint">“Desktop” means a Mission Control Space. “Visible monitors” changes only the active Space on each connected display; “All desktops” includes inactive Spaces.</p>
@@ -4033,28 +4058,9 @@ function WallpaperPanel({
         )}
       </details>
 
-      <details open>
-        <summary>Schedule <ChevronDown size={15} /></summary>
-        <div className="rotation-control-row">
-          <button className={`button ${rotationActive ? "secondary" : "primary"}`} onClick={toggleRotation}>
-            {rotationActive ? <Pause size={15} /> : <Play size={15} />} {rotationActive ? "Pause" : "Resume"}
-          </button>
-          <span className={`runtime-chip ${runtimeStatus}`}>{runtimeStatus}</span>
-        </div>
-        <label>Interval<select value={project.wallpaper.interval} onChange={(event) => {
-          const interval = event.target.value as WallpaperProject["wallpaper"]["interval"];
-          onPatch(interval === "manual" ? { interval, enabled: false, paused: false } : { interval, enabled: true, paused: false });
-        }}>
-          <option value="manual">Manual</option><option value="5s">5 seconds</option><option value="10s">10 seconds</option><option value="30s">30 seconds</option><option value="1m">1 minute</option><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="hourly">Hourly</option><option value="few-hours">Every few hours</option><option value="daily">Daily</option><option value="login">At login</option><option value="custom">Custom</option>
-        </select></label>
-        {project.wallpaper.interval === "custom" && (
-          <div className="custom-interval-row">
-            <label>Every<input type="number" min="1" value={project.wallpaper.customIntervalValue} onChange={(event) => onPatch({ customIntervalValue: Number(event.target.value) })} /></label>
-            <label>Unit<select value={project.wallpaper.customIntervalUnit} onChange={(event) => onPatch({ customIntervalUnit: event.target.value as WallpaperProject["wallpaper"]["customIntervalUnit"] })}><option value="seconds">Seconds</option><option value="minutes">Minutes</option><option value="hours">Hours</option></select></label>
-          </div>
-        )}
-        {rotationActive && <p className="settings-hint">Next update {countdownLabel}</p>}
-      </details>
+      <div className="wallpaper-set-note">
+        Wallpaper rotation is managed by macOS after you select an exported set. This app no longer runs a background wallpaper schedule.
+      </div>
 
       <div className="compact-action-row">
         <button className="button ghost" disabled={busy} onClick={onPrevious}>Previous</button>

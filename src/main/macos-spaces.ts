@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, copyFile, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -66,6 +67,268 @@ function runNativeCommand(method: string, command: string, args: string[], timeo
 
 function commandSucceeded(result: NativeCommandResult) {
   return !result.timedOut && result.exitCode === 0 && !result.error;
+}
+
+export interface StableAssetSlotUpdate {
+  displayId: string;
+  displayUUID: string;
+  sourcePath: string;
+  targetPath: string;
+  spaceUUID?: string;
+  shared: boolean;
+  kind: "space" | "display" | "global";
+}
+
+export interface StableAssetSlotPlan {
+  ok: boolean;
+  updates: StableAssetSlotUpdate[];
+  targetSpaceCount: number;
+  targetSharedSpaceCount: number;
+  targetDisplayCount: number;
+  errors: string[];
+}
+
+function pathInside(root: string, candidate: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function uniqueByTarget(updates: StableAssetSlotUpdate[]) {
+  const result: StableAssetSlotUpdate[] = [];
+  const seen = new Set<string>();
+  for (const update of updates) {
+    const key = path.resolve(update.targetPath);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(update);
+  }
+  return result;
+}
+
+export function planStableAssetSlotUpdates(
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  assignments: MacOSSpaceAssignment[],
+  mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
+  vaultRoot = path.join(os.homedir(), "Pictures", "Pinterest Wallpaper Compiler", "Wallpaper Vault")
+): StableAssetSlotPlan {
+  const errors: string[] = [];
+  const updates: StableAssetSlotUpdate[] = [];
+  const sharedSpaces = new Set(diagnostic.sharedSpaceUUIDs);
+  const displayById = new Map(diagnostic.displays.map((display) => [display.displayId, display]));
+
+  for (const assignment of assignments) {
+    const sourcePath = path.resolve(assignment.filePath);
+    if (!pathInside(vaultRoot, sourcePath)) {
+      errors.push(`Generated wallpaper is outside the permanent Wallpaper Vault: ${sourcePath}`);
+      continue;
+    }
+    const display = displayById.get(assignment.displayId);
+    const displayUUID = display?.displayUUID?.toUpperCase();
+    if (!display || !displayUUID) {
+      errors.push(`Display ${assignment.displayId} does not have a stable UUID mapping.`);
+      continue;
+    }
+
+    for (const spaceUUID of display.spaceUUIDs) {
+      const targetPath = diagnostic.store.spaceDisplayPaths?.[spaceUUID]?.[displayUUID];
+      if (!targetPath) {
+        errors.push(`Space ${spaceUUID} on display ${displayUUID} has no wallpaper file slot.`);
+        continue;
+      }
+      const resolvedTarget = path.resolve(targetPath);
+      if (!pathInside(vaultRoot, resolvedTarget)) {
+        errors.push(`Space ${spaceUUID} points outside the Wallpaper Vault and will not be overwritten: ${resolvedTarget}`);
+        continue;
+      }
+      updates.push({
+        displayId: assignment.displayId,
+        displayUUID,
+        sourcePath,
+        targetPath: resolvedTarget,
+        spaceUUID,
+        shared: sharedSpaces.has(spaceUUID),
+        kind: "space"
+      });
+    }
+
+    const displayPath = diagnostic.store.displayPaths?.[displayUUID];
+    if (displayPath) {
+      const resolvedDisplayPath = path.resolve(displayPath);
+      if (pathInside(vaultRoot, resolvedDisplayPath)) {
+        updates.push({
+          displayId: assignment.displayId,
+          displayUUID,
+          sourcePath,
+          targetPath: resolvedDisplayPath,
+          shared: false,
+          kind: "display"
+        });
+      }
+    }
+  }
+
+  const sourcePaths = [...new Set(assignments.map((assignment) => path.resolve(assignment.filePath)))];
+  if (mode === "all-desktops-all-monitors" && sourcePaths.length === 1) {
+    for (const reference of diagnostic.store.references) {
+      if (!reference.source.startsWith("SystemDefault.") && !reference.source.startsWith("AllSpacesAndDisplays.")) continue;
+      const targetPath = path.resolve(reference.path);
+      if (!pathInside(vaultRoot, targetPath)) continue;
+      updates.push({
+        displayId: assignments[0]?.displayId ?? "global",
+        displayUUID: diagnostic.displays[0]?.displayUUID?.toUpperCase() ?? "GLOBAL",
+        sourcePath: sourcePaths[0],
+        targetPath,
+        shared: true,
+        kind: "global"
+      });
+    }
+  }
+
+  const spaceUpdates = updates.filter((update) => update.kind === "space");
+  const userSpaceKeys = new Set(spaceUpdates.filter((update) => !update.shared).map((update) => `${update.displayUUID}:${update.spaceUUID}`));
+  const sharedSpaceKeys = new Set(spaceUpdates.filter((update) => update.shared).map((update) => `${update.displayUUID}:${update.spaceUUID}`));
+  const displayKeys = new Set(updates.filter((update) => update.kind === "display").map((update) => update.displayUUID));
+
+  if (!spaceUpdates.length) errors.push("No existing app-owned wallpaper slots were found for the selected Mission Control desktops.");
+
+  return {
+    ok: errors.length === 0 && userSpaceKeys.size > 0,
+    updates,
+    targetSpaceCount: userSpaceKeys.size,
+    targetSharedSpaceCount: sharedSpaceKeys.size,
+    targetDisplayCount: displayKeys.size || assignments.length,
+    errors
+  };
+}
+
+async function fileHash(filePath: string) {
+  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+}
+
+interface StableAssetSlotApplyResult {
+  ok: boolean;
+  plan: StableAssetSlotPlan;
+  commands: NativeCommandResult[];
+  verifiedSpaceCount: number;
+  verifiedSharedSpaceCount: number;
+  verifiedDisplayCount: number;
+  verifiedSlotCount: number;
+  slotPaths: string[];
+  rollbackPerformed: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+async function applyStableAssetSlots(
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  assignments: MacOSSpaceAssignment[],
+  mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">
+): Promise<StableAssetSlotApplyResult> {
+  const startedAt = Date.now();
+  const plan = planStableAssetSlotUpdates(diagnostic, assignments, mode);
+  const commands: NativeCommandResult[] = [];
+  if (!plan.ok) {
+    return {
+      ok: false,
+      plan,
+      commands,
+      verifiedSpaceCount: 0,
+      verifiedSharedSpaceCount: 0,
+      verifiedDisplayCount: 0,
+      verifiedSlotCount: 0,
+      slotPaths: [],
+      rollbackPerformed: false,
+      durationMs: Date.now() - startedAt,
+      error: plan.errors.join(" ")
+    };
+  }
+
+  const uniqueUpdates = uniqueByTarget(plan.updates);
+  const backupDirectory = await mkdtemp(path.join(os.tmpdir(), "pwc-wallpaper-slots-"));
+  const backups = new Map<string, { backupPath?: string; existed: boolean }>();
+  let rollbackPerformed = false;
+
+  try {
+    for (const [index, update] of uniqueUpdates.entries()) {
+      await access(update.sourcePath, constants.R_OK);
+      let existed = true;
+      try { await stat(update.targetPath); } catch { existed = false; }
+      const backupPath = existed ? path.join(backupDirectory, `${index}.backup`) : undefined;
+      if (backupPath) await copyFile(update.targetPath, backupPath);
+      backups.set(update.targetPath, { backupPath, existed });
+      if (path.resolve(update.sourcePath) !== path.resolve(update.targetPath)) {
+        await copyFile(update.sourcePath, update.targetPath);
+      }
+      const now = new Date();
+      await utimes(update.targetPath, now, now);
+    }
+
+    const touch = await runNativeCommand(
+      "macos-stable-wallpaper-slot-touch",
+      "/usr/bin/touch",
+      uniqueUpdates.map((update) => update.targetPath),
+      10_000
+    );
+    commands.push(touch);
+
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    const sourceHashes = new Map<string, string>();
+    for (const update of uniqueUpdates) {
+      if (!sourceHashes.has(update.sourcePath)) sourceHashes.set(update.sourcePath, await fileHash(update.sourcePath));
+    }
+    const verifiedTargets = new Set<string>();
+    for (const update of uniqueUpdates) {
+      const expected = sourceHashes.get(update.sourcePath);
+      if (expected && await fileHash(update.targetPath) === expected) verifiedTargets.add(path.resolve(update.targetPath));
+    }
+
+    const verifiedRecords = plan.updates.filter((update) => verifiedTargets.has(path.resolve(update.targetPath)));
+    const verifiedUserSpaces = new Set(verifiedRecords.filter((update) => update.kind === "space" && !update.shared).map((update) => `${update.displayUUID}:${update.spaceUUID}`));
+    const verifiedSharedSpaces = new Set(verifiedRecords.filter((update) => update.kind === "space" && update.shared).map((update) => `${update.displayUUID}:${update.spaceUUID}`));
+    const verifiedDisplays = new Set(verifiedRecords.filter((update) => update.kind === "display").map((update) => update.displayUUID));
+    const ok = verifiedUserSpaces.size === plan.targetSpaceCount
+      && verifiedSharedSpaces.size === plan.targetSharedSpaceCount
+      && (verifiedDisplays.size === plan.targetDisplayCount || plan.targetDisplayCount === assignments.length && verifiedDisplays.size === 0);
+
+    return {
+      ok,
+      plan,
+      commands,
+      verifiedSpaceCount: verifiedUserSpaces.size,
+      verifiedSharedSpaceCount: verifiedSharedSpaces.size,
+      verifiedDisplayCount: verifiedDisplays.size || assignments.length,
+      verifiedSlotCount: verifiedTargets.size,
+      slotPaths: [...verifiedTargets],
+      rollbackPerformed,
+      durationMs: Date.now() - startedAt,
+      error: ok ? undefined : "One or more existing wallpaper asset slots did not match the newly rendered image after the in-place update."
+    };
+  } catch (error) {
+    for (const [targetPath, backup] of backups) {
+      try {
+        if (backup.existed && backup.backupPath) await copyFile(backup.backupPath, targetPath);
+        else if (!backup.existed) await rm(targetPath, { force: true });
+      } catch {
+        // Best-effort rollback; preserve the original error below.
+      }
+    }
+    rollbackPerformed = backups.size > 0;
+    return {
+      ok: false,
+      plan,
+      commands,
+      verifiedSpaceCount: 0,
+      verifiedSharedSpaceCount: 0,
+      verifiedDisplayCount: 0,
+      verifiedSlotCount: 0,
+      slotPaths: [],
+      rollbackPerformed,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    await rm(backupDirectory, { recursive: true, force: true });
+  }
 }
 
 function displayStyle(mode: WallpaperDisplayMode | undefined) {
@@ -1029,33 +1292,22 @@ function run(argv) {
           bridgeError = 'Direct private wallpaper bridge is unavailable on this build.';
         }
         if (reloadMethod === 'none') {
-          const refreshMode = String(request.refreshMode || 'silent-observer');
-          if (refreshMode === 'force-wallpaperagent-restart' || refreshMode === 'immediate-restart') {
-            const restartStatus = runTask('/usr/bin/killall', ['WallpaperAgent']);
-            if (restartStatus !== 0) {
-              throw new Error((bridgeError ? bridgeError + ' ' : '') + 'WallpaperAgent restart failed.');
-            }
-            reloadMethod = 'wallpaperagent-restart';
-            output.wallpaperAgentReloaded = true;
-            $.NSThread.sleepForTimeInterval(4.5);
-          } else {
-            attempt.ok = true;
-            attempt.verifiedSpaceCount = initialVerification.verifiedSpaces;
-            attempt.verifiedDisplayCount = initialVerification.verifiedDisplays;
-            output.ok = false;
-            output.approach = approach.id;
-            output.reloadMethod = 'none';
-            output.wallpaperAgentReloaded = false;
-            output.updatedDisplayCount = assignments.length;
-            output.verifiedDisplayCount = initialVerification.verifiedDisplays;
-            output.updatedSpaceCount = inventory.userSpaces.length;
-            output.verifiedSpaceCount = initialVerification.verifiedSpaces;
-            output.verifiedSharedSpaceCount = initialVerification.verifiedShared;
-            output.operationDurationMs = Date.now() - startedAt;
-            output.error = (bridgeError ? bridgeError + ' ' : '') + 'All desktop Store records were verified, but no WallpaperAgent restart was used to avoid black flash. The active-Space observer will apply desktops as they become visible.';
-            output.attempts.push(attempt);
-            return JSON.stringify(output);
-          }
+          attempt.ok = true;
+          attempt.verifiedSpaceCount = initialVerification.verifiedSpaces;
+          attempt.verifiedDisplayCount = initialVerification.verifiedDisplays;
+          output.ok = false;
+          output.approach = approach.id;
+          output.reloadMethod = 'none';
+          output.wallpaperAgentReloaded = false;
+          output.updatedDisplayCount = assignments.length;
+          output.verifiedDisplayCount = initialVerification.verifiedDisplays;
+          output.updatedSpaceCount = inventory.userSpaces.length;
+          output.verifiedSpaceCount = initialVerification.verifiedSpaces;
+          output.verifiedSharedSpaceCount = initialVerification.verifiedShared;
+          output.operationDurationMs = Date.now() - startedAt;
+          output.error = (bridgeError ? bridgeError + ' ' : '') + 'All desktop Store records were staged. A separate native System Events desktop request must confirm that WallpaperAgent adopted them.';
+          output.attempts.push(attempt);
+          return JSON.stringify(output);
         }
         const settledVerification = verifyAppliedApproach(readMutablePlist(indexPath), approach.id, assignments, inventory, true);
         if (!settledVerification.ok) {
@@ -1127,7 +1379,7 @@ interface ModernStoreApplyResult {
   verifiedSharedSpaceCount: number;
   wallpaperAgentReloaded: boolean;
   dockReloaded?: boolean;
-  reloadMethod?: "none" | "native-wallpaper-agent-xpc" | "wallpaperagent-restart";
+  reloadMethod?: "none" | "native-wallpaper-agent-xpc" | "system-events-desktop-api" | "wallpaperagent-restart";
   directBridgeAttempted?: boolean;
   directBridgeAvailable?: boolean;
   directBridgePostedSignals?: string[];
@@ -1136,6 +1388,9 @@ interface ModernStoreApplyResult {
   directBridgeRequestAccepted?: boolean;
   directBridgeXPCServices?: string[];
   directBridgeSelectors?: string[];
+  systemEventsAttempted?: boolean;
+  systemEventsAccepted?: boolean;
+  stableStoreVerificationPassed?: boolean;
   observerSuppressedDuringTransaction?: boolean;
   operationDurationMs?: number;
   rollbackPerformed: boolean;
@@ -1187,7 +1442,7 @@ async function applyModernWallpaperStore(
   const command = await runNativeCommand(
     "macos-modern-wallpaper-store-transaction",
     "/usr/bin/osascript",
-    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshMode: refreshMode ?? "silent-observer", refreshHelperPath: await resolvePrivateWallpaperBridgePath() })],
+    ["-l", "JavaScript", "-e", macOSModernStoreApplyScript, JSON.stringify({ assignments: mappedAssignments, mode, style: displayStyle(displayMode), refreshMode: "system-events", refreshHelperPath: "" })],
     75_000
   );
   let result: ModernStoreApplyResult | undefined;
@@ -1197,19 +1452,411 @@ async function applyModernWallpaperStore(
   return { command, result };
 }
 
+
+function appleScriptString(value: string) {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function normalizedPath(value: string | undefined) {
+  if (!value) return "";
+  return path.resolve(value);
+}
+
+async function applyWithSystemEventsDesktopAPI(
+  assignments: MacOSSpaceAssignment[],
+  diagnostic: MacOSWallpaperDiagnosticReport
+) {
+  const displayIndexById = new Map(diagnostic.displays.map((display, index) => [display.displayId, index + 1]));
+  const lines = assignments.flatMap((assignment) => {
+    const desktopIndex = displayIndexById.get(assignment.displayId);
+    if (!desktopIndex) return [];
+    return [`set picture of desktop ${desktopIndex} to POSIX file ${appleScriptString(assignment.filePath)}`];
+  });
+  if (!lines.length) return fallbackCommand("No System Events desktop objects matched the selected physical displays.");
+  const script = [
+    'tell application "System Events"',
+    ...lines.map((line) => `  ${line}`),
+    'end tell',
+    'return "PWC_SYSTEM_EVENTS_OK"'
+  ].join("\n");
+  return runNativeCommand(
+    "macos-system-events-desktop-api",
+    "/usr/bin/osascript",
+    ["-e", script],
+    20_000
+  );
+}
+
+interface StableStoreVerification {
+  ok: boolean;
+  targetSpaceCount: number;
+  verifiedSpaceCount: number;
+  targetDisplayCount: number;
+  verifiedDisplayCount: number;
+  targetSharedSpaceCount: number;
+  verifiedSharedSpaceCount: number;
+  reports: MacOSWallpaperDiagnosticReport[];
+}
+
+function verifyAssignmentsInDiagnostic(
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  assignments: MacOSSpaceAssignment[]
+) {
+  const selected = new Map(assignments.map((assignment) => [assignment.displayId, normalizedPath(assignment.filePath)]));
+  const shared = new Set(diagnostic.sharedSpaceUUIDs);
+  let targetSpaceCount = 0;
+  let verifiedSpaceCount = 0;
+  let targetSharedSpaceCount = 0;
+  let verifiedSharedSpaceCount = 0;
+  let targetDisplayCount = 0;
+  let verifiedDisplayCount = 0;
+
+  for (const display of diagnostic.displays) {
+    const expectedPath = selected.get(display.displayId);
+    if (!expectedPath || !display.displayUUID) continue;
+    const displayUUID = display.displayUUID.toUpperCase();
+    targetDisplayCount += 1;
+    const displayPath = diagnostic.store.displayPaths?.[displayUUID];
+    if (normalizedPath(displayPath) === expectedPath) verifiedDisplayCount += 1;
+
+    for (const spaceUUID of display.spaceUUIDs) {
+      const actualPath = diagnostic.store.spaceDisplayPaths?.[spaceUUID]?.[displayUUID];
+      if (shared.has(spaceUUID)) {
+        targetSharedSpaceCount += 1;
+        if (normalizedPath(actualPath) === expectedPath) verifiedSharedSpaceCount += 1;
+      } else {
+        targetSpaceCount += 1;
+        if (normalizedPath(actualPath) === expectedPath) verifiedSpaceCount += 1;
+      }
+    }
+  }
+
+  return {
+    ok: targetSpaceCount > 0
+      && verifiedSpaceCount === targetSpaceCount
+      && verifiedDisplayCount === targetDisplayCount
+      && verifiedSharedSpaceCount === targetSharedSpaceCount,
+    targetSpaceCount,
+    verifiedSpaceCount,
+    targetDisplayCount,
+    verifiedDisplayCount,
+    targetSharedSpaceCount,
+    verifiedSharedSpaceCount
+  };
+}
+
+async function verifyModernStoreRemainsStable(
+  assignments: MacOSSpaceAssignment[],
+  activeDisplayId?: string
+): Promise<StableStoreVerification> {
+  const reports: MacOSWallpaperDiagnosticReport[] = [];
+  await new Promise((resolve) => setTimeout(resolve, 1_400));
+  reports.push(await diagnoseMacOSWallpaperEnvironment(activeDisplayId));
+  await new Promise((resolve) => setTimeout(resolve, 2_800));
+  reports.push(await diagnoseMacOSWallpaperEnvironment(activeDisplayId));
+  const checks = reports.map((report) => verifyAssignmentsInDiagnostic(report, assignments));
+  const last = checks.at(-1) ?? {
+    ok: false,
+    targetSpaceCount: 0,
+    verifiedSpaceCount: 0,
+    targetDisplayCount: 0,
+    verifiedDisplayCount: 0,
+    targetSharedSpaceCount: 0,
+    verifiedSharedSpaceCount: 0
+  };
+  return {
+    ...last,
+    ok: checks.length === 2 && checks.every((check) => check.ok),
+    reports
+  };
+}
+
+async function restoreVisibleFallbackStore(backupPath?: string, indexPath?: string) {
+  if (!backupPath || !indexPath) return fallbackCommand("The visible-only wallpaper Store fallback path was unavailable.");
+  return runNativeCommand(
+    "macos-modern-wallpaper-store-visible-fallback",
+    "/bin/cp",
+    ["-f", backupPath, indexPath],
+    10_000
+  );
+}
+
 function fallbackCommand(message: string): NativeCommandResult {
   return { method: "macos-all-spaces-controller", command: "", args: [], stdout: "", stderr: message, exitCode: 1, timedOut: false, error: message };
+}
+
+export interface NativeGlobalAllSpacesEligibility {
+  ok: boolean;
+  sameWallpaperEverywhere: boolean;
+  reason?: string;
+}
+
+export function nativeGlobalAllSpacesEligibility(
+  assignments: MacOSSpaceAssignment[],
+  mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
+  connectedDisplayCount: number
+): NativeGlobalAllSpacesEligibility {
+  const normalized = assignments.map((assignment) => normalizedPath(assignment.filePath)).filter(Boolean);
+  const sameWallpaperEverywhere = normalized.length > 0 && new Set(normalized).size === 1;
+  if (!assignments.length) return { ok: false, sameWallpaperEverywhere: false, reason: "No visible display assignment was available." };
+  if (!sameWallpaperEverywhere) {
+    return {
+      ok: false,
+      sameWallpaperEverywhere,
+      reason: "macOS Show on all Spaces supports one shared wallpaper across every desktop and display; the current batch contains different images."
+    };
+  }
+  if (mode === "all-desktops-current-monitor" && connectedDisplayCount > 1) {
+    return {
+      ok: false,
+      sameWallpaperEverywhere,
+      reason: "macOS Show on all Spaces also affects every connected display, so it cannot safely target only one monitor while multiple monitors are connected."
+    };
+  }
+  return { ok: true, sameWallpaperEverywhere };
+}
+
+const macOSNativeGlobalAllSpacesSettingScript = String.raw`
+ObjC.import('Foundation');
+// PWC_NATIVE_GLOBAL_ALL_SPACES_V1
+function sleep(seconds) { $.NSThread.sleepForTimeInterval(seconds); }
+function safe(fn, fallback) { try { var value = fn(); return value === undefined || value === null ? fallback : value; } catch (_) { return fallback; } }
+function text(value) { try { return String(ObjC.unwrap(value)); } catch (_) { return value === undefined || value === null ? '' : String(value); } }
+function lower(value) { return text(value).toLowerCase(); }
+function attr(element, name) {
+  return safe(function() { return element.attributes.byName(name).value(); }, null);
+}
+function role(element) { return text(attr(element, 'AXRole')) || safe(function() { return text(element.role()); }, ''); }
+function label(element) {
+  return [attr(element, 'AXTitle'), attr(element, 'AXDescription'), attr(element, 'AXHelp'), attr(element, 'AXIdentifier'), safe(function() { return element.name(); }, '')]
+    .map(text).filter(Boolean).join(' | ');
+}
+function children(element) { return safe(function() { return element.uiElements(); }, []); }
+function actions(element) {
+  return safe(function() { return element.actions().map(function(action) { return text(action.name()); }); }, []);
+}
+function position(element) {
+  var value = attr(element, 'AXPosition');
+  try { return [Number(value[0]), Number(value[1])]; } catch (_) { return null; }
+}
+function size(element) {
+  var value = attr(element, 'AXSize');
+  try { return [Number(value[0]), Number(value[1])]; } catch (_) { return null; }
+}
+function enabledValue(element) {
+  var value = attr(element, 'AXValue');
+  if (value === true || value === 1 || text(value) === '1') return true;
+  if (value === false || value === 0 || text(value) === '0') return false;
+  var normalized = lower(value);
+  if (normalized === 'on' || normalized === 'selected' || normalized === 'true') return true;
+  if (normalized === 'off' || normalized === 'unselected' || normalized === 'false') return false;
+  return null;
+}
+function collect(roots, maxNodes) {
+  var queue = roots.slice();
+  var output = [];
+  while (queue.length && output.length < maxNodes) {
+    var current = queue.shift();
+    output.push(current);
+    var nested = children(current);
+    for (var index = 0; index < nested.length && output.length + queue.length < maxNodes; index += 1) queue.push(nested[index]);
+  }
+  return output;
+}
+function isTargetText(value) {
+  var normalized = lower(value).replace(/\s+/g, ' ').trim();
+  return normalized.indexOf('show on all spaces') >= 0 || normalized.indexOf('all spaces') >= 0 && normalized.indexOf('show') >= 0;
+}
+function press(element) {
+  try { element.actions.byName('AXPress').perform(); return true; } catch (_) {}
+  try { element.actions['AXPress'].perform(); return true; } catch (_) {}
+  try {
+    var available = element.actions();
+    for (var index = 0; index < available.length; index += 1) {
+      if (text(available[index].name()) === 'AXPress') { available[index].perform(); return true; }
+    }
+  } catch (_) {}
+  try { element.click(); return true; } catch (_) {}
+  return false;
+}
+function findToggle(process) {
+  var roots = safe(function() { return process.windows(); }, []);
+  var nodes = collect(roots, 4500);
+  var direct = [];
+  var labels = [];
+  nodes.forEach(function(node) {
+    var nodeLabel = label(node);
+    if (isTargetText(nodeLabel)) labels.push(node);
+    var nodeRole = role(node);
+    var canPress = actions(node).indexOf('AXPress') >= 0 || nodeRole === 'AXCheckBox' || nodeRole === 'AXSwitch' || nodeRole === 'AXButton';
+    if (canPress && isTargetText(nodeLabel)) direct.push(node);
+  });
+  if (direct.length) {
+    direct.sort(function(a, b) {
+      var ar = role(a), br = role(b);
+      var as = ar === 'AXCheckBox' || ar === 'AXSwitch' ? 0 : 1;
+      var bs = br === 'AXCheckBox' || br === 'AXSwitch' ? 0 : 1;
+      return as - bs;
+    });
+    return { element: direct[0], nodes: nodes, match: label(direct[0]) };
+  }
+  var pressable = nodes.filter(function(node) {
+    var nodeRole = role(node);
+    return actions(node).indexOf('AXPress') >= 0 || nodeRole === 'AXCheckBox' || nodeRole === 'AXSwitch' || nodeRole === 'AXButton';
+  });
+  var best = null;
+  labels.forEach(function(textNode) {
+    var tp = position(textNode), ts = size(textNode);
+    if (!tp || !ts) return;
+    var tx = tp[0] + ts[0] / 2, ty = tp[1] + ts[1] / 2;
+    pressable.forEach(function(control) {
+      var cp = position(control), cs = size(control);
+      if (!cp || !cs) return;
+      var cx = cp[0] + cs[0] / 2, cy = cp[1] + cs[1] / 2;
+      var dx = cx - tx, dy = cy - ty;
+      var distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance > 320) return;
+      var controlRole = role(control);
+      var rolePenalty = controlRole === 'AXCheckBox' || controlRole === 'AXSwitch' ? 0 : 80;
+      var score = distance + rolePenalty;
+      if (!best || score < best.score) best = { element: control, score: score, match: label(textNode) + ' -> ' + label(control) };
+    });
+  });
+  return best ? { element: best.element, nodes: nodes, match: best.match } : { element: null, nodes: nodes, match: '' };
+}
+function locateProcess(systemEvents) {
+  var process = systemEvents.applicationProcesses.byName('System Settings');
+  return safe(function() { return process.exists(); }, false) ? process : null;
+}
+function run(argv) {
+  var request = JSON.parse(argv[0] || '{}');
+  var output = { ok: false, enabled: false, rearmed: false, openedUI: false, permissionDenied: false, activatedFallback: false, controlLabel: '', beforeValue: null, afterValue: null, error: '' };
+  var current = Application.currentApplication();
+  current.includeStandardAdditions = true;
+  var settings = Application('System Settings');
+  var systemEvents = Application('System Events');
+  var wasRunning = safe(function() { return settings.running(); }, false);
+  try {
+    current.doShellScript("/usr/bin/open -gj 'x-apple.systempreferences:com.apple.Wallpaper-Settings.extension'");
+    output.openedUI = true;
+    var process = null;
+    var found = null;
+    for (var attempt = 0; attempt < 30; attempt += 1) {
+      sleep(0.2);
+      process = locateProcess(systemEvents);
+      if (!process) continue;
+      found = findToggle(process);
+      if (found.element) break;
+    }
+    if (!found || !found.element) {
+      safe(function() { settings.activate(); }, null);
+      output.activatedFallback = true;
+      for (var retry = 0; retry < 25; retry += 1) {
+        sleep(0.2);
+        process = locateProcess(systemEvents);
+        if (!process) continue;
+        found = findToggle(process);
+        if (found.element) break;
+      }
+    }
+    if (!found || !found.element) throw new Error('Could not locate the Show on all Spaces control in System Settings. Accessibility permission may be required, or this macOS build may use a different Wallpaper pane layout.');
+    output.controlLabel = found.match;
+    output.beforeValue = enabledValue(found.element);
+    if (output.beforeValue === true) {
+      if (!press(found.element)) throw new Error('The Show on all Spaces control was found but could not be switched off for re-arming.');
+      sleep(0.3);
+      found = findToggle(process);
+      if (!found.element || !press(found.element)) throw new Error('The Show on all Spaces control could not be switched back on.');
+      output.rearmed = true;
+    } else {
+      if (!press(found.element)) throw new Error('The Show on all Spaces control was found but could not be enabled.');
+    }
+    for (var verify = 0; verify < 25; verify += 1) {
+      sleep(0.2);
+      found = findToggle(process);
+      if (found.element && enabledValue(found.element) === true) break;
+    }
+    output.afterValue = found && found.element ? enabledValue(found.element) : null;
+    output.enabled = output.afterValue === true;
+    output.ok = output.enabled;
+    if (!output.ok) output.error = 'System Settings did not confirm that Show on all Spaces remained enabled.';
+    if (!wasRunning && process) safe(function() { process.visible = false; }, null);
+  } catch (error) {
+    output.error = error instanceof Error ? error.message : String(error);
+    var normalized = lower(output.error);
+    output.permissionDenied = normalized.indexOf('not authorized') >= 0 || normalized.indexOf('assistive access') >= 0 || normalized.indexOf('accessibility') >= 0;
+  }
+  return JSON.stringify(output);
+}`;
+
+interface NativeGlobalAllSpacesSettingResult {
+  ok: boolean;
+  enabled: boolean;
+  rearmed: boolean;
+  openedUI: boolean;
+  permissionDenied: boolean;
+  activatedFallback?: boolean;
+  controlLabel?: string;
+  beforeValue?: boolean | null;
+  afterValue?: boolean | null;
+  error?: string;
+}
+
+async function applyNativeGlobalAllSpacesSetting() {
+  const command = await runNativeCommand(
+    "macos-native-show-on-all-spaces",
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", macOSNativeGlobalAllSpacesSettingScript, JSON.stringify({ action: "enable-and-rearm" })],
+    25_000
+  );
+  let result: NativeGlobalAllSpacesSettingResult | undefined;
+  if (commandSucceeded(command)) {
+    try { result = JSON.parse(command.stdout.trim()) as NativeGlobalAllSpacesSettingResult; } catch { result = undefined; }
+  }
+  return { command, result };
+}
+
+function targetSpaceInventory(
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  assignments: MacOSSpaceAssignment[]
+) {
+  const selected = new Set(assignments.map((assignment) => assignment.displayId));
+  const shared = new Set(diagnostic.sharedSpaceUUIDs);
+  const userSpaces = new Set<string>();
+  const sharedSpaces = new Set<string>();
+  for (const display of diagnostic.displays) {
+    if (!selected.has(display.displayId)) continue;
+    for (const spaceUUID of display.spaceUUIDs) {
+      if (shared.has(spaceUUID)) sharedSpaces.add(spaceUUID);
+      else userSpaces.add(spaceUUID);
+    }
+  }
+  return { userSpaces, sharedSpaces };
+}
+
+function globalWallpaperReferenceMatches(
+  diagnostic: MacOSWallpaperDiagnosticReport,
+  expectedPath: string
+) {
+  const expected = normalizedPath(expectedPath);
+  return diagnostic.store.references.some((reference) =>
+    reference.source.startsWith("AllSpacesAndDisplays.Desktop")
+    && normalizedPath(reference.path) === expected
+  );
 }
 
 export async function applyMacOSWallpapersAcrossSpaces(
   assignments: MacOSSpaceAssignment[],
   mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
-  displayMode?: WallpaperDisplayMode,
+  _displayMode?: WallpaperDisplayMode,
   activeDisplayId?: string,
-  refreshMode?: WallpaperAllSpacesRefreshMode
+  _refreshMode?: WallpaperAllSpacesRefreshMode
 ): Promise<MacOSSpacesApplyResult> {
+  const startedAt = Date.now();
   const diagnostic = await diagnoseMacOSWallpaperEnvironment(activeDisplayId);
   const commands: NativeCommandResult[] = [];
+  const inventory = targetSpaceInventory(diagnostic, assignments);
+  const eligibility = nativeGlobalAllSpacesEligibility(assignments, mode, diagnostic.displays.length);
   const status: MacOSSpacesApplySummary = {
     ok: false,
     attempted: true,
@@ -1217,12 +1864,12 @@ export async function applyMacOSWallpapersAcrossSpaces(
     strategy: diagnostic.recommendedStrategy,
     attempts: [],
     targetDisplayCount: assignments.length,
-    updatedDisplayCount: 0,
-    verifiedDisplayCount: 0,
-    targetSpaceCount: 0,
+    updatedDisplayCount: assignments.length,
+    verifiedDisplayCount: assignments.length,
+    targetSpaceCount: inventory.userSpaces.size,
     updatedSpaceCount: 0,
     verifiedSpaceCount: 0,
-    updatedSharedSpaceCount: 0,
+    updatedSharedSpaceCount: inventory.sharedSpaces.size,
     verifiedSharedSpaceCount: 0,
     modernStoreWritten: false,
     modernStoreVerified: false,
@@ -1238,82 +1885,105 @@ export async function applyMacOSWallpapersAcrossSpaces(
     observerFallback: false,
     rollbackPerformed: false,
     backupPaths: [],
+    stableAssetSlotsAttempted: false,
+    stableAssetSlotsVerified: false,
+    stableAssetSlotCount: 0,
+    stableAssetSlotPaths: [],
+    nativeGlobalSettingAttempted: false,
+    nativeGlobalSettingEnabled: false,
+    nativeGlobalSettingRearmed: false,
+    nativeGlobalSettingOpenedUI: false,
+    nativeGlobalSettingPermissionDenied: false,
     diagnostic
   };
 
-  let immediateOk = false;
-  if (diagnostic.recommendedStrategy === "modern-store") {
-    const modern = await applyModernWallpaperStore(assignments, mode, displayMode, diagnostic, refreshMode);
-    commands.push(modern.command);
-    if (modern.result) {
-      immediateOk = modern.result.ok;
-      status.targetDisplayCount = Math.max(status.targetDisplayCount, modern.result.targetDisplayCount);
-      status.attempts.push(...(modern.result.attempts ?? []).map((attempt) => ({
-        id: attempt.id,
-        label: attempt.label,
-        ok: attempt.ok,
-        targetSpaceCount: attempt.targetSpaceCount,
-        verifiedSpaceCount: attempt.verifiedSpaceCount,
-        targetDisplayCount: attempt.targetDisplayCount,
-        verifiedDisplayCount: attempt.verifiedDisplayCount,
-        error: attempt.error
-      })));
-      status.updatedDisplayCount = modern.result.updatedDisplayCount;
-      status.verifiedDisplayCount = modern.result.verifiedDisplayCount;
-      status.targetSpaceCount = modern.result.targetSpaceCount;
-      status.updatedSpaceCount = modern.result.updatedSpaceCount;
-      status.verifiedSpaceCount = modern.result.verifiedSpaceCount;
-      status.updatedSharedSpaceCount = modern.result.updatedSharedSpaceCount;
-      status.verifiedSharedSpaceCount = modern.result.verifiedSharedSpaceCount;
-      status.modernStoreWritten = modern.result.updatedSpaceCount > 0;
-      status.modernStoreVerified = modern.result.verifiedSpaceCount === modern.result.targetSpaceCount
-        && modern.result.verifiedSharedSpaceCount === modern.result.updatedSharedSpaceCount
-        && modern.result.verifiedDisplayCount === modern.result.targetDisplayCount;
-      status.wallpaperAgentReloaded = modern.result.wallpaperAgentReloaded;
-      status.dockReloaded = false;
-      status.reloadMethod = modern.result.reloadMethod ?? "none";
-      status.observerSuppressedDuringTransaction = modern.result.observerSuppressedDuringTransaction ?? true;
-      status.operationDurationMs = modern.result.operationDurationMs ?? 0;
-      status.directBridgeAttempted = modern.result.directBridgeAttempted ?? false;
-      status.directBridgeAvailable = modern.result.directBridgeAvailable ?? false;
-      status.directBridgePostedSignals = modern.result.directBridgePostedSignals ?? [];
-      status.directBridgeFrameworks = modern.result.directBridgeFrameworks ?? [];
-      status.directBridgeMechanism = modern.result.directBridgeMechanism;
-      status.directBridgeRequestAccepted = modern.result.directBridgeRequestAccepted ?? false;
-      status.directBridgeXPCServices = modern.result.directBridgeXPCServices ?? [];
-      status.directBridgeSelectors = modern.result.directBridgeSelectors ?? [];
-      status.fallbackToVisibleMonitors = !modern.result.ok && !status.modernStoreVerified;
-      status.rollbackPerformed ||= modern.result.rollbackPerformed;
-      if (modern.result.backupPath) status.backupPaths.push(modern.result.backupPath);
-      if (!modern.result.ok) status.error = modern.result.error;
-    } else {
-      status.error = modern.command.error || modern.command.stderr || "The modern wallpaper Store transaction returned no result.";
-    }
-
+  if (!eligibility.ok) {
+    status.fallbackToVisibleMonitors = true;
+    status.reloadMethod = "visible-monitors-fallback";
+    status.error = eligibility.reason;
+    status.warning = `${eligibility.reason} Only the already verified visible monitor targets were kept.`;
+    status.operationDurationMs = Date.now() - startedAt;
+    status.attempts.push({
+      id: "native-global-all-spaces",
+      label: "Use macOS Show on all Spaces through the native Wallpaper settings pane",
+      ok: false,
+      targetSpaceCount: inventory.userSpaces.size,
+      verifiedSpaceCount: 0,
+      targetDisplayCount: assignments.length,
+      verifiedDisplayCount: assignments.length,
+      error: eligibility.reason
+    });
+    const command = fallbackCommand(status.warning);
+    return { command, commands: [command], summary: status };
   }
 
-  // macOS 14 and later use only the modern wallpaper Store. The legacy
-  // desktoppicture.db path is diagnostic-only and is never written or used to
-  // refresh the desktop, because doing so requires restarting Dock.
-
-  status.ok = diagnostic.recommendedStrategy === "modern-store" && immediateOk;
-
-  if (!status.ok) {
-    status.observerFallback = false;
-    status.fallbackToVisibleMonitors = !status.modernStoreVerified;
-    status.reloadMethod = status.modernStoreVerified ? "none" : "visible-monitors-fallback";
-    status.warning = status.modernStoreVerified
-      ? [
-        status.error || "Immediate inactive-Space redraw was unavailable.",
-        "All desktop Store records were verified. No Dock restart, WallpaperAgent restart, or overlay was used."
-      ].filter(Boolean).join(" ")
-      : [
-        status.error || diagnostic.warnings.join(" ") || "Immediate inactive-Space synchronization was unavailable.",
-        "Only the currently visible monitor targets were changed. No Dock restart, WallpaperAgent restart, or overlay was used."
-      ].filter(Boolean).join(" ");
+  if (diagnostic.recommendedStrategy !== "modern-store") {
+    status.fallbackToVisibleMonitors = true;
+    status.reloadMethod = "visible-monitors-fallback";
+    status.error = diagnostic.errors[0] || diagnostic.warnings[0] || "The macOS wallpaper Store could not be inspected to verify the global setting.";
+    status.warning = `${status.error} Only the already verified visible monitor targets were kept.`;
+    status.operationDurationMs = Date.now() - startedAt;
+    const command = fallbackCommand(status.warning);
+    return { command, commands: [command], summary: status };
   }
-  const command = commands.at(-1) ?? fallbackCommand(status.warning || "No immediate all-Space wallpaper strategy was available.");
-  return { command, commands, summary: status };
+
+  status.nativeGlobalSettingAttempted = true;
+  status.systemEventsAttempted = true;
+  const nativeGlobal = await applyNativeGlobalAllSpacesSetting();
+  commands.push(nativeGlobal.command);
+  status.systemEventsAccepted = Boolean(nativeGlobal.result?.ok);
+  status.nativeGlobalSettingEnabled = Boolean(nativeGlobal.result?.enabled);
+  status.nativeGlobalSettingRearmed = Boolean(nativeGlobal.result?.rearmed);
+  status.nativeGlobalSettingOpenedUI = Boolean(nativeGlobal.result?.openedUI);
+  status.nativeGlobalSettingPermissionDenied = Boolean(nativeGlobal.result?.permissionDenied);
+  status.nativeGlobalSettingControlLabel = nativeGlobal.result?.controlLabel;
+
+  let settledDiagnostic = diagnostic;
+  if (nativeGlobal.result?.ok) {
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    settledDiagnostic = await diagnoseMacOSWallpaperEnvironment(activeDisplayId);
+  }
+  const expectedPath = assignments[0].filePath;
+  const globalReferenceVerified = Boolean(nativeGlobal.result?.ok && globalWallpaperReferenceMatches(settledDiagnostic, expectedPath));
+  status.modernStoreVerified = globalReferenceVerified;
+  status.ok = Boolean(nativeGlobal.result?.ok && globalReferenceVerified);
+  status.updatedSpaceCount = status.ok ? inventory.userSpaces.size : 0;
+  status.verifiedSpaceCount = status.ok ? inventory.userSpaces.size : 0;
+  status.verifiedSharedSpaceCount = status.ok ? inventory.sharedSpaces.size : 0;
+  status.reloadMethod = status.ok ? "native-global-setting" : "visible-monitors-fallback";
+  status.fallbackToVisibleMonitors = !status.ok;
+  status.operationDurationMs = Date.now() - startedAt;
+  status.diagnostic = settledDiagnostic;
+  const failure = nativeGlobal.result?.error
+    || nativeGlobal.command.error
+    || nativeGlobal.command.stderr
+    || (nativeGlobal.result?.ok && !globalReferenceVerified
+      ? "System Settings enabled Show on all Spaces, but the global wallpaper record did not settle on the newly generated image."
+      : "The native Show on all Spaces setting was not confirmed.");
+  status.attempts.push({
+    id: "native-global-all-spaces",
+    label: "Use macOS Show on all Spaces through the native Wallpaper settings pane",
+    ok: status.ok,
+    targetSpaceCount: inventory.userSpaces.size,
+    verifiedSpaceCount: status.verifiedSpaceCount,
+    targetDisplayCount: assignments.length,
+    verifiedDisplayCount: assignments.length,
+    error: status.ok ? undefined : failure
+  });
+
+  if (status.ok) {
+    status.warning = [
+      `macOS confirmed its native Show on all Spaces setting and the global wallpaper record for ${inventory.userSpaces.size} desktop${inventory.userSpaces.size === 1 ? "" : "s"}.`,
+      nativeGlobal.result?.rearmed ? "The setting was safely re-armed to force a native global adoption transaction." : "The setting was enabled to force a native global adoption transaction.",
+      "No wallpaper files or Store records were edited directly, and no Dock or WallpaperAgent process was restarted."
+    ].join(" ");
+  } else {
+    status.error = failure;
+    status.warning = `${failure} Only the already verified visible monitor targets remain changed.`;
+  }
+
+  const command = commands.at(-1) ?? fallbackCommand(status.warning || "Native global wallpaper setting was unavailable.");
+  return { command, commands: commands.length ? commands : [command], summary: status };
 }
 
 export async function getMacOSReferencedWallpaperPaths(activeDisplayId?: string) {

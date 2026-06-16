@@ -7,6 +7,11 @@ import type {
   ExportPayload,
   ExportSetFilePayload,
   ExportSetFileResult,
+  WallpaperSetBeginPayload,
+  WallpaperSetBeginResult,
+  WallpaperSetCleanupResult,
+  WallpaperSetFinalizePayload,
+  WallpaperSetFinalizeResult,
   ImageSource,
   LocalImageRef,
   WallpaperApplyDiagnostics,
@@ -31,6 +36,16 @@ import { createWallpaperController } from "./wallpaper.js";
 import { cleanupGeneratedWallpapers, persistWallpaperAsset, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
 import { localFileProtocolScheme, pathFromRenderableLocalFileUrl } from "../shared/local-file-url.js";
 import { planFadeOverlayAssignments, selectWallpaperTargets } from "../shared/wallpaper.js";
+import {
+  cleanupManagedWallpaperSets,
+  listManagedWallpaperSets,
+  listStaleTemporaryWallpaperSets,
+  safeWallpaperSetName,
+  uniqueWallpaperSetPath,
+  wallpaperSetFolderName,
+  wallpaperSetManifestFile,
+  wallpaperSetTemporaryPrefix
+} from "./wallpaper-sets.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
 const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -42,6 +57,35 @@ let isQuitting = false;
 let trayRuntimeState: TrayRuntimeState = { enabled: false, paused: false };
 const pinterestJobs = new Map<string, AbortController>();
 const wallpaperController = createWallpaperController();
+
+type WallpaperSetSession = {
+  id: string;
+  rootPath: string;
+  stagingPath: string;
+  finalPath: string;
+  folderName: string;
+  createdAt: string;
+  projectName: string;
+  templateName: string;
+  format: "png" | "jpeg";
+  variationCount: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  files: Array<{ fileName: string; filePath: string; sizeBytes: number }>;
+};
+
+const wallpaperSetSessions = new Map<string, WallpaperSetSession>();
+
+function defaultWallpaperSetsRoot() {
+  return path.join(app.getPath("pictures"), "Pinterest Wallpaper Compiler", "Wallpaper Sets");
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -164,24 +208,12 @@ function currentPhysicalDisplayId() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const pauseLabel = trayRuntimeState.paused ? "Resume Rotation" : "Pause Rotation";
-  const intervalLabel = trayRuntimeState.interval === "custom"
-    ? `Every ${trayRuntimeState.customIntervalValue ?? trayRuntimeState.customIntervalMinutes ?? 1} ${trayRuntimeState.customIntervalUnit ?? "minutes"}`
-    : trayRuntimeState.interval ?? "manual";
-  const nextLabel = trayRuntimeState.nextScheduledAt ? new Date(trayRuntimeState.nextScheduledAt).toLocaleString() : "Not scheduled";
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Open Editor", click: showWindow },
-      { label: "Generate Now", click: () => mainWindow?.webContents.send("tray:command", "generate-apply") },
-      { label: "Previous Wallpaper", click: () => mainWindow?.webContents.send("tray:command", "previous") },
-      {
-        label: pauseLabel,
-        enabled: trayRuntimeState.enabled,
-        click: () => mainWindow?.webContents.send("tray:command", trayRuntimeState.paused ? "resume" : "pause")
-      },
+      { label: "Preview on Current Desktop", click: () => mainWindow?.webContents.send("tray:command", "generate-apply") },
+      { label: "Previous Preview", click: () => mainWindow?.webContents.send("tray:command", "previous") },
       { type: "separator" },
-      { label: `Current interval: ${intervalLabel}`, enabled: false },
-      { label: `Next update: ${nextLabel}`, enabled: false },
       { label: `Status: ${trayRuntimeState.status ?? "idle"}`, enabled: false },
       ...(trayRuntimeState.lastError ? [{ label: `Last error: ${trayRuntimeState.lastError}`, enabled: false } as const] : []),
       { type: "separator" },
@@ -669,7 +701,11 @@ async function applyWallpaperFilePath(
   diagnostics.fileSize = generatedFile.size;
   diagnostics.validImage = true;
   if (!diagnostics.changed) {
-    throw Object.assign(new Error(diagnostics.lastError ?? "The operating system did not confirm the desktop wallpaper changed."), { diagnostics });
+    const baseError = diagnostics.lastError ?? "The operating system did not confirm the desktop wallpaper changed.";
+    const permissionHint = diagnostics.permissionStatus === "automation-denied"
+      ? " Allow Pinterest Wallpaper Compiler to control System Events in System Settings > Privacy & Security > Automation, then try Preview again."
+      : "";
+    throw Object.assign(new Error(`${baseError}${permissionHint}`), { diagnostics });
   }
   return {
     ok: true,
@@ -859,30 +895,174 @@ ipcMain.handle("image:export", async (_event, payload: ExportPayload) => {
   return { canceled: false, filePath: result.filePath };
 });
 
+ipcMain.handle("export-set:default-folder", async () => {
+  const filePath = defaultWallpaperSetsRoot();
+  await mkdir(filePath, { recursive: true });
+  return { canceled: false, filePath };
+});
+
 ipcMain.handle("export-set:choose-folder", async () => {
+  const defaultPath = defaultWallpaperSetsRoot();
+  await mkdir(defaultPath, { recursive: true });
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory", "createDirectory"],
-    title: "Choose Export Set Folder"
+    title: "Choose Wallpaper Sets Folder",
+    defaultPath
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
   return { canceled: false, filePath: result.filePaths[0] };
 });
 
-ipcMain.handle("export-set:write-file", async (_event, payload: ExportSetFilePayload): Promise<ExportSetFileResult> => {
+ipcMain.handle("export-set:begin", async (_event, payload: WallpaperSetBeginPayload): Promise<WallpaperSetBeginResult> => {
   try {
-    await mkdir(payload.destinationPath, { recursive: true });
-    const safeName = path.basename(payload.fileName).replace(/[^a-zA-Z0-9._-]+/g, "-");
-    const filePath = path.join(payload.destinationPath, safeName);
-    try {
-      await stat(filePath);
-      if (!payload.overwrite) return { ok: false, skipped: true, filePath };
-    } catch {
-      // File does not exist.
+    const rootPath = payload.rootPath?.trim() || defaultWallpaperSetsRoot();
+    const variationCount = Math.min(500, Math.max(1, Math.round(payload.variationCount)));
+    await mkdir(rootPath, { recursive: true });
+    const createdAt = new Date().toISOString();
+    const preferredFolderName = wallpaperSetFolderName(safeWallpaperSetName(payload.setName));
+    const finalPath = await uniqueWallpaperSetPath(rootPath, preferredFolderName);
+    const sessionId = crypto.randomUUID();
+    const stagingPath = path.join(rootPath, `${wallpaperSetTemporaryPrefix}${sessionId}`);
+    await mkdir(stagingPath, { recursive: false });
+    const session: WallpaperSetSession = {
+      id: sessionId,
+      rootPath,
+      stagingPath,
+      finalPath,
+      folderName: path.basename(finalPath),
+      createdAt,
+      projectName: payload.projectName,
+      templateName: payload.templateName,
+      format: payload.format,
+      variationCount,
+      canvasWidth: Math.max(1, Math.round(payload.canvasWidth)),
+      canvasHeight: Math.max(1, Math.round(payload.canvasHeight)),
+      files: []
+    };
+    wallpaperSetSessions.set(sessionId, session);
+    return {
+      ok: true,
+      sessionId,
+      rootPath,
+      stagingPath,
+      finalPath,
+      folderName: session.folderName
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Unable to prepare the wallpaper set folder." };
+  }
+});
+
+ipcMain.handle("export-set:write-file", async (_event, payload: ExportSetFilePayload): Promise<ExportSetFileResult> => {
+  const session = wallpaperSetSessions.get(payload.sessionId);
+  if (!session) return { ok: false, error: "The wallpaper set export session is no longer available." };
+  try {
+    const extension = session.format === "png" ? ".png" : ".jpg";
+    const baseName = path.basename(payload.fileName, path.extname(payload.fileName)).replace(/[^a-zA-Z0-9._-]+/g, "-") || "wallpaper";
+    const safeName = `${baseName}${extension}`;
+    const filePath = path.join(session.stagingPath, safeName);
+    if (session.files.some((file) => file.fileName === safeName)) {
+      return { ok: false, error: `Duplicate wallpaper filename: ${safeName}` };
     }
-    await writeFile(filePath, dataUrlToBuffer(payload.dataUrl));
+    const data = dataUrlToBuffer(payload.dataUrl);
+    await writeFile(filePath, data, { flag: "wx" });
+    session.files.push({ fileName: safeName, filePath, sizeBytes: data.byteLength });
     return { ok: true, filePath };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Unable to export variation." };
+  }
+});
+
+ipcMain.handle("export-set:finalize", async (_event, payload: WallpaperSetFinalizePayload): Promise<WallpaperSetFinalizeResult> => {
+  const session = wallpaperSetSessions.get(payload.sessionId);
+  if (!session) return { ok: false, error: "The wallpaper set export session is no longer available." };
+  try {
+    if (session.files.length !== session.variationCount) {
+      throw new Error(`Expected ${session.variationCount} wallpapers but generated ${session.files.length}. The incomplete set was not published.`);
+    }
+    const manifest = {
+      kind: "pwc-macos-wallpaper-set",
+      schemaVersion: 1,
+      createdAt: session.createdAt,
+      projectName: session.projectName,
+      templateName: session.templateName,
+      setName: session.folderName,
+      variationCount: session.variationCount,
+      format: session.format,
+      canvas: { width: session.canvasWidth, height: session.canvasHeight },
+      immutable: true,
+      files: session.files.map((file, index) => ({
+        index: index + 1,
+        fileName: file.fileName,
+        sizeBytes: file.sizeBytes
+      }))
+    };
+    await writeFile(path.join(session.stagingPath, wallpaperSetManifestFile), JSON.stringify(manifest, null, 2), "utf8");
+    await rename(session.stagingPath, session.finalPath);
+    wallpaperSetSessions.delete(session.id);
+    const manifestPath = path.join(session.finalPath, wallpaperSetManifestFile);
+    return { ok: true, finalPath: session.finalPath, manifestPath, fileCount: session.files.length };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Unable to finalize the wallpaper set." };
+  }
+});
+
+ipcMain.handle("export-set:abort", async (_event, sessionId: string) => {
+  const session = wallpaperSetSessions.get(sessionId);
+  if (!session) return true;
+  wallpaperSetSessions.delete(sessionId);
+  await rm(session.stagingPath, { recursive: true, force: true });
+  return true;
+});
+
+ipcMain.handle("export-set:reveal", async (_event, folderPath: string) => {
+  const error = await shell.openPath(folderPath);
+  return { ok: !error, error: error || undefined };
+});
+
+ipcMain.handle("export-set:open-wallpaper-settings", async () => {
+  if (process.platform !== "darwin") return { ok: false, error: "Wallpaper Settings is only available on macOS." };
+  await shell.openExternal("x-apple.systempreferences:com.apple.Wallpaper-Settings.extension");
+  return { ok: true };
+});
+
+ipcMain.handle("export-set:cleanup", async (_event, requestedRootPath?: string): Promise<WallpaperSetCleanupResult> => {
+  try {
+    const rootPath = requestedRootPath?.trim() || defaultWallpaperSetsRoot();
+    await mkdir(rootPath, { recursive: true });
+    const sets = await listManagedWallpaperSets(rootPath);
+    const staleTemporary = await listStaleTemporaryWallpaperSets(rootPath);
+    const removable = sets.slice(5);
+    const removableBytes = removable.reduce((total, set) => total + set.sizeBytes, 0)
+      + staleTemporary.reduce((total, folder) => total + folder.sizeBytes, 0);
+    if (removable.length === 0 && staleTemporary.length === 0) {
+      return {
+        ok: true,
+        rootPath,
+        deletedSetCount: 0,
+        deletedTemporaryCount: 0,
+        keptSetCount: sets.length,
+        freedBytes: 0
+      };
+    }
+    const cleanupButtonLabel = removable.length > 0
+      ? `Delete ${removable.length} Old Set${removable.length === 1 ? "" : "s"}`
+      : `Delete ${staleTemporary.length} Incomplete Export${staleTemporary.length === 1 ? "" : "s"}`;
+    const response = await dialog.showMessageBox(mainWindow!, {
+      type: "warning",
+      buttons: ["Cancel", cleanupButtonLabel],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Clean Up Wallpaper Sets",
+      message: "Delete old app-created wallpaper sets?",
+      detail: `The five newest sets will be kept. ${removable.length} older managed set${removable.length === 1 ? "" : "s"} and ${staleTemporary.length} incomplete temporary folder${staleTemporary.length === 1 ? "" : "s"} will be deleted, freeing about ${formatBytes(removableBytes)}.\n\nBefore continuing, make sure macOS is not currently using one of the old sets. Personal folders without a Pinterest Wallpaper Compiler manifest will never be touched.`
+    });
+    if (response.response !== 1) return { ok: true, canceled: true, rootPath };
+    const summary = await cleanupManagedWallpaperSets(rootPath, 5);
+    return { ok: true, rootPath, ...summary };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Unable to clean up wallpaper sets." };
   }
 });
 
@@ -1195,7 +1375,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  // Keep running for wallpaper rotation; use tray/menu-bar Quit to exit.
+  // Keep the tray available for quick previews; use tray/menu-bar Quit to exit.
 });
 
 app.on("before-quit", () => {
