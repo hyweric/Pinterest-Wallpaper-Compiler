@@ -4252,3 +4252,286 @@ select option {
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* Phase 18.4: visual-only right inspector cleanup. */
+.sidebar.right {
+  padding: 0;
+  background: #fbfbfa;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.sidebar.right .panel-tabs.inspector-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  width: 100%;
+  min-height: 54px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid rgba(43, 48, 58, 0.09);
+  border-radius: 0;
+  background: rgba(251, 251, 250, 0.97);
+  backdrop-filter: blur(14px);
+  box-shadow: none;
+}
+
+.sidebar.right .panel-tabs.inspector-tabs button {
+  min-height: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.sidebar.right .panel-tabs.inspector-tabs:has(button:only-child) {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar.right .panel-tabs.inspector-tabs:has(button:only-child) button {
+  width: auto;
+  min-height: 34px;
+  height: 34px;
+  justify-content: flex-start;
+  padding: 0 2px;
+  color: #2e3440;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 780;
+  box-shadow: none;
+}
+
+.sidebar.right .inspector-scroll-region {
+  padding: 0 14px 24px;
+  overflow-x: hidden;
+  background: #fbfbfa;
+}
+
+.sidebar.right .inspector-scroll-region > .settings-section,
+.sidebar.right .inspector-scroll-region > .properties {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  isolation: auto;
+}
+
+.sidebar.right .inspector-scroll-region > .settings-section + .settings-section,
+.sidebar.right .inspector-scroll-region > .settings-section + .properties,
+.sidebar.right .inspector-scroll-region > .properties + .settings-section {
+  margin-top: 0;
+}
+
+.sidebar.right .settings-section > details,
+.sidebar.right .properties > details {
+  display: block;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(43, 48, 58, 0.09);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.sidebar.right .settings-section > details:first-child,
+.sidebar.right .properties > details:first-child {
+  border-top: 0;
+}
+
+.sidebar.right .settings-section > details > summary,
+.sidebar.right .properties > details > summary {
+  min-height: 52px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: #303641;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0.025em;
+  line-height: 1.2;
+}
+
+.sidebar.right .settings-section > details > summary:hover,
+.sidebar.right .properties > details > summary:hover {
+  color: #161b23;
+}
+
+.sidebar.right .settings-section > details > summary svg,
+.sidebar.right .properties > details > summary svg {
+  width: 15px;
+  height: 15px;
+  color: #6f7782;
+  transition: transform 140ms ease;
+}
+
+.sidebar.right .settings-section > details[open] > summary svg,
+.sidebar.right .properties > details[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.sidebar.right .settings-section > details[open],
+.sidebar.right .properties > details[open] {
+  padding-bottom: 16px;
+}
+
+.sidebar.right .settings-section > details[open] > summary,
+.sidebar.right .properties > details[open] > summary {
+  margin-bottom: 12px;
+}
+
+.sidebar.right .settings-section > details > * + *,
+.sidebar.right .properties > details > * + * {
+  margin-top: 10px;
+}
+
+.sidebar.right .settings-section > details[open] > summary + *,
+.sidebar.right .properties > details[open] > summary + * {
+  margin-top: 0;
+}
+
+.sidebar.right .settings-section label,
+.sidebar.right .properties label {
+  gap: 6px;
+  color: #626a76;
+  font-size: 11.5px;
+  font-weight: 680;
+  line-height: 1.25;
+}
+
+.sidebar.right .settings-section input[type="text"],
+.sidebar.right .settings-section input[type="number"],
+.sidebar.right .settings-section input[type="url"],
+.sidebar.right .settings-section select,
+.sidebar.right .properties input[type="text"],
+.sidebar.right .properties input[type="number"],
+.sidebar.right .properties input[type="url"],
+.sidebar.right .properties select {
+  min-height: 35px;
+  height: 35px;
+  border-radius: 8px;
+  background-color: #fff;
+  font-size: 12.5px;
+}
+
+.sidebar.right input[type="color"] {
+  min-height: 36px;
+  height: 36px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.sidebar.right .segmented-control {
+  min-height: 37px;
+  padding: 3px;
+  border: 1px solid rgba(43, 48, 58, 0.11);
+  border-radius: 9px;
+  background: #f2f3f3;
+  box-shadow: none;
+}
+
+.sidebar.right .segmented-control button {
+  min-height: 29px;
+  height: 29px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.sidebar.right .segmented-control button.active {
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(35, 40, 48, 0.09);
+}
+
+.sidebar.right .filter-slider {
+  gap: 7px;
+}
+
+.sidebar.right .filter-slider > span {
+  min-height: 18px;
+  color: #626a76;
+  line-height: 1.2;
+}
+
+.sidebar.right .filter-slider > span b {
+  color: #303641;
+  font-weight: 750;
+}
+
+.sidebar.right .filter-slider input[type="range"] {
+  margin: 0;
+}
+
+.sidebar.right .texture-picker-grid {
+  gap: 7px;
+}
+
+.sidebar.right .texture-choice {
+  min-height: 76px;
+  padding: 7px;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.sidebar.right .surface-enable-row,
+.sidebar.right .wallpaper-set-note,
+.sidebar.right .wallpaper-status-card,
+.sidebar.right .macos-space-status,
+.sidebar.right .settings-warning,
+.sidebar.right .target-config,
+.sidebar.right .diagnostics {
+  border: 1px solid rgba(43, 48, 58, 0.09);
+  border-radius: 10px;
+  background: rgba(246, 247, 247, 0.84);
+  box-shadow: none;
+}
+
+.sidebar.right .surface-enable-row,
+.sidebar.right .wallpaper-set-note,
+.sidebar.right .wallpaper-status-card,
+.sidebar.right .macos-space-status {
+  padding: 10px;
+}
+
+.sidebar.right .wallpaper-panel {
+  gap: 12px;
+}
+
+.sidebar.right .wallpaper-panel > .wallpaper-set-note,
+.sidebar.right .wallpaper-panel > .compact-action-row,
+.sidebar.right .wallpaper-panel > .wallpaper-status-card,
+.sidebar.right .wallpaper-panel > .diagnostics {
+  margin-top: 12px;
+}
+
+.sidebar.right .wallpaper-panel > details:first-child {
+  border-top: 0;
+}
+
+.sidebar.right .settings-hint {
+  margin: 0;
+  color: #777f8b;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.sidebar.right .two-col,
+.sidebar.right .compact-action-row,
+.sidebar.right .surface-seed-row {
+  gap: 7px;
+}
+
+.sidebar.right .button,
+.sidebar.right button {
+  box-shadow: none;
+}
+
+.sidebar.right .button:hover,
+.sidebar.right button:hover {
+  transform: none;
+}
