@@ -74,20 +74,18 @@ test("macOS all-desktop implementation is diagnostic-driven, transactional, and 
   assert.match(spacesSource, /NSWorkspaceDidWakeNotification/);
 });
 
-test("targeting UI presents all requested modes and routes inactive Spaces to folder shuffle", async () => {
+test("targeting UI hides low-level targets and exposes only supported wallpaper assignment choices", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  for (const mode of [
-    "current-desktop",
-    "current-monitor",
-    "all-visible-monitors",
-    "all-desktops-current-monitor",
-    "all-desktops-all-monitors"
-  ]) {
-    assert.match(source, new RegExp(`value=\"${mode}\"`));
-  }
-  assert.match(source, /macOS Wallpaper Set mode/);
-  assert.match(source, /Choose Folder/);
-  assert.match(source, /Show on all Spaces/);
+  const start = source.indexOf("function WallpaperPanel(");
+  const end = source.indexOf("function CanvasDesignPanel(", start);
+  const panel = source.slice(start, end);
+  assert.match(panel, /Same generated wallpaper on every display/);
+  assert.match(panel, /Different generated variation on each display/);
+  assert.match(panel, /Create Wallpaper Set is the supported workflow for all Mission Control Spaces/);
+  assert.doesNotMatch(panel, /Apply to/);
+  assert.doesNotMatch(panel, /value="current-desktop"/);
+  assert.doesNotMatch(panel, /value="all-desktops-all-monitors"/);
+  assert.doesNotMatch(panel, /Target templates/);
   assert.match(source, /Automatic all-desktop application is replaced by macOS folder shuffle/);
   assert.doesNotMatch(source, /Advanced macOS mode: inactive Spaces are updated immediately/);
 });

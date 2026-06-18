@@ -1,7 +1,8 @@
-import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTextureEffect, PlaceholderLayer, WallpaperProject } from "../shared/types";
+import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTextureEffect, PlaceholderLayer, ShadowEffect, TornPaperEffect, WallpaperProject } from "../shared/types";
 import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
 import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/local-file-url";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
+import { normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, tornPaperPolygonPoints, tornPaperTextureDataUrl } from "../shared/frame-effects";
 import { getImageForLayer } from "./project";
 import { drawSurfaceTexture } from "./surface-renderer";
 
@@ -65,9 +66,16 @@ function seeded(seed: number) {
   };
 }
 
-function roughPaperPath(context: CanvasRenderingContext2D, width: number, height: number, effect: PaperFrameEffect) {
+function roughPaperPath(context: CanvasRenderingContext2D, width: number, height: number, effect: PaperFrameEffect, tornPaper?: TornPaperEffect, radius?: number) {
   if (!paperFrameIsRough(effect)) {
-    roundedPath(context, width, height, Math.min(18, effect.borderWidth * 0.4));
+    roundedPath(context, width, height, radius ?? Math.min(18, effect.borderWidth * 0.4));
+    return;
+  }
+  if (tornPaper) {
+    const points = tornPaperPolygonPoints(normalizeTornPaperEffect(tornPaper, effect), width, height);
+    context.beginPath();
+    points.forEach((point, index) => index === 0 ? context.moveTo(point.x, point.y) : context.lineTo(point.x, point.y));
+    context.closePath();
     return;
   }
   const random = seeded(effect.seed);
@@ -164,35 +172,127 @@ function drawVignette(context: CanvasRenderingContext2D, layer: PlaceholderLayer
   context.fillRect(0, 0, layer.width, layer.height);
 }
 
+function colorWithAlpha(color: string, opacity: number) {
+  const alpha = Math.max(0, Math.min(1, opacity));
+  if (/^#[0-9a-f]{6}$/i.test(color)) {
+    const red = Number.parseInt(color.slice(1, 3), 16);
+    const green = Number.parseInt(color.slice(3, 5), 16);
+    const blue = Number.parseInt(color.slice(5, 7), 16);
+    return `rgba(${red},${green},${blue},${alpha})`;
+  }
+  return color;
+}
+
+function applyCanvasShadow(context: CanvasRenderingContext2D, shadow: ShadowEffect) {
+  if (!shadow.enabled || shadow.opacity <= 0) return false;
+  context.shadowColor = colorWithAlpha(shadow.color, shadow.opacity);
+  context.shadowBlur = shadow.blur;
+  context.shadowOffsetX = shadow.x;
+  context.shadowOffsetY = shadow.y;
+  return true;
+}
+
+function drawInsetShadow(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  radius: number,
+  ellipse: boolean,
+  shadow: ShadowEffect
+) {
+  if (!shadow.enabled || shadow.opacity <= 0) return;
+  context.save();
+  context.shadowColor = colorWithAlpha(shadow.color, shadow.opacity);
+  context.shadowBlur = shadow.blur;
+  context.shadowOffsetX = shadow.x;
+  context.shadowOffsetY = shadow.y;
+  context.lineWidth = Math.max(12, shadow.spread * 2 + 14);
+  roundedPath(context, width, height, radius, ellipse);
+  context.strokeStyle = "rgba(0,0,0,.01)";
+  context.stroke();
+  context.restore();
+}
+
 async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperProject, layer: PlaceholderLayer) {
   if (layer.hidden) return;
   const imageRef = getImageForLayer(project, layer);
   const paperFrame = layer.effects.paperFrame;
-  const insets = paperFrameInsets(paperFrame, layer.width, layer.height);
+  const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
+  const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
+  const polaroidActive = paperFrame.type === "polaroid";
+  const tornActive = paperFrame.type === "torn" || paperFrame.type === "deckle";
+  const insets = paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper);
   const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
   const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
+  const frameRotation = paperFrameRotation(paperFrame, polaroid);
+  const frameColor = polaroidActive ? polaroid.frameColor : tornActive ? tornPaper.paperColor : paperFrame.paperColor;
+  const frameOpacity = polaroidActive ? polaroid.frameOpacity : tornActive ? tornPaper.paperOpacity : 1;
+  const frameRadius = polaroidActive ? polaroid.cornerRadius : Math.min(18, paperFrame.borderWidth * 0.4);
+  const frameTextureIntensity = polaroidActive ? polaroid.grain : tornActive ? tornPaper.grain : paperFrame.textureIntensity;
+  const outerShadow = polaroidActive ? polaroid.dropShadow : tornActive ? tornPaper.outerShadow : undefined;
+  const innerShadow = polaroidActive ? polaroid.innerShadow : tornActive ? tornPaper.innerShadow : undefined;
+  const imageTransform = polaroidActive
+    ? { scale: polaroid.imageScale, x: polaroid.imageOffsetX, y: polaroid.imageOffsetY, rotation: polaroid.imageRotation }
+    : tornActive
+      ? { scale: tornPaper.imageScale, x: tornPaper.imageOffsetX, y: tornPaper.imageOffsetY, rotation: 0 }
+      : { scale: 1, x: 0, y: 0, rotation: 0 };
 
   context.save();
   context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
-  context.rotate(((layer.rotation + paperFrameRotation(paperFrame)) * Math.PI) / 180);
+  context.rotate(((layer.rotation + frameRotation) * Math.PI) / 180);
   context.globalAlpha = layer.opacity;
   context.globalCompositeOperation = layer.effects.blendMode === "normal" ? "source-over" : layer.effects.blendMode;
   context.translate(-layer.width / 2, -layer.height / 2);
 
-  const shadowStrength = Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength);
-  if (shadowStrength > 0) {
-    context.shadowColor = `rgba(15,23,42,${Math.min(0.45, shadowStrength / 180)})`;
-    context.shadowBlur = 8 + shadowStrength * 0.55;
-    context.shadowOffsetY = 3 + shadowStrength * 0.22;
+  const expandedShadowApplied = outerShadow ? applyCanvasShadow(context, outerShadow) : false;
+  if (!expandedShadowApplied) {
+    const shadowStrength = Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength);
+    if (shadowStrength > 0) {
+      context.shadowColor = `rgba(15,23,42,${Math.min(0.45, shadowStrength / 180)})`;
+      context.shadowBlur = 8 + shadowStrength * 0.55;
+      context.shadowOffsetY = 3 + shadowStrength * 0.22;
+    }
   }
 
   if (paperFrame.type !== "none") {
-    roughPaperPath(context, layer.width, layer.height, paperFrame);
-    context.fillStyle = paperFrame.paperColor;
+    roughPaperPath(context, layer.width, layer.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
+    const previousAlpha = context.globalAlpha;
+    context.globalAlpha = layer.opacity * frameOpacity;
+    context.fillStyle = frameColor;
     context.fill();
+    context.globalAlpha = previousAlpha;
     context.shadowColor = "transparent";
-    if (paperFrame.textureIntensity > 0) {
-      await drawSurfaceTexture(context, layer.width, layer.height, { ...layer.effects.paper, enabled: true, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type, intensity: paperFrame.textureIntensity, opacity: paperFrame.textureIntensity / 100 }, customTexture(project, layer.effects.paper));
+    if (frameTextureIntensity > 0) {
+      await drawSurfaceTexture(context, layer.width, layer.height, {
+        ...layer.effects.paper,
+        enabled: true,
+        type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type,
+        intensity: frameTextureIntensity,
+        opacity: frameTextureIntensity / 100,
+        tone: 0
+      }, customTexture(project, layer.effects.paper));
+    }
+    const warmth = polaroidActive ? paperWarmthOverlay(polaroid.warmth) : undefined;
+    if (warmth) {
+      context.save();
+      roughPaperPath(context, layer.width, layer.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
+      context.clip();
+      context.globalCompositeOperation = "soft-light";
+      context.globalAlpha = layer.opacity * warmth.opacity;
+      context.fillStyle = warmth.color;
+      context.fillRect(0, 0, layer.width, layer.height);
+      context.restore();
+    }
+    if (tornActive && (tornPaper.fibers > 0 || tornPaper.wrinkles > 0 || tornPaper.stains > 0 || tornPaper.speckles > 0 || tornPaper.edgeDarkening > 0)) {
+      const texture = await loadImage(tornPaperTextureDataUrl(tornPaper, layer.width, layer.height));
+      context.save();
+      roughPaperPath(context, layer.width, layer.height, paperFrame, tornPaper, frameRadius);
+      context.clip();
+      context.shadowColor = "transparent";
+      context.globalAlpha = layer.opacity;
+      context.globalCompositeOperation = "source-over";
+      context.drawImage(texture, 0, 0, layer.width, layer.height);
+      context.restore();
     }
   }
 
@@ -208,6 +308,10 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     const image = await loadImage(imageRef.url);
     context.save();
     context.filter = filterString(layer);
+    context.translate(innerWidth / 2 + imageTransform.x, innerHeight / 2 + imageTransform.y);
+    context.rotate((imageTransform.rotation * Math.PI) / 180);
+    context.scale(imageTransform.scale, imageTransform.scale);
+    context.translate(-innerWidth / 2, -innerHeight / 2);
     drawPlacedImage(context, image, innerWidth, innerHeight, layer.cropMode, layer.alignment, layer.crop);
     context.restore();
   } else {
@@ -221,23 +325,45 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     intensity: Math.max(layer.effects.paper.intensity, layer.effects.filters.grain),
     opacity: Math.max(layer.effects.paper.opacity, layer.effects.filters.grain / 100)
   }, customTexture(project, layer.effects.paper));
-  if (layer.effects.innerShadow) {
-    context.save();
-    context.shadowColor = "rgba(15,23,42,.34)";
-    context.shadowBlur = 20;
-    context.lineWidth = 14;
-    roundedPath(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle");
-    context.strokeStyle = "rgba(0,0,0,.01)";
-    context.stroke();
-    context.restore();
+  if (innerShadow) drawInsetShadow(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle", innerShadow);
+  else if (layer.effects.innerShadow) {
+    drawInsetShadow(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle", {
+      enabled: true,
+      x: 0,
+      y: 0,
+      blur: 20,
+      spread: 0,
+      opacity: .34,
+      color: "#0f172a"
+    });
   }
   context.restore();
+
+  if (polaroidActive && polaroid.caption.enabled && polaroid.caption.text) {
+    const captionTop = Math.max(insets.top + innerHeight, layer.height - Math.max(polaroid.captionHeight, polaroid.borderBottom - polaroid.borderTop));
+    const captionWidth = Math.max(1, layer.width - polaroid.borderLeft - polaroid.borderRight);
+    const captionHeight = Math.max(1, layer.height - captionTop);
+    context.save();
+    context.translate(polaroid.caption.x, polaroid.caption.y);
+    context.fillStyle = polaroid.caption.color;
+    context.font = `${polaroid.caption.fontWeight} ${polaroid.caption.fontSize}px "${polaroid.caption.fontFamily}", sans-serif`;
+    context.textBaseline = "middle";
+    context.textAlign = polaroid.caption.alignment;
+    const x = polaroid.caption.alignment === "left"
+      ? polaroid.borderLeft
+      : polaroid.caption.alignment === "right"
+        ? polaroid.borderLeft + captionWidth
+        : polaroid.borderLeft + captionWidth / 2;
+    context.fillText(polaroid.caption.text, x, captionTop + captionHeight / 2, captionWidth);
+    context.restore();
+  }
+
   context.restore();
 
   if (layer.borderWidth > 0) {
     context.save();
     context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
-    context.rotate(((layer.rotation + paperFrameRotation(paperFrame)) * Math.PI) / 180);
+    context.rotate(((layer.rotation + frameRotation) * Math.PI) / 180);
     context.globalAlpha = layer.opacity * layer.borderOpacity;
     context.translate(-layer.width / 2, -layer.height / 2);
     shapePath(context, layer);

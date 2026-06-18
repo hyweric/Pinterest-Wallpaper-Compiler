@@ -15,6 +15,7 @@ import type {
   WallpaperTemplate
 } from "../shared/types";
 import { normalizeAllSpacesRefreshMode } from "../shared/wallpaper";
+import { createDefaultPolaroidEffect, createDefaultTornPaperEffect, normalizePolaroidEffect, normalizeTornPaperEffect } from "../shared/frame-effects";
 
 export const presets = [
   { id: "1920x1080", label: "Desktop HD", width: 1920, height: 1080 },
@@ -220,7 +221,9 @@ export function createDefaultEffects(): PlaceholderEffects {
     polaroidFrame: false,
     tapeDecoration: false,
     tornEdgeMask: false,
-    paperFrame: createDefaultPaperFrame()
+    paperFrame: createDefaultPaperFrame(),
+    polaroid: createDefaultPolaroidEffect(),
+    tornPaper: createDefaultTornPaperEffect()
   };
 }
 
@@ -256,10 +259,12 @@ function normalizeSource(source: ImageSource): ImageSource {
 }
 
 function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
+  const requestedMode = canvas.backgroundBaseMode ?? (canvas.backgroundTransparent ? "transparent" : canvas.backgroundImage ? "image" : "color");
+  const backgroundBaseMode = requestedMode === "image" && canvas.backgroundImage ? "image" : "color";
   return {
     ...canvas,
-    backgroundBaseMode: canvas.backgroundBaseMode ?? (canvas.backgroundTransparent ? "transparent" : canvas.backgroundImage ? "image" : "color"),
-    backgroundTransparent: canvas.backgroundTransparent ?? false,
+    backgroundBaseMode,
+    backgroundTransparent: false,
     backgroundMode: canvas.backgroundMode ?? "cover",
     backgroundAlignment: canvas.backgroundAlignment ?? "center",
     backgroundOffsetX: canvas.backgroundOffsetX ?? 0,
@@ -279,14 +284,22 @@ function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
   };
 }
 
+function normalizePaperFrameType(input: string | undefined): PaperFrameEffect["type"] {
+  if (input === "none" || input === "clean" || input === "polaroid" || input === "torn" || input === "deckle" || input === "newsprint") return input;
+  if (input === "clean-paper" || input === "photo-print") return "clean";
+  if (input === "torn-paper") return "torn";
+  if (input === "deckle-edge") return "deckle";
+  if (input === "newspaper-cutout") return "newsprint";
+  return "none";
+}
+
 function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
-  const legacyPaperType = layer.effects?.paperFrame?.type as string | undefined;
-  const paperType = legacyPaperType === "clean-paper" || legacyPaperType === "photo-print" ? "clean"
-    : legacyPaperType === "torn-paper" ? "torn"
-      : legacyPaperType === "deckle-edge" ? "deckle"
-        : legacyPaperType === "newspaper-cutout" ? "newsprint"
-          : legacyPaperType === "polaroid" ? "polaroid"
-            : "none";
+  const paperType = normalizePaperFrameType(layer.effects?.paperFrame?.type as string | undefined);
+  const normalizedPaperFrame = { ...createDefaultPaperFrame(), ...(layer.effects?.paperFrame ?? {}), type: paperType };
+  const normalizedPolaroid = normalizePolaroidEffect(layer.effects?.polaroid, normalizedPaperFrame, Boolean(layer.effects?.innerShadow));
+  normalizedPolaroid.enabled = paperType === "polaroid";
+  const normalizedTornPaper = normalizeTornPaperEffect(layer.effects?.tornPaper, normalizedPaperFrame, Boolean(layer.effects?.innerShadow));
+  normalizedTornPaper.enabled = paperType === "torn" || paperType === "deckle";
   return {
     ...layer,
     borderOpacity: layer.borderOpacity ?? 1,
@@ -306,7 +319,9 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
         ...(layer.effects?.paper ?? {}),
         enabled: layer.effects?.paper?.enabled ?? layer.effects?.paper?.type !== "none"
       },
-      paperFrame: { ...createDefaultPaperFrame(), ...(layer.effects?.paperFrame ?? {}), type: paperType }
+      paperFrame: normalizedPaperFrame,
+      polaroid: normalizedPolaroid,
+      tornPaper: normalizedTornPaper
     }
   };
 }
@@ -502,10 +517,11 @@ export function normalizeProject(input: WallpaperProject): WallpaperProject {
   };
   const wallpaper = { ...createDefaultWallpaperSettings(), ...(raw.wallpaper ?? {}) };
   wallpaper.scope = wallpaper.scope ?? "same-all-desktops";
-  wallpaper.targetMode = wallpaper.targetMode ?? (wallpaper.scope === "current-desktop" || wallpaper.monitorMode === "primary"
-    ? "current-desktop"
-    : "all-visible-monitors");
-  wallpaper.targetTemplateMode = wallpaper.targetTemplateMode ?? "single-template";
+  wallpaper.targetMode = "all-visible-monitors";
+  wallpaper.scope = "same-all-desktops";
+  wallpaper.monitorMode = "all";
+  wallpaper.monitorId = undefined;
+  wallpaper.targetTemplateMode = wallpaper.targetTemplateMode === "different-template" || wallpaper.targetTemplateMode === "playlist" ? "different-template" : "single-template";
   wallpaper.targetTemplateIds = wallpaper.targetTemplateIds ?? {};
   wallpaper.targetPlaylistIds = wallpaper.targetPlaylistIds ?? {};
   wallpaper.allSpacesRefreshMode = normalizeAllSpacesRefreshMode(wallpaper.allSpacesRefreshMode);

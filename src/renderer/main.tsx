@@ -47,14 +47,16 @@ import type {
   ImageSource,
   LocalImageRef,
   LocalImportSummary,
-  MacOSWallpaperDiagnosticReport,
   PaperFrameType,
   SourceMediaPolicy,
   MaskShape,
   PaperTextureEffect,
+  PolaroidEffect,
+  ShadowEffect,
+  TearEdgeEffect,
+  TornPaperEffect,
   PinterestImportProgress,
   PlaceholderLayer,
-  WallpaperApplyResult,
   WallpaperRuntimeStatus,
   WallpaperTarget,
   WallpaperTemplate,
@@ -115,11 +117,12 @@ import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import { surfaceDefaultsForType } from "../shared/surfaces";
 import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-renderer";
 import { nextSurfaceSeed, normalizeSurfaceEffect, surfaceEffectIsVisible } from "../shared/surface-rendering";
+import { applyTornPaperPreset, bundledTornPaperPresets, createCustomTornPaperPreset, createDefaultPolaroidEffect, createDefaultTornPaperEffect, nextStableSeed, normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, shadowToCss, tornPaperTextureDataUrl } from "../shared/frame-effects";
+import { clampPolaroidRotation, distanceBetween, pointerAngleDegrees, polaroidScaleFromPointerDistance, rotatePoint, screenDeltaToFrameDelta, shortestAngleDelta } from "../shared/polaroid-interaction";
 import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
-const backgroundAdvancedKey = "pwc.backgroundAdvanced.v1";
 const historyLimit = 80;
 const snapDistance = 8;
 const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
@@ -149,6 +152,22 @@ type DragState = {
   startY: number;
   layer: PlaceholderLayer;
   groupLayers: PlaceholderLayer[];
+  historyProject: WallpaperProject;
+};
+
+type PolaroidImageDragMode = "move" | "scale" | "rotate";
+
+type PolaroidImageDragState = {
+  id: string;
+  mode: PolaroidImageDragMode;
+  startX: number;
+  startY: number;
+  layer: PlaceholderLayer;
+  effect: PolaroidEffect;
+  frameRotation: number;
+  centerClient: { x: number; y: number };
+  startPointerAngle: number;
+  startPointerDistance: number;
   historyProject: WallpaperProject;
 };
 
@@ -825,12 +844,8 @@ function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
-  const [lastWallpaperDiagnostics, setLastWallpaperDiagnostics] = useState<WallpaperApplyResult["diagnostics"]>();
-  const [macOSWallpaperDiagnostic, setMacOSWallpaperDiagnostic] = useState<MacOSWallpaperDiagnosticReport>();
-  const [macOSDiagnosticBusy, setMacOSDiagnosticBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
-  const [backgroundAdvancedOpen, setBackgroundAdvancedOpen] = useState(() => localStorage.getItem(backgroundAdvancedKey) === "true");
   const [history, setHistory] = useState<{ past: WallpaperProject[]; future: WallpaperProject[] }>({ past: [], future: [] });
   const [pinterestDialog, setPinterestDialog] = useState<PinterestDialogState>({
     open: false,
@@ -857,6 +872,7 @@ function App() {
     failed: 0
   });
   const dragRef = useRef<DragState | undefined>(undefined);
+  const polaroidImageDragRef = useRef<PolaroidImageDragState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasZoomShellRef = useRef<HTMLDivElement>(null);
@@ -893,20 +909,6 @@ function App() {
     return templates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }, [project.templates.templates, templateFilter]);
 
-  async function runMacOSWallpaperDiagnostic() {
-    setMacOSDiagnosticBusy(true);
-    try {
-      const report = await window.wallpaperApi.getMacOSWallpaperDiagnostic();
-      setMacOSWallpaperDiagnostic(report);
-      if (!report.ok && report.errors.length) setMessage(report.errors[0]);
-      return report;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to inspect macOS wallpaper settings.");
-      return undefined;
-    } finally {
-      setMacOSDiagnosticBusy(false);
-    }
-  }
 
   function beginWallpaperOperation(kind: "manual" | "scheduled" | "history" | "source-change") {
     const lease = wallpaperOperationRef.current!.begin(kind);
@@ -987,10 +989,6 @@ function App() {
     projectRef.current = next;
     setProject(next);
   }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval, project.wallpaper.nextScheduledAt]);
-
-  useEffect(() => {
-    localStorage.setItem(backgroundAdvancedKey, String(backgroundAdvancedOpen));
-  }, [backgroundAdvancedOpen]);
 
   useEffect(() => {
     return window.wallpaperApi.onTrayCommand((command) => {
@@ -1871,7 +1869,6 @@ function App() {
         onStatus: setWallpaperStatus,
         timeouts: { applyMs: wallpaperTargetModeNeedsInactiveSpaces(candidate.wallpaper.targetMode) ? 120_000 : 45_000 }
       });
-      setLastWallpaperDiagnostics(result.diagnostics);
 
       const appliedAt = result.appliedAt ?? new Date().toISOString();
       const templateId = combination.templateId ?? candidate.templates.activeTemplateId;
@@ -1918,23 +1915,9 @@ function App() {
     }
   }
 
-  function targetTemplateFor(base: WallpaperProject, target: WallpaperTarget, index: number) {
-    const enabled = base.templates.templates.filter((template) => template.enabledForRotation);
-    if (base.wallpaper.targetTemplateMode === "different-template") {
-      const templateId = base.wallpaper.targetTemplateIds[target.id];
-      return base.templates.templates.find((template) => template.id === templateId)
-        ?? enabled[index % Math.max(1, enabled.length)]
-        ?? base.templates.templates[index % base.templates.templates.length];
-    }
-    if (base.wallpaper.targetTemplateMode === "playlist") {
-      const ids = base.wallpaper.targetPlaylistIds[target.id]?.length
-        ? base.wallpaper.targetPlaylistIds[target.id]
-        : base.templates.rotationTemplateIds;
-      const templateId = ids[index % Math.max(1, ids.length)];
-      return base.templates.templates.find((template) => template.id === templateId) ?? enabled[index % Math.max(1, enabled.length)];
-    }
-    const templateId = base.wallpaper.targetTemplateIds.all ?? base.templates.activeTemplateId;
-    return base.templates.templates.find((template) => template.id === templateId);
+  function targetTemplateFor(base: WallpaperProject) {
+    const templateId = base.templates.activeTemplateId;
+    return base.templates.templates.find((template) => template.id === templateId) ?? base.templates.templates[0];
   }
 
   async function applyDifferentWallpapers(base: WallpaperProject, options: { automatic?: boolean; label?: string } = {}) {
@@ -1957,7 +1940,7 @@ function App() {
       const used = new Set<string>();
       const rendered: Array<{ target: WallpaperTarget; combination: GeneratedCombination; imageData: ArrayBuffer; templateName: string }> = [];
       for (const [index, target] of applyTargets.entries()) {
-        const template = targetTemplateFor(working, target, index);
+        const template = targetTemplateFor(working);
         const workspace = template ? normalizeProject(workspaceFromTemplate({ ...working, templates: { ...working.templates, activeTemplateId: template.id } }, template)) : working;
         const prepared = prepareGeneratedProjectWithUsed(workspace, template?.id ?? workspace.templates.activeTemplateId, used);
         working = normalizeProject(prepared.project);
@@ -1996,7 +1979,6 @@ function App() {
         }))
       }), applyTimeoutMs, "Applying desktop wallpapers timed out.");
       setWallpaperStatus("verifying");
-      setLastWallpaperDiagnostics(result.diagnostics);
       if (!result.ok || !result.targets?.length) {
         recordWallpaperFailure(result.error ?? "One or more desktop wallpapers failed to apply.", Boolean(options.automatic));
         setWallpaperStatus("failed");
@@ -2146,7 +2128,6 @@ function App() {
         onStatus: setWallpaperStatus,
         timeouts: { applyMs: 45_000 }
       });
-      setLastWallpaperDiagnostics(result.diagnostics);
       const appliedAt = result.appliedAt ?? new Date().toISOString();
       setProject((state) => {
         const next = {
@@ -2475,6 +2456,71 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
+  function patchPolaroidImageDirect(id: string, patch: Partial<PolaroidEffect>) {
+    commitProject(
+      (current) => ({
+        ...current,
+        layers: current.layers.map((item) => {
+          if (item.id !== id || item.locked) return item;
+          const effect = normalizePolaroidEffect(item.effects.polaroid, item.effects.paperFrame, item.effects.innerShadow);
+          return {
+            ...item,
+            effects: {
+              ...item.effects,
+              polaroid: normalizePolaroidEffect({ ...effect, ...patch }, item.effects.paperFrame, item.effects.innerShadow)
+            }
+          };
+        })
+      }),
+      false
+    );
+  }
+
+  function beginPolaroidImageDrag(
+    event: PointerEvent,
+    layer: PlaceholderLayer,
+    effect: PolaroidEffect,
+    mode: PolaroidImageDragMode,
+    imageArea: { left: number; top: number; width: number; height: number }
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (layer.locked) return;
+    if (!selectedLayerIds.includes(layer.id)) selectOnlyLayer(layer.id);
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const outerCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+    const imageCenter = {
+      x: layer.x + imageArea.left + imageArea.width / 2,
+      y: layer.y + imageArea.top + imageArea.height / 2
+    };
+    const rotatedOffset = rotatePoint(
+      { x: imageCenter.x - outerCenter.x, y: imageCenter.y - outerCenter.y },
+      layer.rotation + effect.frameRotation
+    );
+    const centerClient = {
+      x: canvasRect.left + (outerCenter.x + rotatedOffset.x) * zoomRef.current,
+      y: canvasRect.top + (outerCenter.y + rotatedOffset.y) * zoomRef.current
+    };
+    const pointer = { x: event.clientX, y: event.clientY };
+    polaroidImageDragRef.current = {
+      id: layer.id,
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      layer,
+      effect,
+      frameRotation: layer.rotation + effect.frameRotation,
+      centerClient,
+      startPointerAngle: pointerAngleDegrees(pointer, centerClient),
+      startPointerDistance: distanceBetween(pointer, centerClient),
+      historyProject: cloneProject(project)
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
   function snapLayer(layer: PlaceholderLayer, x: number, y: number) {
     const centerX = x + layer.width / 2;
     const centerY = y + layer.height / 2;
@@ -2534,6 +2580,40 @@ function App() {
       setSelectedLayerId(ids.at(-1));
       return;
     }
+    const polaroidDrag = polaroidImageDragRef.current;
+    if (polaroidDrag) {
+      const pointer = { x: event.clientX, y: event.clientY };
+      if (polaroidDrag.mode === "move") {
+        const local = screenDeltaToFrameDelta(
+          (event.clientX - polaroidDrag.startX) / zoomRef.current,
+          (event.clientY - polaroidDrag.startY) / zoomRef.current,
+          polaroidDrag.frameRotation
+        );
+        patchPolaroidImageDirect(polaroidDrag.id, {
+          imageOffsetX: polaroidDrag.effect.imageOffsetX + local.x,
+          imageOffsetY: polaroidDrag.effect.imageOffsetY + local.y
+        });
+        return;
+      }
+      if (polaroidDrag.mode === "scale") {
+        patchPolaroidImageDirect(polaroidDrag.id, {
+          imageScale: polaroidScaleFromPointerDistance(
+            polaroidDrag.effect.imageScale,
+            polaroidDrag.startPointerDistance,
+            distanceBetween(pointer, polaroidDrag.centerClient)
+          )
+        });
+        return;
+      }
+      const currentAngle = pointerAngleDegrees(pointer, polaroidDrag.centerClient);
+      patchPolaroidImageDirect(polaroidDrag.id, {
+        imageRotation: clampPolaroidRotation(
+          polaroidDrag.effect.imageRotation + shortestAngleDelta(polaroidDrag.startPointerAngle, currentAngle)
+        )
+      });
+      return;
+    }
+
     const drag = dragRef.current;
     if (!drag) return;
     const dx = (event.clientX - drag.startX) / zoomRef.current;
@@ -2611,6 +2691,12 @@ function App() {
   }
 
   function endDrag() {
+    const polaroidDrag = polaroidImageDragRef.current;
+    if (polaroidDrag) {
+      setHistory((stack) => ({ past: [...stack.past, polaroidDrag.historyProject].slice(-historyLimit), future: [] }));
+      polaroidImageDragRef.current = undefined;
+      return;
+    }
     if (marqueeRef.current) {
       marqueeRef.current = undefined;
       setSelectionMarquee(undefined);
@@ -3686,11 +3772,29 @@ function App() {
               const selected = selectedLayerIds.includes(layer.id);
               const cropping = cropModeLayerId === layer.id;
               const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
-              const insets = paperFrameInsets(paperFrame, layer.width, layer.height);
+              const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
+              const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
+              const insets = paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper);
               const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
               const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
               const paperActive = paperFrame.type !== "none";
               const rough = paperFrameIsRough(paperFrame);
+              const polaroidActive = paperFrame.type === "polaroid";
+              const tornActive = paperFrame.type === "torn" || paperFrame.type === "deckle";
+              const expandedFrameRotation = paperFrameRotation(paperFrame, polaroid);
+              const expandedFrameColor = polaroidActive ? polaroid.frameColor : tornActive ? tornPaper.paperColor : paperFrame.paperColor;
+              const expandedFrameOpacity = polaroidActive ? polaroid.frameOpacity : tornActive ? tornPaper.paperOpacity : 1;
+              const expandedFrameRadius = polaroidActive ? polaroid.cornerRadius : Math.min(18, paperFrame.borderWidth * 0.4);
+              const expandedFrameTexture = polaroidActive ? polaroid.grain : tornActive ? tornPaper.grain : paperFrame.textureIntensity;
+              const expandedOuterShadow = polaroidActive ? shadowToCss(polaroid.dropShadow) : tornActive ? shadowToCss(tornPaper.outerShadow) : "";
+              const expandedInnerShadow = polaroidActive ? shadowToCss(polaroid.innerShadow) : tornActive ? shadowToCss(tornPaper.innerShadow) : "";
+              const polaroidWarmth = polaroidActive ? paperWarmthOverlay(polaroid.warmth) : undefined;
+              const tornPaperTexture = tornActive ? tornPaperTextureDataUrl(tornPaper, layer.width, layer.height) : undefined;
+              const imageTransform = polaroidActive
+                ? { scale: polaroid.imageScale, x: polaroid.imageOffsetX, y: polaroid.imageOffsetY, rotation: polaroid.imageRotation }
+                : tornActive
+                  ? { scale: tornPaper.imageScale, x: tornPaper.imageOffsetX, y: tornPaper.imageOffsetY, rotation: 0 }
+                  : undefined;
               return (
                 <React.Fragment key={layer.id}>
                 <div
@@ -3700,18 +3804,19 @@ function App() {
                     top: layer.y,
                     width: layer.width,
                     height: layer.height,
-                    transform: `rotate(${layer.rotation + paperFrameRotation(paperFrame)}deg)`,
+                    transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
                     borderWidth: layer.borderWidth,
                     borderColor: hexWithOpacity(layer.borderColor, layer.borderOpacity),
-                    borderRadius: paperActive ? Math.min(18, paperFrame.borderWidth * 0.4) : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
+                    borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
                     overflow: rough ? "visible" : "hidden",
-                    clipPath: rough ? paperFrameClipPath(paperFrame) : undefined,
+                    clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, layer.width, layer.height) : undefined,
                     opacity: layer.opacity,
-                    backgroundColor: paperActive ? paperFrame.paperColor : layer.effects.backgroundColor,
+                    backgroundColor: paperActive ? hexWithOpacity(expandedFrameColor, expandedFrameOpacity) : layer.effects.backgroundColor,
                     mixBlendMode: layer.effects.blendMode,
                     boxShadow: [
                       layer.effects.glow ? "0 0 0 2px rgba(255,255,255,.8), 0 0 32px rgba(207,42,69,.38)" : "",
-                      Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) > 0 ? `0 ${Math.max(4, paperFrame.shadowStrength * 0.18)}px ${Math.max(12, paperFrame.shadowStrength * 0.75)}px rgba(15,23,42,${Math.min(0.42, Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) / 180)})` : ""
+                      expandedOuterShadow,
+                      !expandedOuterShadow && Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) > 0 ? `0 ${Math.max(4, paperFrame.shadowStrength * 0.18)}px ${Math.max(12, paperFrame.shadowStrength * 0.75)}px rgba(15,23,42,${Math.min(0.42, Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) / 180)})` : ""
                     ].filter(Boolean).join(", ") || "none"
                   }}
                   onDoubleClick={(event) => {
@@ -3746,7 +3851,9 @@ function App() {
                       ><EyeOff size={14} /></button>
                     </div>
                   )}
-                  {paperActive && <span className="paper-frame-texture" style={{ opacity: paperFrame.textureIntensity / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type }, project.customTextures) }} />}
+                  {paperActive && <span className="paper-frame-texture" style={{ opacity: expandedFrameTexture / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type }, project.customTextures) }} />}
+                  {polaroidWarmth && <span className="polaroid-warmth-overlay" style={{ backgroundColor: polaroidWarmth.color, opacity: polaroidWarmth.opacity }} />}
+                  {tornPaperTexture && <span className="torn-paper-detail-overlay" style={{ backgroundImage: cssImageUrl(tornPaperTexture) }} />}
                   <div
                     className="placeholder-image-area"
                     style={{
@@ -3756,7 +3863,7 @@ function App() {
                       height: innerHeight,
                       borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)),
                       backgroundColor: layer.effects.backgroundColor,
-                      boxShadow: layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
+                      boxShadow: expandedInnerShadow ? `inset ${expandedInnerShadow}` : layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
                     }}
                   >
                     {image ? (
@@ -3768,13 +3875,41 @@ function App() {
                         alignment={layer.alignment}
                         crop={layer.crop}
                         filter={cssFilter(layer.effects.filters)}
+                        imageTransform={imageTransform}
                         onNatural={(natural) => { imageNaturalRef.current[layer.id] = natural; }}
                       />
                     ) : (
                       <span><ImagePlus size={22} /> Assign source</span>
                     )}
                     <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
+                    {selected && polaroidActive && inspectorTab === "effects" && image && !cropping && (
+                      <PolaroidDirectImageEditor
+                        layer={layer}
+                        effect={polaroid}
+                        width={innerWidth}
+                        height={innerHeight}
+                        onBeginDrag={(event, mode) => beginPolaroidImageDrag(event, layer, polaroid, mode, {
+                          left: insets.left,
+                          top: insets.top,
+                          width: innerWidth,
+                          height: innerHeight
+                        })}
+                      />
+                    )}
                   </div>
+                  {polaroidActive && polaroid.caption.enabled && polaroid.caption.text && (
+                    <div className={`polaroid-caption align-${polaroid.caption.alignment}`} style={{
+                      left: polaroid.borderLeft,
+                      right: polaroid.borderRight,
+                      bottom: 0,
+                      height: Math.max(polaroid.captionHeight, polaroid.borderBottom - polaroid.borderTop),
+                      color: polaroid.caption.color,
+                      fontFamily: polaroid.caption.fontFamily,
+                      fontSize: polaroid.caption.fontSize,
+                      fontWeight: polaroid.caption.fontWeight,
+                      transform: `translate(${polaroid.caption.x}px, ${polaroid.caption.y}px)`
+                    }}>{polaroid.caption.text}</div>
+                  )}
                   {cropping && <span className="crop-mode-badge">CROP MODE</span>}
                 </div>
                 {selectedLayerId === layer.id && !layer.locked && !cropping && (
@@ -3785,7 +3920,7 @@ function App() {
                       top: layer.y,
                       width: layer.width,
                       height: layer.height,
-                      transform: `rotate(${layer.rotation + paperFrameRotation(paperFrame)}deg)`
+                      transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`
                     }}
                   >
                     <SelectionHandles layer={layer} onBeginDrag={beginDrag} />
@@ -3815,8 +3950,6 @@ function App() {
             <CanvasDesignPanel
               canvas={project.canvas}
               customTextures={project.customTextures}
-              advancedOpen={backgroundAdvancedOpen}
-              onAdvancedOpenChange={setBackgroundAdvancedOpen}
               onPatch={patchCanvas}
               onChooseBackground={() => void chooseBackground()}
               onClearBackground={clearBackgroundImage}
@@ -3832,12 +3965,6 @@ function App() {
               onPrevious={() => void applyPreviousWallpaper()}
               onNext={() => void applyNextWallpaper()}
               busy={wallpaperBusy}
-              diagnostics={lastWallpaperDiagnostics}
-              macOSDiagnostic={macOSWallpaperDiagnostic}
-              macOSDiagnosticBusy={macOSDiagnosticBusy}
-              onRunMacOSDiagnostic={() => void runMacOSWallpaperDiagnostic()}
-              targets={wallpaperTargets}
-              templates={project.templates.templates}
               runtimeStatus={wallpaperStatus}
             />
           </>
@@ -4065,6 +4192,7 @@ function FramedImage({
   alignment,
   crop,
   filter,
+  imageTransform,
   onNatural
 }: {
   src: string;
@@ -4074,6 +4202,7 @@ function FramedImage({
   alignment: ImageAlignment;
   crop: PlaceholderLayer["crop"];
   filter?: string;
+  imageTransform?: { scale: number; x: number; y: number; rotation: number };
   onNatural?: (natural: { width: number; height: number }) => void;
 }) {
   const [natural, setNatural] = useState({ width: 0, height: 0 });
@@ -4095,7 +4224,9 @@ function FramedImage({
           backgroundRepeat: "repeat",
           backgroundSize: `${placement.width}px ${placement.height}px`,
           backgroundPosition: `${placement.x}px ${placement.y}px`,
-          filter
+          filter,
+          transform: imageTransform ? `translate(${imageTransform.x}px, ${imageTransform.y}px) rotate(${imageTransform.rotation}deg) scale(${imageTransform.scale})` : undefined,
+          transformOrigin: "center"
         }}
       >
         <img className="image-dimension-probe" src={src} onLoad={(event) => rememberNatural(event.currentTarget)} />
@@ -4113,7 +4244,9 @@ function FramedImage({
         top: placement.y,
         width: placement.width,
         height: placement.height,
-        filter
+        filter,
+        transform: imageTransform ? `translate(${imageTransform.x}px, ${imageTransform.y}px) rotate(${imageTransform.rotation}deg) scale(${imageTransform.scale})` : undefined,
+        transformOrigin: "center"
       } : { opacity: 0 }}
     />
   );
@@ -4265,6 +4398,61 @@ function textureStyle(layer: PlaceholderLayer, customTextures: WallpaperProject[
     backgroundSize: paper.type === "custom" ? `${Math.max(48, 220 * paper.scale)}px auto` : `${Math.max(96, 300 * paper.scale)}px ${Math.max(96, 300 * paper.scale)}px`,
     transform: `rotate(${paper.rotation}deg) scale(1.1)`
   };
+}
+
+function PolaroidDirectImageEditor({
+  layer,
+  effect,
+  width,
+  height,
+  onBeginDrag
+}: {
+  layer: PlaceholderLayer;
+  effect: PolaroidEffect;
+  width: number;
+  height: number;
+  onBeginDrag: (event: PointerEvent, mode: PolaroidImageDragMode) => void;
+}) {
+  const visibleScale = Math.min(2.2, Math.max(.28, effect.imageScale));
+  const editorWidth = Math.max(48, width * visibleScale);
+  const editorHeight = Math.max(48, height * visibleScale);
+  const start = (event: PointerEvent, mode: PolaroidImageDragMode) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
+    onBeginDrag(event, mode);
+  };
+  return (
+    <div
+      className="polaroid-direct-image-editor"
+      aria-label={`Direct photo controls for ${layer.name}`}
+      style={{
+        left: width / 2 + effect.imageOffsetX - editorWidth / 2,
+        top: height / 2 + effect.imageOffsetY - editorHeight / 2,
+        width: editorWidth,
+        height: editorHeight,
+        transform: `rotate(${effect.imageRotation}deg)`
+      }}
+      onPointerDown={(event) => start(event, "move")}
+    >
+      <span className="polaroid-direct-image-hint">Drag photo</span>
+      {(["nw", "ne", "se", "sw"] as const).map((corner) => (
+        <button
+          key={corner}
+          type="button"
+          className={`polaroid-image-scale-handle corner-${corner}`}
+          aria-label={`Resize photo from ${corner.toUpperCase()} corner`}
+          onPointerDown={(event) => start(event, "scale")}
+        />
+      ))}
+      <button
+        type="button"
+        className="polaroid-image-rotate-handle"
+        aria-label="Rotate photo"
+        onPointerDown={(event) => start(event, "rotate")}
+      ><RotateCw size={12} /></button>
+    </div>
+  );
 }
 
 function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void }) {
@@ -4633,12 +4821,6 @@ function PinterestDialog({
             </div>
           </div>
         )}
-        <details className="diagnostics">
-          <summary>View Diagnostics <ChevronDown size={15} /></summary>
-          <div className="import-log">
-            {state.log.length === 0 ? <p>No import activity yet.</p> : state.log.map((entry, index) => <p key={`${entry}-${index}`}>{entry}</p>)}
-          </div>
-        </details>
       </section>
     </div>
   );
@@ -4650,12 +4832,6 @@ function WallpaperPanel({
   onPrevious,
   onNext,
   busy,
-  diagnostics,
-  macOSDiagnostic,
-  macOSDiagnosticBusy,
-  onRunMacOSDiagnostic,
-  targets,
-  templates,
   runtimeStatus
 }: {
   project: WallpaperProject;
@@ -4663,94 +4839,31 @@ function WallpaperPanel({
   onPrevious: () => void;
   onNext: () => void;
   busy: boolean;
-  diagnostics?: WallpaperApplyResult["diagnostics"];
-  macOSDiagnostic?: MacOSWallpaperDiagnosticReport;
-  macOSDiagnosticBusy: boolean;
-  onRunMacOSDiagnostic: () => void;
-  targets: WallpaperTarget[];
-  templates: WallpaperTemplate[];
   runtimeStatus: WallpaperRuntimeStatus;
 }) {
-  const currentTemplate = project.templates.templates.find((template) => template.id === project.templates.activeTemplateId);
-  const allSpacesRefreshMode = normalizeAllSpacesRefreshMode(project.wallpaper.allSpacesRefreshMode);
-
   return (
     <section className="panel wallpaper-panel settings-section">
-      <details>
-        <summary>Wallpaper Targets <ChevronDown size={15} /></summary>
-        <label>
-          Apply to
-          <select value={project.wallpaper.targetMode} onChange={(event) => {
-            const targetMode = event.target.value as WallpaperProject["wallpaper"]["targetMode"];
-            const inactiveSpaces = isMacOS && wallpaperTargetModeNeedsInactiveSpaces(targetMode);
-            onPatch({
-              targetMode,
-              scope: targetMode === "current-desktop" || targetMode === "current-monitor" ? "current-desktop" : "same-all-desktops",
-              monitorMode: targetMode === "all-visible-monitors" || targetMode === "all-desktops-all-monitors" ? "all" : "primary",
-              ...(inactiveSpaces ? { enabled: false, paused: false, interval: "manual" as const } : {})
-            });
-          }}>
-            <option value="current-desktop">Current desktop only</option>
-            <option value="current-monitor">Current monitor only</option>
-            <option value="all-visible-monitors">All visible monitors</option>
-            <option value="all-desktops-current-monitor">All desktops on current monitor</option>
-            <option value="all-desktops-all-monitors">All desktops on all monitors</option>
-          </select>
-        </label>
-        {(project.wallpaper.targetMode === "current-monitor" || project.wallpaper.targetMode === "all-desktops-current-monitor") && (
-          <label>
-            Monitor
-            <select value={project.wallpaper.monitorId ?? targets.find((target) => target.current)?.displayId ?? ""} onChange={(event) => onPatch({ monitorId: event.target.value || undefined })}>
-              {targets.filter((target) => target.targetType === "physical-display").map((target) => (
-                <option key={target.id} value={target.displayId ?? target.id}>{target.label}{target.current ? " · current" : ""}</option>
-              ))}
-            </select>
-          </label>
-        )}
-        {wallpaperTargetModeNeedsInactiveSpaces(project.wallpaper.targetMode) && (
-          <div className="macos-space-status wallpaper-set-target-note">
-            <strong>macOS Wallpaper Set mode</strong>
-            <p className="settings-hint">
-              Use Create Wallpaper Set to export a new immutable folder of variations. The Preview button intentionally changes only the current desktop.
-            </p>
-            <p className="settings-warning">
-              After export, follow the setup instructions, select the folder in macOS Wallpaper Settings, choose Shuffle, and turn on Show on all Spaces.
-            </p>
-          </div>
-        )}
-        <p className="settings-hint">“Desktop” means a Mission Control Space. “Visible monitors” changes only the active Space on each connected display; “All desktops” includes inactive Spaces.</p>
+      <details open>
+        <summary>Wallpaper Assignment <ChevronDown size={15} /></summary>
         <label>
           Wallpaper assignment
-          <select value={project.wallpaper.targetTemplateMode} onChange={(event) => onPatch({ targetTemplateMode: event.target.value as WallpaperProject["wallpaper"]["targetTemplateMode"] })}>
-            <option value="single-template">Same wallpaper on selected targets</option>
-            <option value="different-template">Different template per target</option>
-            <option value="playlist">Playlist per target</option>
+          <select value={project.wallpaper.targetTemplateMode === "single-template" ? "single-template" : "different-template"} onChange={(event) => {
+            const targetTemplateMode = event.target.value as "single-template" | "different-template";
+            onPatch({
+              targetTemplateMode,
+              targetMode: "all-visible-monitors",
+              scope: "same-all-desktops",
+              monitorMode: "all",
+              monitorId: undefined,
+              targetTemplateIds: {},
+              targetPlaylistIds: {}
+            });
+          }}>
+            <option value="single-template">Same generated wallpaper on every display</option>
+            <option value="different-template">Different generated variation on each display</option>
           </select>
         </label>
-        {project.wallpaper.targetTemplateMode === "single-template" && (
-          <label>Template<select value={project.wallpaper.targetTemplateIds.all ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, all: event.target.value || undefined } })}>
-            <option value="">Active template</option>
-            {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-          </select></label>
-        )}
-        {project.wallpaper.targetTemplateMode !== "single-template" && (
-          <details className="target-config">
-            <summary>Target templates <ChevronDown size={14} /></summary>
-            <div className="target-list">
-              {targets.map((target) => (
-                <div className="target-row" key={target.id}>
-                  <span><strong>{target.label}</strong><small>{target.current ? "Current display" : target.primary ? "Primary display" : "Visible display"}</small></span>
-                  {project.wallpaper.targetTemplateMode === "different-template" && (
-                    <select value={project.wallpaper.targetTemplateIds[target.id] ?? ""} onChange={(event) => onPatch({ targetTemplateIds: { ...project.wallpaper.targetTemplateIds, [target.id]: event.target.value || undefined } })}>
-                      <option value="">Automatic</option>
-                      {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                    </select>
-                  )}
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
+        <p className="settings-hint">Preview on Current Desktop affects only the active desktop. Create Wallpaper Set is the supported workflow for all Mission Control Spaces.</p>
       </details>
 
       <div className="wallpaper-set-note">
@@ -4762,20 +4875,11 @@ function WallpaperPanel({
         <button className="button ghost" disabled={busy} onClick={onNext}>Next</button>
       </div>
 
-      <details>
-        <summary>Advanced <ChevronDown size={15} /></summary>
-        <label className="toggle-setting"><input type="checkbox" checked={project.wallpaper.transitionEnabled} onChange={(event) => onPatch({ transitionEnabled: event.target.checked })} /> Fade transition</label>
-        {project.wallpaper.transitionEnabled && <FilterSlider label="Fade duration" value={project.wallpaper.transitionDurationMs} min={200} max={1600} step={50} onChange={(value) => onPatch({ transitionDurationMs: value })} />}
-        <p className="settings-hint">Active monitors fade smoothly. Inactive Mission Control Spaces update without animation.</p>
-      </details>
-
       <div className="wallpaper-status-card">
-        <div><span>Template</span><strong>{currentTemplate?.name ?? project.name}</strong></div>
         <div><span>Status</span><strong>{runtimeStatus}</strong></div>
         {project.wallpaper.lastUpdatedAt && <div><span>Last applied</span><strong>{new Date(project.wallpaper.lastUpdatedAt).toLocaleTimeString()}</strong></div>}
         {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
       </div>
-      {diagnostics && <details className="diagnostics"><summary>Diagnostics <ChevronDown size={14} /></summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
     </section>
   );
 }
@@ -4783,8 +4887,6 @@ function WallpaperPanel({
 function CanvasDesignPanel({
   canvas,
   customTextures,
-  advancedOpen,
-  onAdvancedOpenChange,
   onPatch,
   onChooseBackground,
   onClearBackground,
@@ -4796,8 +4898,6 @@ function CanvasDesignPanel({
 }: {
   canvas: CanvasSettings;
   customTextures: WallpaperProject["customTextures"];
-  advancedOpen: boolean;
-  onAdvancedOpenChange: (open: boolean) => void;
   onPatch: (patch: Partial<CanvasSettings>) => void;
   onChooseBackground: () => void;
   onClearBackground: () => void;
@@ -4865,9 +4965,8 @@ function CanvasDesignPanel({
 
       <details open>
         <summary>Background <ChevronDown size={15} /></summary>
-        <div className="segmented-control three-options" role="group" aria-label="Background base">
+        <div className="segmented-control two-options" role="group" aria-label="Background base">
           <button className={canvas.backgroundBaseMode === "color" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "color", backgroundTransparent: false })}>Color</button>
-          <button className={canvas.backgroundBaseMode === "transparent" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "transparent", backgroundTransparent: true })}>Clear</button>
           <button className={canvas.backgroundBaseMode === "image" ? "active" : ""} onClick={() => canvas.backgroundImage ? onPatch({ backgroundBaseMode: "image", backgroundTransparent: false }) : onChooseBackground()}>Image</button>
         </div>
         {canvas.backgroundBaseMode === "color" && <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>}
@@ -4930,15 +5029,6 @@ function CanvasDesignPanel({
         )}
       </details>
 
-      <details open={advancedOpen} onToggle={(event) => onAdvancedOpenChange(event.currentTarget.open)}>
-        <summary>Advanced <ChevronDown size={15} /></summary>
-        <FilterSlider label="Blur" value={canvas.backgroundBlur} min={0} max={30} step={.5} onChange={(value) => onPatch({ backgroundBlur: value })} />
-        <FilterSlider label="Brightness" value={canvas.backgroundBrightness} min={0} max={200} onChange={(value) => onPatch({ backgroundBrightness: value })} />
-        <FilterSlider label="Contrast" value={canvas.backgroundContrast} min={0} max={200} onChange={(value) => onPatch({ backgroundContrast: value })} />
-        <FilterSlider label="Temperature" value={canvas.backgroundTemperature} min={-100} max={100} onChange={(value) => onPatch({ backgroundTemperature: value })} />
-        <div className="two-col"><label>Offset X<input type="number" value={canvas.backgroundOffsetX} onChange={(event) => onPatch({ backgroundOffsetX: Number(event.target.value) })} /></label><label>Offset Y<input type="number" value={canvas.backgroundOffsetY} onChange={(event) => onPatch({ backgroundOffsetY: Number(event.target.value) })} /></label></div>
-        <FilterSlider label="Image scale" value={canvas.backgroundScale} min={.1} max={4} step={.05} onChange={(value) => onPatch({ backgroundScale: value })} />
-      </details>
     </section>
   );
 }
@@ -4984,9 +5074,75 @@ function Properties({
     return (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PlaceholderLayer>);
   }
   function patchFilters(patch: Partial<ImageFilters>) { onPatch({ effects: { ...activeLayer.effects, filters: { ...activeLayer.effects.filters, ...patch } } }); }
-  function patchPaperFrame(patch: Partial<PlaceholderLayer["effects"]["paperFrame"]>) { onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, ...patch } } }); }
+  function patchPaperFrame(patch: Partial<PlaceholderLayer["effects"]["paperFrame"]>) {
+    const paperFrame = { ...activeLayer.effects.paperFrame, ...patch };
+    const polaroid = normalizePolaroidEffect(activeLayer.effects.polaroid, paperFrame, activeLayer.effects.innerShadow);
+    const tornPaper = normalizeTornPaperEffect(activeLayer.effects.tornPaper, paperFrame, activeLayer.effects.innerShadow);
+    const base = Math.max(0, paperFrame.borderWidth + paperFrame.innerPadding);
+    if (patch.type !== undefined) {
+      polaroid.enabled = patch.type === "polaroid";
+      tornPaper.enabled = patch.type === "torn" || patch.type === "deckle";
+    }
+    if (patch.borderWidth !== undefined || patch.innerPadding !== undefined) {
+      polaroid.borderTop = base;
+      polaroid.borderRight = base;
+      polaroid.borderLeft = base;
+      polaroid.borderBottom = base * 2.2;
+      polaroid.captionHeight = Math.max(0, polaroid.borderBottom - base);
+      tornPaper.imageInset = base;
+    }
+    if (patch.paperColor !== undefined) {
+      polaroid.frameColor = patch.paperColor;
+      tornPaper.paperColor = patch.paperColor;
+    }
+    if (patch.textureIntensity !== undefined) {
+      polaroid.grain = patch.textureIntensity;
+      tornPaper.grain = patch.textureIntensity;
+    }
+    if (patch.shadowStrength !== undefined) {
+      const amount = Math.max(0, patch.shadowStrength);
+      const shadow = { enabled: amount > 0, x: 0, y: 3 + amount * .22, blur: 8 + amount * .55, spread: 0, opacity: Math.min(.45, amount / 180), color: "#0f172a" };
+      polaroid.dropShadow = shadow;
+      tornPaper.outerShadow = shadow;
+    }
+    if (patch.edgeRoughness !== undefined) {
+      tornPaper.edges = Object.fromEntries(Object.entries(tornPaper.edges).map(([edge, value]) => [edge, { ...value, depth: patch.edgeRoughness, roughness: patch.edgeRoughness }])) as typeof tornPaper.edges;
+      tornPaper.fibers = paperFrame.type === "deckle" ? patch.edgeRoughness : Math.round(patch.edgeRoughness * .45);
+    }
+    if (patch.seed !== undefined) tornPaper.seed = Math.max(1, Math.floor(patch.seed));
+    onPatch({ effects: { ...activeLayer.effects, paperFrame, polaroid, tornPaper } });
+  }
   function resetCrop() { onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" }); }
   const frameType = layer.effects.paperFrame.type;
+  const polaroid = normalizePolaroidEffect(layer.effects.polaroid, layer.effects.paperFrame, layer.effects.innerShadow);
+  function patchPolaroid(patch: Partial<PolaroidEffect>) {
+    onPatch({ effects: { ...activeLayer.effects, polaroid: normalizePolaroidEffect({ ...polaroid, ...patch }, activeLayer.effects.paperFrame, activeLayer.effects.innerShadow) } });
+  }
+  function patchPolaroidShadow(kind: "dropShadow" | "innerShadow", patch: Partial<ShadowEffect>) {
+    patchPolaroid({ [kind]: { ...polaroid[kind], ...patch } } as Partial<PolaroidEffect>);
+  }
+  function patchPolaroidCaption(patch: Partial<PolaroidEffect["caption"]>) {
+    patchPolaroid({ caption: { ...polaroid.caption, ...patch } });
+  }
+  function resetPolaroid() {
+    const defaults = createDefaultPolaroidEffect({ ...createDefaultPaperFrame(), type: "polaroid" });
+    onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type: "polaroid" }, polaroid: { ...defaults, enabled: true } } });
+  }
+  const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, layer.effects.paperFrame, layer.effects.innerShadow);
+  function patchTornPaper(patch: Partial<TornPaperEffect>, markCustom = true) {
+    onPatch({ effects: { ...activeLayer.effects, tornPaper: normalizeTornPaperEffect({ ...tornPaper, ...patch, ...(markCustom && patch.presetId === undefined ? { presetId: "custom" } : {}) }, activeLayer.effects.paperFrame, activeLayer.effects.innerShadow) } });
+  }
+  function patchTornPaperShadow(kind: "outerShadow" | "innerShadow", patch: Partial<ShadowEffect>) {
+    patchTornPaper({ [kind]: { ...tornPaper[kind], ...patch } } as Partial<TornPaperEffect>);
+  }
+  function patchTornPaperEdges(edges: TornPaperEffect["edges"]) {
+    patchTornPaper({ edges });
+  }
+  function resetTornPaper() {
+    const type = frameType === "deckle" ? "deckle" : "torn";
+    const defaults = createDefaultTornPaperEffect({ ...createDefaultPaperFrame(), type });
+    onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
+  }
 
   return (
     <section className="panel properties">
@@ -5038,13 +5194,32 @@ function Properties({
         <details open>
           <summary>Paper Frame <ChevronDown size={15} /></summary>
           <label>Style<select value={frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean</option><option value="polaroid">Polaroid</option><option value="torn">Torn</option><option value="deckle">Deckle</option><option value="newsprint">Newsprint</option></select></label>
-          {frameType !== "none" && <>
+          {frameType === "polaroid" ? (
+            <PolaroidInspector
+              layer={layer}
+              effect={polaroid}
+              onPatch={patchPolaroid}
+              onPatchShadow={patchPolaroidShadow}
+              onPatchCaption={patchPolaroidCaption}
+              onPatchLayer={onPatch}
+              onReset={resetPolaroid}
+            />
+          ) : frameType === "torn" || frameType === "deckle" ? (
+            <TornPaperInspector
+              layer={layer}
+              effect={tornPaper}
+              frameType={frameType}
+              onPatch={patchTornPaper}
+              onPatchEdges={patchTornPaperEdges}
+              onPatchShadow={patchTornPaperShadow}
+              onPatchLayer={onPatch}
+              onReset={resetTornPaper}
+            />
+          ) : frameType !== "none" && <>
             <div className="two-col"><label>Paper<input type="color" value={layer.effects.paperFrame.paperColor} onChange={(event) => patchPaperFrame({ paperColor: event.target.value })} /></label><label>Border<input type="number" min="0" max="240" value={layer.effects.paperFrame.borderWidth} onChange={(event) => patchPaperFrame({ borderWidth: Number(event.target.value) })} /></label></div>
-            {(frameType === "polaroid" || frameType === "clean") && <FilterSlider label="Padding" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
-            {(frameType === "torn" || frameType === "deckle") && <FilterSlider label={frameType === "torn" ? "Tear size" : "Fiber roughness"} value={layer.effects.paperFrame.edgeRoughness} min={0} max={100} onChange={(value) => patchPaperFrame({ edgeRoughness: value })} />}
+            {frameType === "clean" && <FilterSlider label="Padding" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
             <FilterSlider label="Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={(value) => patchPaperFrame({ shadowStrength: value })} />
             <FilterSlider label="Texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />
-            {(frameType === "torn" || frameType === "deckle") && <button className="button ghost full-width" onClick={() => patchPaperFrame({ seed: Math.floor(Math.random() * 1_000_000) + 1 })}>Randomize Edge</button>}
           </>}
         </details>
 
@@ -5064,6 +5239,285 @@ function Properties({
         </details>
       </>}
     </section>
+  );
+}
+
+function PolaroidInspector({
+  layer,
+  effect,
+  onPatch,
+  onPatchShadow,
+  onPatchCaption,
+  onPatchLayer,
+  onReset
+}: {
+  layer: PlaceholderLayer;
+  effect: PolaroidEffect;
+  onPatch: (patch: Partial<PolaroidEffect>) => void;
+  onPatchShadow: (kind: "dropShadow" | "innerShadow", patch: Partial<ShadowEffect>) => void;
+  onPatchCaption: (patch: Partial<PolaroidEffect["caption"]>) => void;
+  onPatchLayer: (patch: Partial<PlaceholderLayer>) => void;
+  onReset: () => void;
+}) {
+  const number = (key: keyof Pick<PolaroidEffect, "borderTop" | "borderRight" | "borderBottom" | "borderLeft" | "captionHeight" | "imageInset">) =>
+    (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PolaroidEffect>);
+
+  return (
+    <div className="expanded-effect-editor polaroid-editor">
+      <div className="effect-editor-heading">
+        <div><strong>Polaroid Customization</strong><small>Frame and image settings are saved with this layer.</small></div>
+        <button className="button ghost compact" onClick={onReset}>Reset Polaroid</button>
+      </div>
+
+      <details className="effect-subsection" open>
+        <summary>Layout <ChevronDown size={14} /></summary>
+        <div className="two-col">
+          <label>Top border<input type="number" min="0" max="1000" value={effect.borderTop} onChange={number("borderTop")} /></label>
+          <label>Right border<input type="number" min="0" max="1000" value={effect.borderRight} onChange={number("borderRight")} /></label>
+          <label>Bottom border<input type="number" min="0" max="1000" value={effect.borderBottom} onChange={number("borderBottom")} /></label>
+          <label>Left border<input type="number" min="0" max="1000" value={effect.borderLeft} onChange={number("borderLeft")} /></label>
+        </div>
+        <div className="two-col">
+          <label>Caption area<input type="number" min="0" max="1000" value={effect.captionHeight} onChange={number("captionHeight")} /></label>
+          <label>Image inset<input type="number" min="0" max="1000" value={effect.imageInset} onChange={number("imageInset")} /></label>
+        </div>
+      </details>
+
+      <details className="effect-subsection" open>
+        <summary>Photo Placement <ChevronDown size={14} /></summary>
+        <div className="polaroid-direct-edit-note">
+          <strong>Edit the photo directly on the canvas</strong>
+          <span>Drag inside the photo to move it. Drag any corner dot to resize it. Use the round top handle to rotate it. Drag the white frame area to move the complete Polaroid.</span>
+        </div>
+        <label>Crop mode<select value={layer.cropMode} onChange={(event) => onPatchLayer({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
+        <button className="button ghost full-width" onClick={() => {
+          onPatch({ imageScale: 1, imageOffsetX: 0, imageOffsetY: 0, imageRotation: 0 });
+          onPatchLayer({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" });
+        }}>Reset Photo Placement</button>
+      </details>
+
+      <details className="effect-subsection">
+        <summary>Frame <ChevronDown size={14} /></summary>
+        <FilterSlider label="Frame rotation" value={effect.frameRotation} min={-180} max={180} step={1} onChange={(value) => onPatch({ frameRotation: value })} />
+        <div className="two-col">
+          <label>Frame color<input type="color" value={effect.frameColor} onChange={(event) => onPatch({ frameColor: event.target.value })} /></label>
+          <label>Frame opacity<input type="number" min="0" max="1" step=".05" value={effect.frameOpacity} onChange={(event) => onPatch({ frameOpacity: Number(event.target.value) })} /></label>
+        </div>
+        <FilterSlider label="Corner radius" value={effect.cornerRadius} min={0} max={160} step={1} onChange={(value) => onPatch({ cornerRadius: value })} />
+      </details>
+
+      <details className="effect-subsection">
+        <summary>Paper Surface <ChevronDown size={14} /></summary>
+        <FilterSlider label="Paper grain" value={effect.grain} min={0} max={100} onChange={(value) => onPatch({ grain: value })} />
+        <FilterSlider label="Paper warmth" value={effect.warmth} min={-100} max={100} onChange={(value) => onPatch({ warmth: value })} />
+      </details>
+
+      <details className="effect-subsection">
+        <summary>Shadows <ChevronDown size={14} /></summary>
+        <ShadowInspector label="Drop shadow" effect={effect.dropShadow} onPatch={(patch) => onPatchShadow("dropShadow", patch)} />
+        <ShadowInspector label="Inner shadow" effect={effect.innerShadow} onPatch={(patch) => onPatchShadow("innerShadow", patch)} />
+      </details>
+
+      <details className="effect-subsection">
+        <summary>Caption <ChevronDown size={14} /></summary>
+        <label className="toggle-setting"><input type="checkbox" checked={effect.caption.enabled} onChange={(event) => onPatchCaption({ enabled: event.target.checked })} /> Show caption</label>
+        <label>Caption text<textarea value={effect.caption.text} onChange={(event) => onPatchCaption({ text: event.target.value })} placeholder="Add a caption…" /></label>
+        <label>Font<select value={effect.caption.fontFamily} onChange={(event) => onPatchCaption({ fontFamily: event.target.value })}><option value="Avenir Next">Avenir Next</option><option value="Helvetica Neue">Helvetica Neue</option><option value="Georgia">Georgia</option><option value="Courier New">Courier New</option><option value="system-ui">System</option></select></label>
+        <div className="two-col">
+          <label>Size<input type="number" min="6" max="240" value={effect.caption.fontSize} onChange={(event) => onPatchCaption({ fontSize: Number(event.target.value) })} /></label>
+          <label>Weight<select value={effect.caption.fontWeight} onChange={(event) => onPatchCaption({ fontWeight: Number(event.target.value) })}><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semibold</option><option value="700">Bold</option></select></label>
+          <label>Color<input type="color" value={effect.caption.color} onChange={(event) => onPatchCaption({ color: event.target.value })} /></label>
+          <label>Alignment<select value={effect.caption.alignment} onChange={(event) => onPatchCaption({ alignment: event.target.value as PolaroidEffect["caption"]["alignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+          <label>Position X<input type="number" value={effect.caption.x} onChange={(event) => onPatchCaption({ x: Number(event.target.value) })} /></label>
+          <label>Position Y<input type="number" value={effect.caption.y} onChange={(event) => onPatchCaption({ y: Number(event.target.value) })} /></label>
+        </div>
+        <button className="button ghost full-width" onClick={() => onPatchCaption({ enabled: false, text: "", fontFamily: "Avenir Next", fontSize: 28, fontWeight: 600, color: "#2f3033", alignment: "center", x: 0, y: 0 })}>Reset Caption</button>
+      </details>
+    </div>
+  );
+}
+
+
+function TornPaperInspector({
+  layer,
+  effect,
+  frameType,
+  onPatch,
+  onPatchEdges,
+  onPatchShadow,
+  onPatchLayer,
+  onReset
+}: {
+  layer: PlaceholderLayer;
+  effect: TornPaperEffect;
+  frameType: "torn" | "deckle";
+  onPatch: (patch: Partial<TornPaperEffect>, markCustom?: boolean) => void;
+  onPatchEdges: (edges: TornPaperEffect["edges"]) => void;
+  onPatchShadow: (kind: "outerShadow" | "innerShadow", patch: Partial<ShadowEffect>) => void;
+  onPatchLayer: (patch: Partial<PlaceholderLayer>) => void;
+  onReset: () => void;
+}) {
+  const [linkEdges, setLinkEdges] = useState(false);
+  const presets = [...bundledTornPaperPresets, ...(effect.customPresets ?? [])];
+  const selectedPreset = presets.find((preset) => preset.id === effect.presetId);
+  const selectedCustomPreset = selectedPreset && !selectedPreset.bundled ? selectedPreset : undefined;
+
+  function applyPresetById(id: string) {
+    const preset = presets.find((item) => item.id === id);
+    if (preset) onPatch(applyTornPaperPreset(effect, preset), false);
+  }
+
+  function savePreset() {
+    const name = window.prompt("Name this torn-paper preset", "Custom Torn Paper");
+    if (!name?.trim()) return;
+    const preset = createCustomTornPaperPreset(effect, name);
+    onPatch({ customPresets: [...(effect.customPresets ?? []), preset], presetId: preset.id }, false);
+  }
+
+  function duplicatePreset() {
+    const source = selectedPreset ? applyTornPaperPreset(effect, selectedPreset) : effect;
+    const preset = createCustomTornPaperPreset(source, `${selectedPreset?.name ?? "Torn Paper"} Copy`);
+    onPatch({ customPresets: [...(effect.customPresets ?? []), preset], presetId: preset.id }, false);
+  }
+
+  function renamePreset() {
+    if (!selectedCustomPreset) return;
+    const name = window.prompt("Rename torn-paper preset", selectedCustomPreset.name);
+    if (!name?.trim()) return;
+    onPatch({
+      customPresets: (effect.customPresets ?? []).map((preset) => preset.id === selectedCustomPreset.id ? { ...preset, name: name.trim() } : preset)
+    }, false);
+  }
+
+  function deletePreset() {
+    if (!selectedCustomPreset) return;
+    const remaining = (effect.customPresets ?? []).filter((preset) => preset.id !== selectedCustomPreset.id);
+    const fallback = bundledTornPaperPresets[0];
+    onPatch({ ...applyTornPaperPreset(effect, fallback), customPresets: remaining, presetId: fallback.id }, false);
+  }
+
+  function restoreBundledPreset() {
+    const fallback = bundledTornPaperPresets.find((preset) => preset.id === effect.presetId) ?? bundledTornPaperPresets[0];
+    onPatch(applyTornPaperPreset(effect, fallback), false);
+  }
+
+  function patchEdge(edgeName: keyof TornPaperEffect["edges"], patch: Partial<TearEdgeEffect>) {
+    if (linkEdges) {
+      onPatchEdges({
+        top: { ...effect.edges.top, ...patch },
+        right: { ...effect.edges.right, ...patch },
+        bottom: { ...effect.edges.bottom, ...patch },
+        left: { ...effect.edges.left, ...patch }
+      });
+      return;
+    }
+    onPatchEdges({ ...effect.edges, [edgeName]: { ...effect.edges[edgeName], ...patch } });
+  }
+
+  function copyEdgeToAll(edgeName: keyof TornPaperEffect["edges"]) {
+    const source = effect.edges[edgeName];
+    onPatchEdges({ top: { ...source }, right: { ...source }, bottom: { ...source }, left: { ...source } });
+  }
+
+  return (
+    <div className="expanded-effect-editor torn-paper-editor">
+      <div className="effect-editor-heading">
+        <div><strong>{frameType === "deckle" ? "Deckle Paper Customization" : "Torn Paper Customization"}</strong><small>Tear geometry stays fixed until its seed or geometry changes.</small></div>
+        <button className="button ghost compact" onClick={onReset}>Reset Torn Paper</button>
+      </div>
+
+      <details className="effect-subsection" open>
+        <summary>Presets <ChevronDown size={14} /></summary>
+        <label>Texture preset<select value={effect.presetId ?? "custom"} onChange={(event) => applyPresetById(event.target.value)}>
+          {bundledTornPaperPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+          {(effect.customPresets ?? []).map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+          {effect.presetId === "custom" && <option value="custom">Custom</option>}
+        </select></label>
+        <div className="compact-action-row torn-preset-actions">
+          <button className="button secondary" onClick={savePreset}>Save Current</button>
+          <button className="button secondary" onClick={duplicatePreset}>Duplicate</button>
+          <button className="button ghost" disabled={!selectedCustomPreset} onClick={renamePreset}>Rename</button>
+          <button className="button ghost" disabled={!selectedCustomPreset} onClick={deletePreset}>Delete</button>
+        </div>
+        <button className="button ghost full-width" onClick={restoreBundledPreset}>Restore Bundled Preset</button>
+      </details>
+
+      <details className="effect-subsection" open>
+        <summary>Tear Edges <ChevronDown size={14} /></summary>
+        <label className="toggle-setting"><input type="checkbox" checked={linkEdges} onChange={(event) => setLinkEdges(event.target.checked)} /> Link all edges</label>
+        <button className="button secondary full-width" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={14} /> Regenerate Tear</button>
+        <div className="tear-edge-list">
+          {(["top", "right", "bottom", "left"] as const).map((edgeName) => (
+            <TearEdgeInspector key={edgeName} name={edgeName} edge={effect.edges[edgeName]} onPatch={(patch) => patchEdge(edgeName, patch)} onCopy={() => copyEdgeToAll(edgeName)} />
+          ))}
+        </div>
+      </details>
+
+      <details className="effect-subsection" open>
+        <summary>Paper Appearance <ChevronDown size={14} /></summary>
+        <div className="two-col">
+          <label>Paper color<input type="color" value={effect.paperColor} onChange={(event) => onPatch({ paperColor: event.target.value })} /></label>
+          <label>Paper opacity<input type="number" min="0" max="1" step=".05" value={effect.paperOpacity} onChange={(event) => onPatch({ paperOpacity: Number(event.target.value) })} /></label>
+        </div>
+        <FilterSlider label="Grain" value={effect.grain} min={0} max={100} onChange={(value) => onPatch({ grain: value })} />
+        <FilterSlider label="Fibers" value={effect.fibers} min={0} max={100} onChange={(value) => onPatch({ fibers: value })} />
+        <FilterSlider label="Wrinkles" value={effect.wrinkles} min={0} max={100} onChange={(value) => onPatch({ wrinkles: value })} />
+        <FilterSlider label="Stains" value={effect.stains} min={0} max={100} onChange={(value) => onPatch({ stains: value })} />
+        <FilterSlider label="Speckles" value={effect.speckles} min={0} max={100} onChange={(value) => onPatch({ speckles: value })} />
+        <FilterSlider label="Edge darkening" value={effect.edgeDarkening} min={0} max={100} onChange={(value) => onPatch({ edgeDarkening: value })} />
+      </details>
+
+      <details className="effect-subsection" open>
+        <summary>Image <ChevronDown size={14} /></summary>
+        <label>Crop mode<select value={layer.cropMode} onChange={(event) => onPatchLayer({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
+        <FilterSlider label="Image inset" value={effect.imageInset} min={0} max={300} onChange={(value) => onPatch({ imageInset: value })} />
+        <FilterSlider label="Image scale" value={effect.imageScale} min={.1} max={6} step={.05} onChange={(value) => onPatch({ imageScale: value })} />
+        <div className="two-col">
+          <label>Image X<input type="number" value={effect.imageOffsetX} onChange={(event) => onPatch({ imageOffsetX: Number(event.target.value) })} /></label>
+          <label>Image Y<input type="number" value={effect.imageOffsetY} onChange={(event) => onPatch({ imageOffsetY: Number(event.target.value) })} /></label>
+        </div>
+        <button className="button ghost full-width" onClick={() => onPatch({ imageInset: 20, imageScale: 1, imageOffsetX: 0, imageOffsetY: 0 })}>Reset Image Placement</button>
+      </details>
+
+      <details className="effect-subsection">
+        <summary>Shadows <ChevronDown size={14} /></summary>
+        <ShadowInspector label="Outer shadow" effect={effect.outerShadow} onPatch={(patch) => onPatchShadow("outerShadow", patch)} />
+        <ShadowInspector label="Inner shadow" effect={effect.innerShadow} onPatch={(patch) => onPatchShadow("innerShadow", patch)} />
+      </details>
+    </div>
+  );
+}
+
+function TearEdgeInspector({ name, edge, onPatch, onCopy }: { name: keyof TornPaperEffect["edges"]; edge: TearEdgeEffect; onPatch: (patch: Partial<TearEdgeEffect>) => void; onCopy: () => void }) {
+  return (
+    <details className="tear-edge-editor">
+      <summary><span>{name[0].toUpperCase() + name.slice(1)} edge</span><ChevronDown size={13} /></summary>
+      <label className="toggle-setting"><input type="checkbox" checked={edge.enabled} onChange={(event) => onPatch({ enabled: event.target.checked })} /> Enable tearing</label>
+      <FilterSlider label="Tear depth" value={edge.depth} min={0} max={100} onChange={(value) => onPatch({ depth: value })} />
+      <FilterSlider label="Frequency" value={edge.frequency} min={2} max={128} onChange={(value) => onPatch({ frequency: value })} />
+      <FilterSlider label="Scale" value={edge.scale} min={.1} max={8} step={.05} onChange={(value) => onPatch({ scale: value })} />
+      <FilterSlider label="Waviness" value={edge.waviness} min={0} max={100} onChange={(value) => onPatch({ waviness: value })} />
+      <FilterSlider label="Roughness" value={edge.roughness} min={0} max={100} onChange={(value) => onPatch({ roughness: value })} />
+      <button className="button ghost full-width" onClick={onCopy}>Copy to All Edges</button>
+    </details>
+  );
+}
+
+function ShadowInspector({ label, effect, onPatch }: { label: string; effect: ShadowEffect; onPatch: (patch: Partial<ShadowEffect>) => void }) {
+  return (
+    <div className="shadow-inspector">
+      <label className="toggle-setting"><input type="checkbox" checked={effect.enabled} onChange={(event) => onPatch({ enabled: event.target.checked })} /> {label}</label>
+      {effect.enabled && <>
+        <div className="two-col">
+          <label>X<input type="number" value={effect.x} onChange={(event) => onPatch({ x: Number(event.target.value) })} /></label>
+          <label>Y<input type="number" value={effect.y} onChange={(event) => onPatch({ y: Number(event.target.value) })} /></label>
+          <label>Blur<input type="number" min="0" max="300" value={effect.blur} onChange={(event) => onPatch({ blur: Number(event.target.value) })} /></label>
+          <label>Spread<input type="number" min="-100" max="200" value={effect.spread} onChange={(event) => onPatch({ spread: Number(event.target.value) })} /></label>
+          <label>Opacity<input type="number" min="0" max="1" step=".05" value={effect.opacity} onChange={(event) => onPatch({ opacity: Number(event.target.value) })} /></label>
+          <label>Color<input type="color" value={effect.color} onChange={(event) => onPatch({ color: event.target.value })} /></label>
+        </div>
+      </>}
+    </div>
   );
 }
 

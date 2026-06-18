@@ -234,6 +234,121 @@ export interface ImageFilters {
   presetId?: string;
 }
 
+
+export interface ShadowEffect {
+  enabled: boolean;
+  x: number;
+  y: number;
+  blur: number;
+  spread: number;
+  opacity: number;
+  color: string;
+}
+
+export interface PolaroidCaptionEffect {
+  enabled: boolean;
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  color: string;
+  alignment: "left" | "center" | "right";
+  x: number;
+  y: number;
+}
+
+export interface PolaroidEffect {
+  schemaVersion: number;
+  enabled: boolean;
+  borderTop: number;
+  borderRight: number;
+  borderBottom: number;
+  borderLeft: number;
+  captionHeight: number;
+  imageInset: number;
+  imageScale: number;
+  imageOffsetX: number;
+  imageOffsetY: number;
+  imageRotation: number;
+  frameRotation: number;
+  frameColor: string;
+  frameOpacity: number;
+  grain: number;
+  warmth: number;
+  cornerRadius: number;
+  dropShadow: ShadowEffect;
+  innerShadow: ShadowEffect;
+  caption: PolaroidCaptionEffect;
+}
+
+export interface TearEdgeEffect {
+  enabled: boolean;
+  depth: number;
+  frequency: number;
+  scale: number;
+  waviness: number;
+  roughness: number;
+}
+
+
+export interface TornPaperPresetSettings {
+  edges: {
+    top: TearEdgeEffect;
+    right: TearEdgeEffect;
+    bottom: TearEdgeEffect;
+    left: TearEdgeEffect;
+  };
+  paperColor: string;
+  paperOpacity: number;
+  grain: number;
+  fibers: number;
+  wrinkles: number;
+  stains: number;
+  speckles: number;
+  edgeDarkening: number;
+  imageInset: number;
+  imageScale: number;
+  imageOffsetX: number;
+  imageOffsetY: number;
+  innerShadow: ShadowEffect;
+  outerShadow: ShadowEffect;
+}
+
+export interface TornPaperPreset {
+  id: string;
+  name: string;
+  bundled: boolean;
+  settings: TornPaperPresetSettings;
+}
+
+export interface TornPaperEffect {
+  schemaVersion: number;
+  enabled: boolean;
+  seed: number;
+  edges: {
+    top: TearEdgeEffect;
+    right: TearEdgeEffect;
+    bottom: TearEdgeEffect;
+    left: TearEdgeEffect;
+  };
+  paperColor: string;
+  paperOpacity: number;
+  grain: number;
+  fibers: number;
+  wrinkles: number;
+  stains: number;
+  speckles: number;
+  edgeDarkening: number;
+  imageInset: number;
+  imageScale: number;
+  imageOffsetX: number;
+  imageOffsetY: number;
+  innerShadow: ShadowEffect;
+  outerShadow: ShadowEffect;
+  presetId?: string;
+  customPresets?: TornPaperPreset[];
+}
+
 export interface PaperTextureEffect {
   enabled?: boolean;
   type:
@@ -287,6 +402,8 @@ export interface PlaceholderEffects {
   tapeDecoration: boolean;
   tornEdgeMask: boolean;
   paperFrame: PaperFrameEffect;
+  polaroid?: PolaroidEffect;
+  tornPaper?: TornPaperEffect;
 }
 
 export interface CropTransform {

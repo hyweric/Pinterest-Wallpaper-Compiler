@@ -4535,3 +4535,284 @@ select option {
 .sidebar.right button:hover {
   transform: none;
 }
+
+/* Phase 19.2: shared expanded frame-effect foundations. */
+.polaroid-caption {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  line-height: 1.15;
+}
+.polaroid-caption.align-left { justify-content: flex-start; text-align: left; }
+.polaroid-caption.align-center { justify-content: center; text-align: center; }
+.polaroid-caption.align-right { justify-content: flex-end; text-align: right; }
+
+/* Phase 19.3: expanded Polaroid inspector and render layers. */
+.polaroid-warmth-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+  border-radius: inherit;
+}
+
+.expanded-effect-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(43, 48, 58, 0.08);
+}
+
+.effect-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.effect-editor-heading > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.effect-editor-heading strong {
+  color: #303641;
+  font-size: 12px;
+}
+
+.effect-editor-heading small {
+  color: #858c97;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.effect-editor-heading .button {
+  flex: 0 0 auto;
+}
+
+.expanded-effect-editor .effect-subsection {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 0 10px;
+  border: 0;
+  border-top: 1px solid rgba(43, 48, 58, 0.07);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.expanded-effect-editor .effect-subsection > summary {
+  min-height: 28px;
+  padding: 0;
+  color: #4a515d;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.shadow-inspector {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.shadow-inspector + .shadow-inspector {
+  border-top: 1px dashed rgba(43, 48, 58, 0.09);
+}
+
+.polaroid-editor textarea {
+  min-height: 72px;
+}
+
+/* Phase 19.4: expanded deterministic torn-paper controls. */
+.torn-paper-detail-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 100% 100%;
+  border-radius: inherit;
+}
+
+.torn-paper-editor .torn-preset-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.tear-edge-list {
+  display: grid;
+  gap: 7px;
+}
+
+.tear-edge-editor {
+  border: 1px solid rgba(43, 48, 58, .1);
+  border-radius: 10px;
+  padding: 7px 9px;
+  background: rgba(248, 249, 251, .72);
+}
+
+.tear-edge-editor > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  color: #4b535f;
+  font-size: 11.5px;
+  font-weight: 720;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tear-edge-editor > summary::-webkit-details-marker { display: none; }
+.tear-edge-editor[open] > summary { margin-bottom: 8px; }
+.tear-edge-editor[open] > summary svg { transform: rotate(180deg); }
+.tear-edge-editor .filter-slider { margin-top: 7px; }
+
+/* Phase 19.6: direct Polaroid photo editing and reliable frame-effect selection. */
+.polaroid-direct-image-editor {
+  position: absolute;
+  z-index: 12;
+  min-width: 48px;
+  min-height: 48px;
+  border: 2px solid rgba(71, 153, 180, 0.92);
+  border-radius: 4px;
+  background: rgba(103, 184, 208, 0.06);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.82) inset;
+  transform-origin: center;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.polaroid-direct-image-editor:active {
+  cursor: grabbing;
+}
+
+.polaroid-direct-image-hint {
+  position: absolute !important;
+  left: 50% !important;
+  bottom: 8px !important;
+  inset: auto !important;
+  z-index: 2;
+  display: inline-flex !important;
+  width: max-content;
+  max-width: calc(100% - 18px);
+  min-height: 22px;
+  padding: 4px 8px !important;
+  border-radius: 999px;
+  color: #315b68 !important;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 8px rgba(25, 55, 66, 0.16);
+  font-size: 10px !important;
+  font-weight: 750;
+  line-height: 1;
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.polaroid-image-scale-handle,
+.polaroid-image-rotate-handle {
+  position: absolute;
+  z-index: 4;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.polaroid-image-scale-handle {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.polaroid-image-scale-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  border: 2px solid #4f9db5;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 7px rgba(25, 55, 66, 0.24);
+  transform: translate(-50%, -50%);
+}
+
+.polaroid-image-scale-handle:hover,
+.polaroid-image-scale-handle:focus-visible {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.polaroid-image-scale-handle:hover::after,
+.polaroid-image-scale-handle:focus-visible::after {
+  box-shadow: 0 0 0 4px rgba(79, 157, 181, 0.18), 0 2px 7px rgba(25, 55, 66, 0.24);
+}
+
+.polaroid-image-scale-handle.corner-nw { left: -14px; top: -14px; }
+.polaroid-image-scale-handle.corner-ne { right: -14px; top: -14px; }
+.polaroid-image-scale-handle.corner-se { right: -14px; bottom: -14px; }
+.polaroid-image-scale-handle.corner-sw { left: -14px; bottom: -14px; }
+
+.polaroid-image-rotate-handle {
+  left: calc(50% - 15px);
+  top: 7px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 2px solid #4f9db5;
+  border-radius: 50%;
+  color: #38778a;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 3px 10px rgba(25, 55, 66, 0.2);
+}
+
+.polaroid-image-rotate-handle:hover,
+.polaroid-image-rotate-handle:focus-visible {
+  background: #ffffff;
+  border-color: #347f97;
+  box-shadow: 0 0 0 4px rgba(79, 157, 181, 0.18), 0 3px 10px rgba(25, 55, 66, 0.2);
+  transform: none;
+}
+
+.polaroid-direct-edit-note {
+  display: grid;
+  gap: 5px;
+  padding: 10px 11px;
+  border: 1px solid rgba(79, 157, 181, 0.18);
+  border-radius: 10px;
+  background: rgba(232, 246, 250, 0.68);
+  color: #43515a;
+}
+
+.polaroid-direct-edit-note strong {
+  color: #2f3b43;
+  font-size: 12px;
+}
+
+.polaroid-direct-edit-note span {
+  color: #69747d;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
