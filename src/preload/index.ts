@@ -65,6 +65,7 @@ const api = {
   openWallpaperSettings: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("export-set:open-wallpaper-settings"),
   cleanupExportSets: (rootPath?: string): Promise<WallpaperSetCleanupResult> => ipcRenderer.invoke("export-set:cleanup", rootPath),
   importCustomTexture: (): Promise<CustomTextureResult> => ipcRenderer.invoke("texture:import"),
+  importOverlayImage: (): Promise<ImageFileResult> => ipcRenderer.invoke("overlay:import"),
   removeCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:remove", path),
   revealCustomTexture: (path: string): Promise<boolean> => ipcRenderer.invoke("texture:reveal", path),
   generateWallpaper: (payload: WallpaperGeneratePayload): Promise<WallpaperGenerateResult> =>

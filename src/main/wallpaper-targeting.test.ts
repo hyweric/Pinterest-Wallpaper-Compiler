@@ -79,13 +79,14 @@ test("targeting UI hides low-level targets and exposes only supported wallpaper 
   const start = source.indexOf("function WallpaperPanel(");
   const end = source.indexOf("function CanvasDesignPanel(", start);
   const panel = source.slice(start, end);
-  assert.match(panel, /Same generated wallpaper on every display/);
-  assert.match(panel, /Different generated variation on each display/);
-  assert.match(panel, /Create Wallpaper Set is the supported workflow for all Mission Control Spaces/);
+  assert.match(panel, /Use macOS to rotate exported sets/);
+  assert.match(panel, /Create Wallpaper Set/);
+  assert.match(panel, /Show on all Spaces/);
   assert.doesNotMatch(panel, /Apply to/);
   assert.doesNotMatch(panel, /value="current-desktop"/);
   assert.doesNotMatch(panel, /value="all-desktops-all-monitors"/);
   assert.doesNotMatch(panel, /Target templates/);
-  assert.match(source, /Automatic all-desktop application is replaced by macOS folder shuffle/);
+  assert.doesNotMatch(panel, /Previous/);
+  assert.doesNotMatch(panel, /Next/);
   assert.doesNotMatch(source, /Advanced macOS mode: inactive Spaces are updated immediately/);
 });

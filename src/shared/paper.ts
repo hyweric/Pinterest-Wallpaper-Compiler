@@ -18,10 +18,9 @@ export interface PaperInsets {
 export function paperFrameInsets(effect: PaperFrameEffect, width: number, height: number, polaroid?: PolaroidEffect, tornPaper?: TornPaperEffect): PaperInsets {
   if (effect.type === "none") return { top: 0, right: 0, bottom: 0, left: 0 };
   if (effect.type === "polaroid") return polaroidInsets(normalizePolaroidEffect(polaroid, effect), width, height);
-  if (effect.type === "torn" || effect.type === "deckle") return tornPaperInsets(normalizeTornPaperEffect(tornPaper, effect), width, height);
+  if (effect.type === "torn" || effect.type === "deckle") return tornPaperInsets(normalizeTornPaperEffect(tornPaper, { ...effect, type: "torn" }), width, height);
   const base = Math.max(0, Math.min(Math.min(width, height) * 0.28, effect.borderWidth + effect.innerPadding));
-  if (effect.type === "newsprint") return { top: base * 0.75, right: base * 0.75, bottom: base * 0.75, left: base * 0.75 };
-  if (effect.type === "clean") return { top: base * 0.65, right: base * 0.65, bottom: base * 0.65, left: base * 0.65 };
+  if (effect.type === "newsprint" || effect.type === "clean") return { top: base * 0.65, right: base * 0.65, bottom: base * 0.65, left: base * 0.65 };
   return { top: base, right: base, bottom: base, left: base };
 }
 
@@ -39,9 +38,8 @@ export function paperFrameIsRough(effect: PaperFrameEffect) {
 export function paperFrameLabel(effect: PaperFrameEffect) {
   if (effect.type === "clean") return "Clean";
   if (effect.type === "polaroid") return "Polaroid";
-  if (effect.type === "torn") return "Torn";
-  if (effect.type === "deckle") return "Deckle";
-  if (effect.type === "newsprint") return "Newsprint";
+  if (effect.type === "torn" || effect.type === "deckle") return "Torn";
+  if (effect.type === "newsprint") return "Clean";
   return "None";
 }
 
@@ -55,7 +53,7 @@ function seededRandom(seed: number) {
 
 function legacyPaperFrameClipPath(effect: PaperFrameEffect) {
   const random = seededRandom(effect.seed);
-  const torn = effect.type === "torn";
+  const torn = effect.type === "torn" || effect.type === "deckle";
   const steps = torn ? 12 : 42;
   const amplitude = torn
     ? 0.8 + Math.max(0, effect.edgeRoughness) * 0.055
@@ -87,7 +85,8 @@ function legacyPaperFrameClipPath(effect: PaperFrameEffect) {
 
 export function paperFrameClipPath(effect: PaperFrameEffect, tornPaper?: TornPaperEffect, width = 100, height = 100) {
   if (!paperFrameIsRough(effect)) return undefined;
-  if (!tornPaper) return legacyPaperFrameClipPath(effect);
-  const normalized = normalizeTornPaperEffect(tornPaper, effect);
+  const roughEffect = effect.type === "deckle" ? { ...effect, type: "torn" as const } : effect;
+  if (!tornPaper) return legacyPaperFrameClipPath(roughEffect);
+  const normalized = normalizeTornPaperEffect(tornPaper, roughEffect);
   return polygonPointsToCss(tornPaperPolygonPoints(normalized, width, height), width, height);
 }

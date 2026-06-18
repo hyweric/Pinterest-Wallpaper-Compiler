@@ -6,8 +6,8 @@ import type { PaperFrameType } from "../shared/types.js";
 
 const source = (path: string) => readFile(path, "utf8");
 
-test("every current Paper Frame style survives project normalization instead of falling back to None", () => {
-  const supported: PaperFrameType[] = ["none", "clean", "polaroid", "torn", "deckle", "newsprint"];
+test("current Paper Frame styles survive normalization while legacy aliases merge into simplified styles", () => {
+  const supported: PaperFrameType[] = ["none", "clean", "polaroid", "torn"];
   for (const type of supported) {
     const project = createProject();
     const layer = createPlaceholder(project.canvas, 1);
@@ -16,7 +16,7 @@ test("every current Paper Frame style survives project normalization instead of 
     const normalized = normalizeProject(project);
     assert.equal(normalized.layers[0]?.effects.paperFrame.type, type, `Expected ${type} to survive normalization`);
     assert.equal(normalized.layers[0]?.effects.polaroid?.enabled, type === "polaroid");
-    assert.equal(normalized.layers[0]?.effects.tornPaper?.enabled, type === "torn" || type === "deckle");
+    assert.equal(normalized.layers[0]?.effects.tornPaper?.enabled, type === "torn");
   }
 });
 
@@ -25,8 +25,10 @@ test("legacy Paper Frame aliases still migrate to their current style names", ()
     ["clean-paper", "clean"],
     ["photo-print", "clean"],
     ["torn-paper", "torn"],
-    ["deckle-edge", "deckle"],
-    ["newspaper-cutout", "newsprint"]
+    ["deckle-edge", "torn"],
+    ["deckle", "torn"],
+    ["newspaper-cutout", "clean"],
+    ["newsprint", "clean"]
   ];
   for (const [legacy, expected] of aliases) {
     const project = createProject();

@@ -6,10 +6,10 @@ import test from "node:test";
 const root = process.cwd();
 const source = (relativePath: string) => readFile(path.join(root, relativePath), "utf8");
 
-test("delete-all wallpaper sets is visible, destructive, and reports failures outside the modal", async () => {
+test("wallpaper set cleanup is visible, destructive, and reports failures outside the modal", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(renderer, /Delete All Wallpaper Sets…/);
-  assert.match(renderer, /Delete All Sets…/);
+  assert.match(renderer, /Clean Up Wallpaper Sets…/);
+  assert.match(renderer, /Clean Up Folder…/);
   assert.match(renderer, /setMessage\(error\)/);
   assert.match(renderer, /The Wallpaper Sets folder is already empty/);
   assert.match(renderer, /Deleted all \$\{deleted\} item/);

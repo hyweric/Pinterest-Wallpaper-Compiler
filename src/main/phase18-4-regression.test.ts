@@ -23,5 +23,5 @@ test("Phase 18.4 does not change inspector functionality or component structure"
   assert.match(renderer, /<summary>Canvas/);
   assert.match(renderer, /<summary>Background/);
   assert.match(renderer, /<summary>Surface/);
-  assert.match(renderer, /<summary>Wallpaper Assignment/);
+  assert.match(renderer, /<summary>Wallpaper Rotation/);
 });

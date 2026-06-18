@@ -14,8 +14,8 @@ test("Polaroid defaults preserve the established frame proportions", () => {
   assert.equal(effect.borderTop, 20);
   assert.equal(effect.borderRight, 20);
   assert.equal(effect.borderLeft, 20);
-  assert.equal(effect.borderBottom, 44);
-  assert.equal(effect.captionHeight, 24);
+  assert.equal(effect.borderBottom, 54);
+  assert.equal(effect.captionHeight, 34);
   assert.equal(effect.imageScale, 1);
   assert.equal(effect.frameOpacity, 1);
 });

@@ -25,11 +25,10 @@ test("paper rotation is deterministic", () => {
 });
 
 
-test("torn and deckle use distinct deterministic edge geometry", () => {
+test("legacy deckle uses the same deterministic torn-paper geometry", () => {
   const torn = paperFrameClipPath({ ...base, type: "torn", edgeRoughness: 70 });
   const deckle = paperFrameClipPath({ ...base, type: "deckle", edgeRoughness: 70 });
   assert.equal(torn, paperFrameClipPath({ ...base, type: "torn", edgeRoughness: 70 }));
-  assert.notEqual(torn, deckle);
+  assert.equal(torn, deckle);
   assert.match(torn ?? "", /^polygon\(/);
-  assert.match(deckle ?? "", /^polygon\(/);
 });

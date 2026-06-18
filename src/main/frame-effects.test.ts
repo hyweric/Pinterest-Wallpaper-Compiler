@@ -28,7 +28,7 @@ test("legacy paper-frame values migrate into versioned Polaroid and Torn effects
   assert.equal(polaroid.schemaVersion, POLAROID_EFFECT_SCHEMA_VERSION);
   assert.equal(polaroid.enabled, true);
   assert.equal(polaroid.borderTop, 30);
-  assert.equal(polaroid.borderBottom, 66);
+  assert.equal(polaroid.borderBottom, 64);
   assert.equal(polaroid.frameColor, "#faf1df");
   assert.equal(polaroid.grain, 42);
   assert.equal(polaroid.innerShadow.enabled, true);

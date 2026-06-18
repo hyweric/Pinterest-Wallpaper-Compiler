@@ -14,12 +14,14 @@ import {
   GripVertical,
   Home,
   ImagePlus,
+  Image as ImageIcon,
   Images,
   Layers,
   LayoutTemplate,
   Lock,
   MoreHorizontal,
   PanelLeft,
+  PanelRight,
   PencilLine,
   Plus,
   Repeat,
@@ -67,7 +69,9 @@ import {
   compactProjectForAutosave,
   createCombination,
   createDefaultEffects,
+  createDefaultFilters,
   createDefaultPaperFrame,
+  createDefaultSourceState,
   createPlaceholder,
   createProject,
   createWallpaperTemplate,
@@ -1351,6 +1355,57 @@ function App() {
     setMessage(`Imported texture ${result.texture.name}.`);
   }
 
+
+  async function addTransparentOverlay() {
+    const result = await window.wallpaperApi.importOverlayImage();
+    if (result.canceled) return;
+    if (result.error || !result.image || !result.source) {
+      setMessage(result.error ?? "Unable to import overlay image.");
+      return;
+    }
+    const image = result.image;
+    const source = result.source;
+    const width = Math.round(projectRef.current.canvas.width * 0.42);
+    const height = Math.round(projectRef.current.canvas.height * 0.42);
+    const overlay = {
+      ...createPlaceholder(projectRef.current.canvas, projectRef.current.layers.length + 1),
+      name: `Overlay ${image.name.replace(/\.[^.]+$/, "")}`,
+      x: Math.round((projectRef.current.canvas.width - width) / 2),
+      y: Math.round((projectRef.current.canvas.height - height) / 2),
+      width,
+      height,
+      cropMode: "contain" as const,
+      maskShape: "rectangle" as const,
+      borderWidth: 0,
+      borderRadius: 0,
+      shadow: false,
+      keepAspectRatio: true,
+      sourceId: source.id,
+      selectedImageId: image.id,
+      generatedImageId: image.id,
+      sourceState: {
+        ...createDefaultSourceState(source.id),
+        mode: "fixed" as const,
+        preventDuplicates: false
+      },
+      effects: {
+        ...createDefaultEffects(),
+        filters: createDefaultFilters(),
+        paperFrame: createDefaultPaperFrame()
+      }
+    };
+    commitProject((current) => ({
+      ...current,
+      sources: [...current.sources.filter((item) => item.id !== source.id), source],
+      layers: [...current.layers, overlay]
+    }));
+    setSelectedLayerIds([overlay.id]);
+    setSelectedLayerId(overlay.id);
+    setSelectionAnchorId(overlay.id);
+    setInspectorTab("image");
+    setMessage(`Added managed overlay image: ${image.name}.`);
+  }
+
   async function removeCustomTextureAsset(textureId: string) {
     const texture = projectRef.current.customTextures.find((item) => item.id === textureId);
     if (!texture) return;
@@ -2094,9 +2149,10 @@ function App() {
     // previous Phase 15.1.14 implementation rendered the unprepared editor
     // state, which could leave shuffle placeholders unchanged or empty.
     const prepared = prepareGeneratedProject(previewBase, previewBase.templates.activeTemplateId);
-    await applyCandidate(normalizeProject(prepared.project), prepared.combination, {
+    const ok = await applyCandidate(normalizeProject(prepared.project), prepared.combination, {
       label: "Previewed on current desktop"
     });
+    if (ok) setMessage(`Preview applied to current desktop at ${new Date().toLocaleTimeString()}.`);
   }
 
   async function applyHistoryAt(index: number) {
@@ -2298,7 +2354,7 @@ function App() {
       setName: options.setName || template.name,
       projectName: projectRef.current.name,
       templateName: template.name,
-      format: options.format,
+      format: "png",
       variationCount: count,
       canvasWidth: template.project.canvas.width,
       canvasHeight: template.project.canvas.height
@@ -2328,9 +2384,9 @@ function App() {
       }
       signatures.add(signature);
       exportProject = prepared.project;
-      const fileName = `wallpaper-${String(index).padStart(3, "0")}.${options.format === "png" ? "png" : "jpg"}`;
+      const fileName = `wallpaper-${String(index).padStart(3, "0")}.png`;
       try {
-        const dataUrl = await renderProjectToDataUrl(exportProject, options.format, options.quality);
+        const dataUrl = await renderProjectToDataUrl(exportProject, "png", 1);
         const result = await window.wallpaperApi.writeExportSetFile({ sessionId, dataUrl, fileName });
         if (!result.ok) throw new Error(result.error ?? `Could not write ${fileName}.`);
         completed += 1;
@@ -3364,6 +3420,7 @@ function App() {
             <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
             <p>{project.sources.length} pools · {project.templates.templates.length} templates</p>
           </div>
+          <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide source panel" aria-label="Hide source panel" onClick={() => setLeftPanelOpen(false)}><PanelLeft size={16} /></button>
         </div>
 
         <div className="panel-tabs" role="tablist" aria-label="Editor side panel">
@@ -3536,7 +3593,6 @@ function App() {
         <section className={`panel layers-panel ${leftPanelTab === "layers" ? "" : "hidden-panel"}`}>
           <div className="panel-title-row">
             <h2><Layers size={17} /> Layers</h2>
-            <button className="icon-button tooltip-anchor" data-tooltip="Add placeholder" aria-label="Add placeholder" onClick={addPlaceholder}><Plus size={16} /></button>
           </div>
           {project.layers.some((layer) => layer.hidden) && (
             <details className="hidden-layers-menu">
@@ -3584,8 +3640,8 @@ function App() {
                   </button>
                   <button
                     className="layer-icon-button tooltip-anchor"
-                    data-tooltip="Layer actions"
-                    aria-label="Layer actions"
+                    data-tooltip="Layer order, duplicate, delete"
+                    aria-label="Layer order, duplicate, delete"
                     onClick={(event) => {
                       const rect = event.currentTarget.getBoundingClientRect();
                       if (!selected) selectOnlyLayer(layer.id);
@@ -3619,15 +3675,17 @@ function App() {
       </aside>
 
       <section className="workspace">
+        {!leftPanelOpen && <button className="panel-reopen left tooltip-anchor" data-tooltip="Show source panel" aria-label="Show source panel" onClick={() => setLeftPanelOpen(true)}><PanelLeft size={16} /></button>}
+        {!rightPanelOpen && <button className="panel-reopen right tooltip-anchor" data-tooltip="Show inspector" aria-label="Show inspector" onClick={() => setRightPanelOpen(true)}><PanelRight size={16} /></button>}
         <header className="toolbar minimal-toolbar">
           <div className="toolbar-cluster">
             <button className="icon-button tooltip-anchor" data-tooltip="Back to templates" aria-label="Back to templates" onClick={() => void goHome()}><Home size={17} /></button>
             <button className="icon-button tooltip-anchor" data-tooltip="Undo" aria-label="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
             <button className="icon-button tooltip-anchor" data-tooltip="Redo" aria-label="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
           </div>
-          <div className="toolbar-title">
-            <strong>{project.name}</strong>
-            <span>{project.canvas.width} x {project.canvas.height}</span>
+          <div className="toolbar-create-actions">
+            <button className="secondary-action compact-top-action" onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
+            <button className="secondary-action compact-top-action" onClick={() => void addTransparentOverlay()}><ImageIcon size={16} /> Add Overlay</button>
           </div>
           <div className="toolbar-cluster">
             <button className="secondary-action" disabled={wallpaperBusy} onClick={() => void previewOnCurrentDesktop()}>
@@ -3648,11 +3706,8 @@ function App() {
                   <button onClick={saveProjectAs}>Save as</button>
                   <button onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
-                  <button onClick={() => exportWallpaper("jpeg")}><Download size={16} /> Export JPEG</button>
                   <button onClick={() => openExportSet()}><Images size={16} /> Create macOS Wallpaper Set</button>
-                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Delete All Wallpaper Sets…</button>
-                  <button onClick={() => setLeftPanelOpen((value) => !value)}><PanelLeft size={16} /> Toggle Left Panel</button>
-                  <button onClick={() => setRightPanelOpen((value) => !value)}><SlidersHorizontal size={16} /> Toggle Inspector</button>
+                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
                 </div>
               )}
             </div>
@@ -3780,7 +3835,7 @@ function App() {
               const paperActive = paperFrame.type !== "none";
               const rough = paperFrameIsRough(paperFrame);
               const polaroidActive = paperFrame.type === "polaroid";
-              const tornActive = paperFrame.type === "torn" || paperFrame.type === "deckle";
+              const tornActive = paperFrame.type === "torn";
               const expandedFrameRotation = paperFrameRotation(paperFrame, polaroid);
               const expandedFrameColor = polaroidActive ? polaroid.frameColor : tornActive ? tornPaper.paperColor : paperFrame.paperColor;
               const expandedFrameOpacity = polaroidActive ? polaroid.frameOpacity : tornActive ? tornPaper.paperOpacity : 1;
@@ -3943,6 +3998,7 @@ function App() {
             .map(([id, label]) => (
               <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
             ))}
+          <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide inspector" aria-label="Hide inspector" onClick={() => setRightPanelOpen(false)}><PanelRight size={16} /></button>
         </div>
         <div className="inspector-scroll-region">
         {!selectedLayer && inspectorTab === "settings" && (
@@ -3959,14 +4015,7 @@ function App() {
               onResize={resizeCanvas}
               onPreset={setPreset}
             />
-            <WallpaperPanel
-              project={project}
-              onPatch={patchWallpaper}
-              onPrevious={() => void applyPreviousWallpaper()}
-              onNext={() => void applyNextWallpaper()}
-              busy={wallpaperBusy}
-              runtimeStatus={wallpaperStatus}
-            />
+            <WallpaperPanel project={project} />
           </>
         )}
         <Properties
@@ -4053,9 +4102,7 @@ function TemplateHome({
 }) {
   const filterItems: Array<{ id: TemplateFilter; label: string }> = [
     { id: "all", label: "All Templates" },
-    { id: "favorites", label: "Favorites" },
-    { id: "recent", label: "Recently Used" },
-    { id: "rotation", label: "Active Rotation" }
+    { id: "favorites", label: "Favorites" }
   ];
 
   return (
@@ -4077,12 +4124,7 @@ function TemplateHome({
 
       <section className="home-hero">
         <div>
-          <p className="home-eyebrow">A quiet space for changing walls</p>
-          <h2>Wallpaper, made personal.<br /><span>Turn the images you love into an evolving visual space.</span></h2>
-        </div>
-        <div className="home-summary">
-          <strong>{project.templates.templates.length}</strong>
-          <span>saved templates</span>
+          <h2>Wallpaper, made personal <span>Turn the images you love into an evolving visual space.</span></h2>
         </div>
       </section>
 
@@ -4116,7 +4158,6 @@ function TemplateHome({
               >
                 <Star size={16} fill={template.favorite ? "currentColor" : "none"} />
               </button>
-              {template.enabledForRotation && <span className="rotation-badge">Rotation</span>}
             </div>
             <div className="home-template-copy">
               <div>
@@ -4131,7 +4172,6 @@ function TemplateHome({
               <button onClick={() => onDuplicate(template)}>Duplicate</button>
               <button onClick={() => onRename(template)}>Rename</button>
               <button onClick={() => onExportSet(template)}>Export Set</button>
-              <button onClick={() => onToggleRotation(template)}>{template.enabledForRotation ? "Disable Rotation" : "Add to Rotation"}</button>
               <button className="danger" onClick={() => onDelete(template.id)}>Delete</button>
             </div>
           </article>
@@ -4735,8 +4775,7 @@ function ExportSetDialog({
             <div className="export-set-grid">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
               <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
-              <label>Format<select value={state.format} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, format: event.target.value as "png" | "jpeg" }))}><option value="png">PNG</option><option value="jpeg">JPEG</option></select></label>
-              {state.format === "jpeg" && <label>JPEG quality<input type="range" min="0.4" max="1" step="0.02" value={state.quality} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, quality: Number(event.target.value) }))} /><span>{Math.round(state.quality * 100)}%</span></label>}
+              <div className="format-fixed-note"><span>Format</span><strong>PNG</strong></div>
             </div>
 
             <div className="destination-row wallpaper-set-destination">
@@ -4747,7 +4786,7 @@ function ExportSetDialog({
               <div className="destination-actions">
                 <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
                 <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
-                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Delete All Sets…"}</button>
+                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
               </div>
             </div>
 
@@ -4826,60 +4865,22 @@ function PinterestDialog({
   );
 }
 
-function WallpaperPanel({
-  project,
-  onPatch,
-  onPrevious,
-  onNext,
-  busy,
-  runtimeStatus
-}: {
-  project: WallpaperProject;
-  onPatch: (patch: Partial<WallpaperProject["wallpaper"]>) => void;
-  onPrevious: () => void;
-  onNext: () => void;
-  busy: boolean;
-  runtimeStatus: WallpaperRuntimeStatus;
-}) {
+function WallpaperPanel({ project }: { project: WallpaperProject }) {
   return (
-    <section className="panel wallpaper-panel settings-section">
+    <section className="panel wallpaper-panel settings-section rotation-guide-panel">
       <details open>
-        <summary>Wallpaper Assignment <ChevronDown size={15} /></summary>
-        <label>
-          Wallpaper assignment
-          <select value={project.wallpaper.targetTemplateMode === "single-template" ? "single-template" : "different-template"} onChange={(event) => {
-            const targetTemplateMode = event.target.value as "single-template" | "different-template";
-            onPatch({
-              targetTemplateMode,
-              targetMode: "all-visible-monitors",
-              scope: "same-all-desktops",
-              monitorMode: "all",
-              monitorId: undefined,
-              targetTemplateIds: {},
-              targetPlaylistIds: {}
-            });
-          }}>
-            <option value="single-template">Same generated wallpaper on every display</option>
-            <option value="different-template">Different generated variation on each display</option>
-          </select>
-        </label>
-        <p className="settings-hint">Preview on Current Desktop affects only the active desktop. Create Wallpaper Set is the supported workflow for all Mission Control Spaces.</p>
-      </details>
-
-      <div className="wallpaper-set-note">
-        Wallpaper rotation is managed by macOS after you select an exported set. This app no longer runs a background wallpaper schedule.
-      </div>
-
-      <div className="compact-action-row">
-        <button className="button ghost" disabled={busy} onClick={onPrevious}>Previous</button>
-        <button className="button ghost" disabled={busy} onClick={onNext}>Next</button>
-      </div>
-
-      <div className="wallpaper-status-card">
-        <div><span>Status</span><strong>{runtimeStatus}</strong></div>
-        {project.wallpaper.lastUpdatedAt && <div><span>Last applied</span><strong>{new Date(project.wallpaper.lastUpdatedAt).toLocaleTimeString()}</strong></div>}
+        <summary>Wallpaper Rotation <ChevronDown size={15} /></summary>
+        <div className="rotation-guide-card">
+          <strong>Use macOS to rotate exported sets</strong>
+          <p>Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings and enable Shuffle plus Show on all Spaces. This app no longer runs a background wallpaper schedule. Create Wallpaper Set is the supported workflow for all Mission Control Spaces. Preview on Current Desktop affects only the active desktop.</p>
+          <ol>
+            <li>Click <b>Create Wallpaper Set</b> in the top bar.</li>
+            <li>Generate the number of variations you want.</li>
+            <li>Open Wallpaper Settings and select the exported folder.</li>
+          </ol>
+        </div>
         {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
-      </div>
+      </details>
     </section>
   );
 }
@@ -5081,7 +5082,7 @@ function Properties({
     const base = Math.max(0, paperFrame.borderWidth + paperFrame.innerPadding);
     if (patch.type !== undefined) {
       polaroid.enabled = patch.type === "polaroid";
-      tornPaper.enabled = patch.type === "torn" || patch.type === "deckle";
+      tornPaper.enabled = patch.type === "torn";
     }
     if (patch.borderWidth !== undefined || patch.innerPadding !== undefined) {
       polaroid.borderTop = base;
@@ -5107,7 +5108,7 @@ function Properties({
     }
     if (patch.edgeRoughness !== undefined) {
       tornPaper.edges = Object.fromEntries(Object.entries(tornPaper.edges).map(([edge, value]) => [edge, { ...value, depth: patch.edgeRoughness, roughness: patch.edgeRoughness }])) as typeof tornPaper.edges;
-      tornPaper.fibers = paperFrame.type === "deckle" ? patch.edgeRoughness : Math.round(patch.edgeRoughness * .45);
+      tornPaper.fibers = Math.round(patch.edgeRoughness * .75);
     }
     if (patch.seed !== undefined) tornPaper.seed = Math.max(1, Math.floor(patch.seed));
     onPatch({ effects: { ...activeLayer.effects, paperFrame, polaroid, tornPaper } });
@@ -5139,7 +5140,7 @@ function Properties({
     patchTornPaper({ edges });
   }
   function resetTornPaper() {
-    const type = frameType === "deckle" ? "deckle" : "torn";
+    const type: PaperFrameType = "torn";
     const defaults = createDefaultTornPaperEffect({ ...createDefaultPaperFrame(), type });
     onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
   }
@@ -5193,7 +5194,7 @@ function Properties({
       {activeTab === "effects" && <>
         <details open>
           <summary>Paper Frame <ChevronDown size={15} /></summary>
-          <label>Style<select value={frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean</option><option value="polaroid">Polaroid</option><option value="torn">Torn</option><option value="deckle">Deckle</option><option value="newsprint">Newsprint</option></select></label>
+          <label>Style<select value={frameType === "deckle" ? "torn" : frameType === "newsprint" ? "clean" : frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean Paper</option><option value="polaroid">Polaroid</option><option value="torn">Torn Paper</option></select></label>
           {frameType === "polaroid" ? (
             <PolaroidInspector
               layer={layer}
@@ -5204,7 +5205,7 @@ function Properties({
               onPatchLayer={onPatch}
               onReset={resetPolaroid}
             />
-          ) : frameType === "torn" || frameType === "deckle" ? (
+          ) : frameType === "torn" ? (
             <TornPaperInspector
               layer={layer}
               effect={tornPaper}
@@ -5350,7 +5351,7 @@ function TornPaperInspector({
 }: {
   layer: PlaceholderLayer;
   effect: TornPaperEffect;
-  frameType: "torn" | "deckle";
+  frameType: "torn";
   onPatch: (patch: Partial<TornPaperEffect>, markCustom?: boolean) => void;
   onPatchEdges: (edges: TornPaperEffect["edges"]) => void;
   onPatchShadow: (kind: "outerShadow" | "innerShadow", patch: Partial<ShadowEffect>) => void;
@@ -5422,7 +5423,7 @@ function TornPaperInspector({
   return (
     <div className="expanded-effect-editor torn-paper-editor">
       <div className="effect-editor-heading">
-        <div><strong>{frameType === "deckle" ? "Deckle Paper Customization" : "Torn Paper Customization"}</strong><small>Tear geometry stays fixed until its seed or geometry changes.</small></div>
+        <div><strong>Torn Paper</strong><small>Tear geometry stays fixed until its seed or geometry changes.</small></div>
         <button className="button ghost compact" onClick={onReset}>Reset Torn Paper</button>
       </div>
 

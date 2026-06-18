@@ -116,9 +116,10 @@ function shadowFromLegacyStrength(strength: number, enabledOverride?: boolean): 
 }
 
 export function createDefaultPolaroidEffect(frame?: PaperFrameEffect): PolaroidEffect {
-  const base = legacyFrameBase(frame);
-  const bottom = Math.max(base, base * 2.2);
-  const strength = finite(frame?.shadowStrength, 35);
+  const requestedBase = legacyFrameBase(frame);
+  const base = requestedBase > 0 ? requestedBase : 28;
+  const bottom = Math.max(base + 34, base * 1.85);
+  const strength = finite(frame?.shadowStrength, 22);
   return {
     schemaVersion: POLAROID_EFFECT_SCHEMA_VERSION,
     enabled: frame?.type === "polaroid",
@@ -127,7 +128,7 @@ export function createDefaultPolaroidEffect(frame?: PaperFrameEffect): PolaroidE
     borderBottom: bottom,
     borderLeft: base,
     captionHeight: Math.max(0, bottom - base),
-    imageInset: 0,
+    imageInset: 6,
     imageScale: 1,
     imageOffsetX: 0,
     imageOffsetY: 0,
@@ -135,9 +136,9 @@ export function createDefaultPolaroidEffect(frame?: PaperFrameEffect): PolaroidE
     frameRotation: legacyFrameRotation(frame),
     frameColor: frame?.paperColor ?? "#fffdf8",
     frameOpacity: 1,
-    grain: finite(frame?.textureIntensity, 20),
-    warmth: 0,
-    cornerRadius: Math.min(18, finite(frame?.borderWidth, 20) * 0.4),
+    grain: finite(frame?.textureIntensity, 12),
+    warmth: 8,
+    cornerRadius: Math.min(16, Math.max(8, finite(frame?.borderWidth, 20) * 0.35)),
     dropShadow: shadowFromLegacyStrength(strength),
     innerShadow: createDefaultShadowEffect(false),
     caption: createDefaultPolaroidCaption()
@@ -182,11 +183,11 @@ export function normalizePolaroidEffect(input: PartialDeep<PolaroidEffect> | und
 export function createDefaultTearEdge(enabled = true): TearEdgeEffect {
   return {
     enabled,
-    depth: 35,
-    frequency: 12,
+    depth: 22,
+    frequency: 18,
     scale: 1,
-    waviness: 50,
-    roughness: 35
+    waviness: 36,
+    roughness: 24
   };
 }
 
@@ -203,9 +204,9 @@ export function normalizeTearEdge(input?: PartialDeep<TearEdgeEffect>, fallback 
 
 export function createDefaultTornPaperEffect(frame?: PaperFrameEffect): TornPaperEffect {
   const edge = createDefaultTearEdge(true);
-  const edgeRoughness = finite(frame?.edgeRoughness, 35);
-  const migratedEdge = { ...edge, depth: edgeRoughness, roughness: edgeRoughness, frequency: frame?.type === "deckle" ? 42 : 12 };
-  const shadowStrength = finite(frame?.shadowStrength, 35);
+  const edgeRoughness = finite(frame?.edgeRoughness, 24);
+  const migratedEdge = { ...edge, depth: edgeRoughness, roughness: edgeRoughness, frequency: 18 };
+  const shadowStrength = finite(frame?.shadowStrength, 22);
   return {
     schemaVersion: TORN_PAPER_EFFECT_SCHEMA_VERSION,
     enabled: frame?.type === "torn" || frame?.type === "deckle",
@@ -219,7 +220,7 @@ export function createDefaultTornPaperEffect(frame?: PaperFrameEffect): TornPape
     paperColor: frame?.paperColor ?? "#fffdf8",
     paperOpacity: 1,
     grain: finite(frame?.textureIntensity, 20),
-    fibers: frame?.type === "deckle" ? edgeRoughness : Math.round(edgeRoughness * 0.45),
+    fibers: Math.round(edgeRoughness * 0.75),
     wrinkles: 0,
     stains: 0,
     speckles: 0,
@@ -230,7 +231,7 @@ export function createDefaultTornPaperEffect(frame?: PaperFrameEffect): TornPape
     imageOffsetY: 0,
     innerShadow: createDefaultShadowEffect(false),
     outerShadow: shadowFromLegacyStrength(shadowStrength),
-    presetId: frame?.type === "deckle" ? "clean-deckle" : "soft-handmade"
+    presetId: "soft-paper"
   };
 }
 
@@ -266,79 +267,70 @@ function presetEffect(overrides: PartialDeep<TornPaperEffect>): TornPaperEffect 
 
 export const bundledTornPaperPresets: TornPaperPreset[] = [
   {
-    id: "soft-handmade",
-    name: "Soft Handmade",
+    id: "soft-paper",
+    name: "Soft Paper",
     bundled: true,
     settings: tornPaperPresetSettings(presetEffect({
       edges: {
-        top: { depth: 28, frequency: 14, scale: 1, waviness: 58, roughness: 30 },
-        right: { depth: 28, frequency: 14, scale: 1, waviness: 58, roughness: 30 },
-        bottom: { depth: 28, frequency: 14, scale: 1, waviness: 58, roughness: 30 },
-        left: { depth: 28, frequency: 14, scale: 1, waviness: 58, roughness: 30 }
+        top: { depth: 18, frequency: 20, scale: 1, waviness: 34, roughness: 22 },
+        right: { depth: 18, frequency: 20, scale: 1, waviness: 34, roughness: 22 },
+        bottom: { depth: 18, frequency: 20, scale: 1, waviness: 34, roughness: 22 },
+        left: { depth: 18, frequency: 20, scale: 1, waviness: 34, roughness: 22 }
       },
-      paperColor: "#fffaf0", grain: 34, fibers: 42, wrinkles: 12, stains: 0, speckles: 8, edgeDarkening: 12,
-      imageInset: 24,
-      outerShadow: { enabled: true, x: 0, y: 7, blur: 25, spread: 0, opacity: .2, color: "#0f172a" }
+      paperColor: "#fffaf2",
+      grain: 18,
+      fibers: 24,
+      wrinkles: 4,
+      stains: 0,
+      speckles: 4,
+      edgeDarkening: 8,
+      imageInset: 22,
+      outerShadow: { enabled: true, x: 0, y: 5, blur: 18, spread: 0, opacity: .16, color: "#0f172a" }
     }))
   },
   {
-    id: "rough-scrap",
-    name: "Rough Scrap",
+    id: "natural-torn",
+    name: "Natural Torn",
     bundled: true,
     settings: tornPaperPresetSettings(presetEffect({
       edges: {
-        top: { depth: 64, frequency: 10, scale: 1.15, waviness: 72, roughness: 78 },
-        right: { depth: 64, frequency: 10, scale: 1.15, waviness: 72, roughness: 78 },
-        bottom: { depth: 64, frequency: 10, scale: 1.15, waviness: 72, roughness: 78 },
-        left: { depth: 64, frequency: 10, scale: 1.15, waviness: 72, roughness: 78 }
+        top: { depth: 34, frequency: 14, scale: 1, waviness: 48, roughness: 42 },
+        right: { depth: 34, frequency: 14, scale: 1, waviness: 48, roughness: 42 },
+        bottom: { depth: 34, frequency: 14, scale: 1, waviness: 48, roughness: 42 },
+        left: { depth: 34, frequency: 14, scale: 1, waviness: 48, roughness: 42 }
       },
-      paperColor: "#eee0c5", grain: 68, fibers: 72, wrinkles: 38, stains: 24, speckles: 46, edgeDarkening: 45,
+      paperColor: "#f7efdF",
+      grain: 32,
+      fibers: 38,
+      wrinkles: 10,
+      stains: 5,
+      speckles: 12,
+      edgeDarkening: 22,
+      imageInset: 26,
+      outerShadow: { enabled: true, x: 1, y: 7, blur: 24, spread: 0, opacity: .22, color: "#1f2937" }
+    }))
+  },
+  {
+    id: "aged-scrap",
+    name: "Aged Scrap",
+    bundled: true,
+    settings: tornPaperPresetSettings(presetEffect({
+      edges: {
+        top: { depth: 42, frequency: 12, scale: 1.08, waviness: 52, roughness: 55 },
+        right: { depth: 42, frequency: 12, scale: 1.08, waviness: 52, roughness: 55 },
+        bottom: { depth: 42, frequency: 12, scale: 1.08, waviness: 52, roughness: 55 },
+        left: { depth: 42, frequency: 12, scale: 1.08, waviness: 52, roughness: 55 }
+      },
+      paperColor: "#ead8b8",
+      paperOpacity: .96,
+      grain: 48,
+      fibers: 42,
+      wrinkles: 24,
+      stains: 20,
+      speckles: 26,
+      edgeDarkening: 38,
       imageInset: 30,
-      outerShadow: { enabled: true, x: 2, y: 10, blur: 34, spread: 2, opacity: .3, color: "#251b14" }
-    }))
-  },
-  {
-    id: "deep-torn",
-    name: "Deep Torn",
-    bundled: true,
-    settings: tornPaperPresetSettings(presetEffect({
-      edges: {
-        top: { depth: 88, frequency: 8, scale: 1.35, waviness: 66, roughness: 84 },
-        right: { depth: 88, frequency: 8, scale: 1.35, waviness: 66, roughness: 84 },
-        bottom: { depth: 88, frequency: 8, scale: 1.35, waviness: 66, roughness: 84 },
-        left: { depth: 88, frequency: 8, scale: 1.35, waviness: 66, roughness: 84 }
-      },
-      grain: 55, fibers: 64, wrinkles: 18, stains: 7, speckles: 22, edgeDarkening: 58, imageInset: 42
-    }))
-  },
-  {
-    id: "worn-vintage",
-    name: "Worn Vintage",
-    bundled: true,
-    settings: tornPaperPresetSettings(presetEffect({
-      edges: {
-        top: { depth: 42, frequency: 16, scale: .9, waviness: 46, roughness: 55 },
-        right: { depth: 42, frequency: 16, scale: .9, waviness: 46, roughness: 55 },
-        bottom: { depth: 42, frequency: 16, scale: .9, waviness: 46, roughness: 55 },
-        left: { depth: 42, frequency: 16, scale: .9, waviness: 46, roughness: 55 }
-      },
-      paperColor: "#e7d1aa", paperOpacity: .92, grain: 74, fibers: 48, wrinkles: 62, stains: 67, speckles: 58, edgeDarkening: 66,
-      imageInset: 28,
-      innerShadow: { enabled: true, x: 0, y: 0, blur: 18, spread: 1, opacity: .18, color: "#3c2a1d" }
-    }))
-  },
-  {
-    id: "clean-deckle",
-    name: "Clean Deckle",
-    bundled: true,
-    settings: tornPaperPresetSettings(presetEffect({
-      edges: {
-        top: { depth: 14, frequency: 44, scale: 1, waviness: 32, roughness: 22 },
-        right: { depth: 14, frequency: 44, scale: 1, waviness: 32, roughness: 22 },
-        bottom: { depth: 14, frequency: 44, scale: 1, waviness: 32, roughness: 22 },
-        left: { depth: 14, frequency: 44, scale: 1, waviness: 32, roughness: 22 }
-      },
-      paperColor: "#fffdf8", grain: 24, fibers: 68, wrinkles: 4, stains: 0, speckles: 3, edgeDarkening: 8, imageInset: 20
+      outerShadow: { enabled: true, x: 2, y: 9, blur: 28, spread: 1, opacity: .26, color: "#2a2118" }
     }))
   }
 ];

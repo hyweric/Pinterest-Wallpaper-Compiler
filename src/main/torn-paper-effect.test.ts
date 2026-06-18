@@ -11,13 +11,11 @@ import {
 } from "../shared/frame-effects.js";
 import { createDefaultPaperFrame } from "../renderer/project.js";
 
-test("torn paper includes five editable bundled presets", () => {
+test("torn paper includes three simplified editable bundled presets", () => {
   assert.deepEqual(bundledTornPaperPresets.map((preset) => preset.name), [
-    "Soft Handmade",
-    "Rough Scrap",
-    "Deep Torn",
-    "Worn Vintage",
-    "Clean Deckle"
+    "Soft Paper",
+    "Natural Torn",
+    "Aged Scrap"
   ]);
   assert.ok(bundledTornPaperPresets.every((preset) => preset.bundled));
 });
@@ -26,9 +24,9 @@ test("applying a torn preset changes editable settings without changing the stab
   const effect = normalizeTornPaperEffect({ ...createDefaultTornPaperEffect(), seed: 884422 });
   const applied = applyTornPaperPreset(effect, bundledTornPaperPresets[1]);
   assert.equal(applied.seed, 884422);
-  assert.equal(applied.presetId, "rough-scrap");
-  assert.equal(applied.edges.top.depth, 64);
-  assert.equal(applied.stains, 24);
+  assert.equal(applied.presetId, "natural-torn");
+  assert.equal(applied.edges.top.depth, 34);
+  assert.equal(applied.stains, 5);
 });
 
 test("custom torn presets serialize independently from the active effect", () => {

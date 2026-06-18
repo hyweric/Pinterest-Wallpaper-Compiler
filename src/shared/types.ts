@@ -1,4 +1,4 @@
-export type ExportFormat = "png" | "jpeg";
+export type ExportFormat = "png" | "jpeg"; // JPEG remains readable for old files; the UI now exports PNG only.
 
 export type CropMode = "cover" | "contain" | "stretch" | "original" | "tile";
 
@@ -213,7 +213,7 @@ export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "soft-lig
 export type MediaType = "image" | "video";
 export type SourceMediaPolicy = "images-only" | "images-and-video-thumbnails";
 export type BackgroundBaseMode = "color" | "transparent" | "image";
-export type PaperFrameType = "none" | "clean" | "polaroid" | "torn" | "deckle" | "newsprint";
+export type PaperFrameType = "none" | "clean" | "polaroid" | "torn" | "deckle" | "newsprint"; // deckle/newsprint are legacy aliases normalized into torn/clean.
 
 export interface ImageFilters {
   brightness: number;

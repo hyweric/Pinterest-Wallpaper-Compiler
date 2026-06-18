@@ -31,9 +31,9 @@ test("Generate and Apply opens set creation for manual inactive-Space requests",
 test("wallpaper set deletion requires explicit confirmation and preserves the parent folder", async () => {
   const main = await source("src/main/main.ts");
   const sets = await source("src/main/wallpaper-sets.ts");
-  assert.match(main, /Are you sure you want to erase everything inside the Wallpaper Sets folder/);
-  assert.match(main, /Erase All Contents/);
-  assert.match(main, /This cannot be undone/);
+  assert.match(main, /Clean up old generated wallpaper set folders/);
+  assert.match(main, /Clean Up Folder/);
+  assert.match(main, /preview/);
   assert.match(main, /safeWallpaperSetEraseRoot/);
   assert.match(sets, /eraseWallpaperSetRootContents/);
   assert.match(sets, /await rm\(entry\.entryPath, \{ recursive: true, force: true \}\)/);

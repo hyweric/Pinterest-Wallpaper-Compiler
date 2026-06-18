@@ -285,11 +285,9 @@ function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
 }
 
 function normalizePaperFrameType(input: string | undefined): PaperFrameEffect["type"] {
-  if (input === "none" || input === "clean" || input === "polaroid" || input === "torn" || input === "deckle" || input === "newsprint") return input;
-  if (input === "clean-paper" || input === "photo-print") return "clean";
-  if (input === "torn-paper") return "torn";
-  if (input === "deckle-edge") return "deckle";
-  if (input === "newspaper-cutout") return "newsprint";
+  if (input === "none" || input === "clean" || input === "polaroid" || input === "torn") return input;
+  if (input === "deckle" || input === "deckle-edge" || input === "torn-paper") return "torn";
+  if (input === "newsprint" || input === "newspaper-cutout" || input === "clean-paper" || input === "photo-print") return "clean";
   return "none";
 }
 
@@ -299,7 +297,7 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
   const normalizedPolaroid = normalizePolaroidEffect(layer.effects?.polaroid, normalizedPaperFrame, Boolean(layer.effects?.innerShadow));
   normalizedPolaroid.enabled = paperType === "polaroid";
   const normalizedTornPaper = normalizeTornPaperEffect(layer.effects?.tornPaper, normalizedPaperFrame, Boolean(layer.effects?.innerShadow));
-  normalizedTornPaper.enabled = paperType === "torn" || paperType === "deckle";
+  normalizedTornPaper.enabled = paperType === "torn";
   return {
     ...layer,
     borderOpacity: layer.borderOpacity ?? 1,

@@ -13,6 +13,7 @@ import type {
   WallpaperSetFinalizePayload,
   WallpaperSetFinalizeResult,
   WallpaperApplyDiagnostics,
+  ImageFileResult,
   PathImportResult,
   PinterestImportProgress,
   PinterestImportRequest,
@@ -1046,12 +1047,12 @@ ipcMain.handle("export-set:cleanup", async (_event, requestedRootPath?: string):
     const fileCount = entries.length - directoryCount;
     const response = await dialog.showMessageBox(mainWindow!, {
       type: "warning",
-      buttons: ["Cancel", "Erase All Contents"],
+      buttons: ["Cancel", "Clean Up Folder"],
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      title: "Delete All Wallpaper Sets",
-      message: "Are you sure you want to erase everything inside the Wallpaper Sets folder?",
+      title: "Clean Up Wallpaper Sets Folder",
+      message: "Clean up old generated wallpaper set folders?",
       detail: `This permanently deletes all ${entries.length} top-level item${entries.length === 1 ? "" : "s"}, including every subfolder and every file stored inside them. ${directoryCount} folder${directoryCount === 1 ? "" : "s"} and ${fileCount} file${fileCount === 1 ? "" : "s"} will be removed, freeing about ${formatBytes(totalBytes)}.\n\nFolder:\n${rootPath}\n\nThe Wallpaper Sets folder itself will remain. This cannot be undone. Make sure macOS is not currently using one of these folders before continuing.`
     });
     if (response.response !== 1) return { ok: true, canceled: true, rootPath };
@@ -1059,6 +1060,54 @@ ipcMain.handle("export-set:cleanup", async (_event, requestedRootPath?: string):
     return { ok: true, rootPath, ...summary };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Unable to delete wallpaper sets." };
+  }
+});
+
+
+ipcMain.handle("overlay:import", async (): Promise<ImageFileResult> => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openFile"],
+    title: "Import Transparent Overlay Image",
+    filters: [{ name: "Overlay Images", extensions: [...finderImageExtensions].map((ext) => ext.slice(1)) }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  try {
+    const sourcePath = result.filePaths[0];
+    if (!(await canDecodeImportedImage(sourcePath))) return { canceled: false, error: "The selected overlay image could not be decoded." };
+    const overlaysDir = path.join(app.getPath("userData"), "Overlay Images");
+    await mkdir(overlaysDir, { recursive: true });
+    const extension = path.extname(sourcePath).toLowerCase() || ".png";
+    const id = `overlay-${crypto.randomUUID()}`;
+    const destinationPath = path.join(overlaysDir, `${id}${extension}`);
+    await copyFile(sourcePath, destinationPath);
+    const fileStat = await stat(destinationPath);
+    const timestamp = new Date().toISOString();
+    const image = {
+      id: `local-image-${id}`,
+      name: path.basename(sourcePath),
+      path: destinationPath,
+      url: pathToFileURL(destinationPath).toString(),
+      modifiedAt: fileStat.mtime.toISOString(),
+      size: fileStat.size,
+      mediaType: "image" as const
+    };
+    const source = {
+      id: `source-${id}`,
+      identityKey: `managed-overlay:${id}`,
+      providerId: "local-file" as const,
+      type: "local-file" as const,
+      name: `Overlay · ${path.basename(sourcePath, path.extname(sourcePath))}`,
+      path: destinationPath,
+      images: [image],
+      mediaPolicy: "images-only" as const,
+      mediaCounts: { total: 1, images: 1, videos: 0 },
+      importStatus: "ready" as const,
+      importLog: [`Imported managed overlay asset from ${sourcePath}.`],
+      updatedAt: timestamp
+    };
+    return { canceled: false, image, images: [image], source };
+  } catch (error) {
+    return { canceled: false, error: error instanceof Error ? error.message : "Unable to import overlay image." };
   }
 });
 
