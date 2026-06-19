@@ -216,7 +216,7 @@ export function createDefaultEffects(): PlaceholderEffects {
     paper: createDefaultPaper(),
     innerShadow: false,
     glow: false,
-    backgroundColor: "#ffffff",
+    backgroundColor: "transparent",
     blendMode: "normal",
     polaroidFrame: false,
     tapeDecoration: false,

@@ -44,7 +44,7 @@ test("Phase 20 adds managed overlay images instead of temporary overlay file pat
   assert.match(main, /copyFile\(sourcePath, destinationPath\)/);
   assert.match(preload, /importOverlayImage/);
   assert.match(renderer, /async function addTransparentOverlay/);
-  assert.match(renderer, /Add Overlay/);
+  assert.doesNotMatch(renderer, /Add Overlay/);
   assert.match(renderer, /mode: "fixed" as const/);
 });
 

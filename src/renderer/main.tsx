@@ -14,7 +14,6 @@ import {
   GripVertical,
   Home,
   ImagePlus,
-  Image as ImageIcon,
   Images,
   Layers,
   LayoutTemplate,
@@ -112,6 +111,7 @@ import {
   wallpaperTargetModeNeedsInactiveSpaces
 } from "../shared/wallpaper";
 import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
+import { imageBackgroundColor, sourceLooksLikeTransparentOverlay } from "../shared/image-transparency";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
@@ -1359,51 +1359,16 @@ function App() {
   async function addTransparentOverlay() {
     const result = await window.wallpaperApi.importOverlayImage();
     if (result.canceled) return;
-    if (result.error || !result.image || !result.source) {
+    if (result.error || !result.source) {
       setMessage(result.error ?? "Unable to import overlay image.");
       return;
     }
-    const image = result.image;
-    const source = result.source;
-    const width = Math.round(projectRef.current.canvas.width * 0.42);
-    const height = Math.round(projectRef.current.canvas.height * 0.42);
-    const overlay = {
-      ...createPlaceholder(projectRef.current.canvas, projectRef.current.layers.length + 1),
-      name: `Overlay ${image.name.replace(/\.[^.]+$/, "")}`,
-      x: Math.round((projectRef.current.canvas.width - width) / 2),
-      y: Math.round((projectRef.current.canvas.height - height) / 2),
-      width,
-      height,
-      cropMode: "contain" as const,
-      maskShape: "rectangle" as const,
-      borderWidth: 0,
-      borderRadius: 0,
-      shadow: false,
-      keepAspectRatio: true,
-      sourceId: source.id,
-      selectedImageId: image.id,
-      generatedImageId: image.id,
-      sourceState: {
-        ...createDefaultSourceState(source.id),
-        mode: "fixed" as const,
-        preventDuplicates: false
-      },
-      effects: {
-        ...createDefaultEffects(),
-        filters: createDefaultFilters(),
-        paperFrame: createDefaultPaperFrame()
-      }
-    };
-    commitProject((current) => ({
-      ...current,
-      sources: [...current.sources.filter((item) => item.id !== source.id), source],
-      layers: [...current.layers, overlay]
-    }));
-    setSelectedLayerIds([overlay.id]);
-    setSelectedLayerId(overlay.id);
-    setSelectionAnchorId(overlay.id);
-    setInspectorTab("image");
-    setMessage(`Added managed overlay image: ${image.name}.`);
+    const center = { x: projectRef.current.canvas.width / 2, y: projectRef.current.canvas.height / 2 };
+    const placed = placeSourcesAtCanvasPoint([result.source], center, result.summary, result.warnings);
+    if (placed) {
+      setInspectorTab("image");
+      setMessage(`Added managed overlay image: ${result.image?.name ?? result.source.name}.`);
+    }
   }
 
   async function removeCustomTextureAsset(textureId: string) {
@@ -1719,16 +1684,45 @@ function App() {
 
     for (const source of merged.resolved) {
       if (sourceImagesForPolicy(source).length === 0) continue;
+      const sourceImages = sourceImagesForPolicy(source);
+      const firstImage = sourceImages[0];
+      const overlayLike = sourceLooksLikeTransparentOverlay(source);
       const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length);
       const layer = createPlaceholder(next.canvas, next.layers.length + 1);
       Object.assign(layer, placement, { name: source.name });
+      if (overlayLike) {
+        Object.assign(layer, {
+          cropMode: "contain" as const,
+          maskShape: "rectangle" as const,
+          borderWidth: 0,
+          borderRadius: 0,
+          shadow: false,
+          keepAspectRatio: false,
+          effects: {
+            ...layer.effects,
+            backgroundColor: imageBackgroundColor(layer.effects.backgroundColor, firstImage)
+          }
+        });
+      }
       next = { ...next, layers: [...next.layers, layer] };
       const assigned = projectWithSourcesAssignment(next, [source], layer.id);
       if (!assigned) {
         next = { ...next, layers: next.layers.filter((item) => item.id !== layer.id) };
         continue;
       }
-      next = assigned;
+      next = overlayLike ? {
+        ...assigned,
+        layers: assigned.layers.map((item) => item.id === layer.id ? {
+          ...item,
+          selectedImageId: firstImage?.id ?? item.selectedImageId,
+          generatedImageId: firstImage?.id ?? item.generatedImageId,
+          sourceState: {
+            ...item.sourceState,
+            mode: "fixed" as const,
+            preventDuplicates: false
+          }
+        } : item)
+      } : assigned;
       createdLayerIds.push(layer.id);
       placedSourceNames.push(source.name);
     }
@@ -3685,7 +3679,6 @@ function App() {
           </div>
           <div className="toolbar-create-actions">
             <button className="secondary-action compact-top-action" onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
-            <button className="secondary-action compact-top-action" onClick={() => void addTransparentOverlay()}><ImageIcon size={16} /> Add Overlay</button>
           </div>
           <div className="toolbar-cluster">
             <button className="secondary-action" disabled={wallpaperBusy} onClick={() => void previewOnCurrentDesktop()}>
@@ -3829,14 +3822,16 @@ function App() {
               const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
               const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
               const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
-              const insets = paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper);
+              const hasAssignedImage = Boolean(image);
+              const visualPaperActive = hasAssignedImage && paperFrame.type !== "none";
+              const insets = visualPaperActive ? paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper) : { top: 0, right: 0, bottom: 0, left: 0 };
               const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
               const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
-              const paperActive = paperFrame.type !== "none";
-              const rough = paperFrameIsRough(paperFrame);
-              const polaroidActive = paperFrame.type === "polaroid";
-              const tornActive = paperFrame.type === "torn";
-              const expandedFrameRotation = paperFrameRotation(paperFrame, polaroid);
+              const paperActive = visualPaperActive;
+              const rough = visualPaperActive && paperFrameIsRough(paperFrame);
+              const polaroidActive = visualPaperActive && paperFrame.type === "polaroid";
+              const tornActive = visualPaperActive && paperFrame.type === "torn";
+              const expandedFrameRotation = visualPaperActive ? paperFrameRotation(paperFrame, polaroid) : 0;
               const expandedFrameColor = polaroidActive ? polaroid.frameColor : tornActive ? tornPaper.paperColor : paperFrame.paperColor;
               const expandedFrameOpacity = polaroidActive ? polaroid.frameOpacity : tornActive ? tornPaper.paperOpacity : 1;
               const expandedFrameRadius = polaroidActive ? polaroid.cornerRadius : Math.min(18, paperFrame.borderWidth * 0.4);
@@ -3853,7 +3848,7 @@ function App() {
               return (
                 <React.Fragment key={layer.id}>
                 <div
-                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
+                  className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${!hasAssignedImage ? "unassigned" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
                   style={{
                     left: layer.x,
                     top: layer.y,
@@ -3917,7 +3912,7 @@ function App() {
                       width: innerWidth,
                       height: innerHeight,
                       borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)),
-                      backgroundColor: layer.effects.backgroundColor,
+                      backgroundColor: imageBackgroundColor(layer.effects.backgroundColor, image),
                       boxShadow: expandedInnerShadow ? `inset ${expandedInnerShadow}` : layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
                     }}
                   >
@@ -4997,7 +4992,7 @@ function CanvasDesignPanel({
               className={(choice.type === "none" ? !surface.enabled || surface.type === "none" : surface.enabled && surface.type === choice.type) ? "texture-choice active" : "texture-choice"}
               onClick={() => selectSurface(choice.type)}
             >
-              <span className="texture-swatch" style={{ backgroundImage: cssImageUrl(choice.thumbnailUrl) }} />
+              <span className="texture-swatch neutral-surface-swatch" />
               <span>{choice.label}</span>
             </button>
           ))}

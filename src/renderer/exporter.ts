@@ -4,6 +4,7 @@ import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/loca
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, tornPaperPolygonPoints, tornPaperTextureDataUrl } from "../shared/frame-effects";
 import { getImageForLayer } from "./project";
+import { imageBackgroundColor } from "../shared/image-transparency";
 import { drawSurfaceTexture } from "./surface-renderer";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -302,8 +303,11 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   roundedPath(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle");
   context.clip();
   context.shadowColor = "transparent";
-  context.fillStyle = layer.effects.backgroundColor || "#ffffff";
-  context.fillRect(0, 0, innerWidth, innerHeight);
+  const innerBackground = imageBackgroundColor(layer.effects.backgroundColor, imageRef);
+  if (innerBackground !== "transparent") {
+    context.fillStyle = innerBackground;
+    context.fillRect(0, 0, innerWidth, innerHeight);
+  }
   if (imageRef) {
     const image = await loadImage(imageRef.url);
     context.save();

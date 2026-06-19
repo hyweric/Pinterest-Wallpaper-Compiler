@@ -4969,3 +4969,164 @@ input[type="range"]::-moz-range-thumb {
 .layer-row .layer-main .layer-type-icon {
   color: #6e96a3;
 }
+
+/* Phase 20.1: clearer background state, readable source prompt, and transparent overlay previews. */
+.sidebar.right .segmented-control.two-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: 39px;
+  padding: 4px;
+  border: 1px solid rgba(43, 48, 58, 0.12);
+  border-radius: 11px;
+  background: rgba(236, 238, 239, 0.92);
+  gap: 4px;
+}
+
+.sidebar.right .segmented-control.two-options button {
+  min-height: 31px;
+  height: 31px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #747b85;
+  box-shadow: none;
+}
+
+.sidebar.right .segmented-control.two-options button.active {
+  color: #2e4d57;
+  border-color: rgba(92, 142, 160, 0.34);
+  background: linear-gradient(180deg, #ffffff 0%, #eef7f9 100%);
+  box-shadow: 0 5px 14px rgba(45, 58, 68, 0.12), inset 0 0 0 1px rgba(255,255,255,.72);
+}
+
+.placeholder-image-area > span:not(.texture-overlay) {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: #77808b;
+}
+
+.placeholder-image-area > span:not(.texture-overlay) svg {
+  width: 26px;
+  height: 26px;
+  opacity: 0.78;
+}
+
+/* Phase 20.2: neutral placeholders, compact controls, and clearer selection states. */
+.placeholder.unassigned {
+  background: rgba(229, 230, 228, 0.78) !important;
+}
+.placeholder.unassigned .placeholder-image-area {
+  background: rgba(229, 230, 228, 0.78) !important;
+}
+.placeholder-image-area > span:not(.texture-overlay) {
+  font-size: 16px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  color: #636b76;
+}
+.placeholder-image-area > span:not(.texture-overlay) svg {
+  width: 34px;
+  height: 34px;
+  opacity: 0.84;
+}
+.sidebar.right .segmented-control.two-options {
+  background: rgba(244, 246, 246, 0.82);
+  border-color: rgba(43, 48, 58, 0.1);
+}
+.sidebar.right .segmented-control.two-options button {
+  min-height: 32px;
+  color: #68707b;
+  background: transparent;
+}
+.sidebar.right .segmented-control.two-options button.active {
+  color: #2c3a41;
+  border-color: #c1dbe2;
+  background: #dfeef0;
+  box-shadow: none;
+}
+.texture-picker-grid.compact-texture-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.sidebar.right .texture-choice,
+.texture-choice {
+  min-height: 58px;
+  align-content: center;
+  justify-items: center;
+  gap: 4px;
+  padding: 8px;
+}
+.texture-choice .texture-swatch.neutral-surface-swatch {
+  width: 34px;
+  height: 16px;
+  aspect-ratio: auto;
+  border-radius: 999px;
+  background-image: none !important;
+  background-color: #eeece7;
+  background-size: auto;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
+}
+.texture-choice.active .texture-swatch.neutral-surface-swatch {
+  background-color: #dfeef0;
+  border-color: #c1dbe2;
+}
+.texture-choice > span:last-child,
+.texture-choice.custom > button span:last-child {
+  font-size: 11.5px;
+  line-height: 1.15;
+}
+.filter-slider {
+  gap: 5px;
+}
+.filter-slider > span {
+  min-height: 16px;
+  font-size: 11px;
+}
+.filter-slider > span b {
+  min-width: 32px;
+  padding: 1px 6px;
+  font-size: 9.5px;
+  background: rgba(239, 242, 244, 0.72);
+}
+.filter-slider input[type="range"],
+input[type="range"] {
+  height: 16px;
+  accent-color: #8db7c1;
+}
+.filter-slider input[type="range"]::-webkit-slider-runnable-track,
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(90deg, rgba(141, 183, 193, 0.42), rgba(210, 216, 221, 0.64));
+}
+.filter-slider input[type="range"]::-webkit-slider-thumb,
+input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  background: #8db7c1;
+  box-shadow: 0 2px 7px rgba(65, 94, 106, 0.18);
+}
+.filter-slider input[type="range"]::-moz-range-track,
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  background: rgba(210, 216, 221, 0.64);
+}
+.filter-slider input[type="range"]::-moz-range-thumb,
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #8db7c1;
+  box-shadow: 0 2px 7px rgba(65, 94, 106, 0.18);
+}
+.popover-menu,
+.add-source-menu {
+  max-height: min(420px, calc(100vh - 96px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sidebar.right .settings-section,
+.sidebar.right .properties {
+  overflow: visible;
+}
