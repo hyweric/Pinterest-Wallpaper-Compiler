@@ -18,10 +18,10 @@ test("Phase 18.4 restyles only the right inspector with flat divided sections", 
 test("Phase 18.4 does not change inspector functionality or component structure", async () => {
   const renderer = await source("src/renderer/main.tsx");
   assert.match(renderer, /<CanvasDesignPanel/);
-  assert.match(renderer, /<WallpaperPanel/);
+  assert.doesNotMatch(renderer, /<WallpaperPanel/);
   assert.match(renderer, /<Properties/);
   assert.match(renderer, /<summary>Canvas/);
   assert.match(renderer, /<summary>Background/);
   assert.match(renderer, /<summary>Surface/);
-  assert.match(renderer, /<summary>Wallpaper Rotation/);
+  assert.doesNotMatch(renderer, /Wallpaper Rotation/);
 });

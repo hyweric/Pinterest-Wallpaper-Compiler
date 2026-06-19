@@ -45,7 +45,7 @@ test("Phase 20 adds managed overlay images instead of temporary overlay file pat
   assert.match(preload, /importOverlayImage/);
   assert.match(renderer, /async function addTransparentOverlay/);
   assert.doesNotMatch(renderer, /Add Overlay/);
-  assert.match(renderer, /mode: "fixed" as const/);
+  assert.match(renderer, /await placeSourcesAtCanvasPoint\(\[result\.source\]/);
 });
 
 test("Phase 20 removes noisy UI items and keeps PNG-only export controls", async () => {

@@ -6,12 +6,13 @@ import test from "node:test";
 const root = process.cwd();
 const source = (relativePath: string) => readFile(path.join(root, relativePath), "utf8");
 
-test("the Sources header exposes one labeled Add Source control instead of three icon buttons", async () => {
+test("the library header exposes one labeled Add Source control instead of three icon buttons", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf('<div className="library-heading">');
   const end = renderer.indexOf('<div className="source-tabs"', start);
   const heading = renderer.slice(start, end);
 
+  assert.match(heading, /<h2>Image Library<\/h2>/);
   assert.match(heading, /<AddSourceControl/);
   assert.match(heading, /onAddFolder=\{\(\) => void addFolderSource\(\)\}/);
   assert.match(heading, /onAddImages=\{\(\) => void addLocalImagesSource\(\)\}/);

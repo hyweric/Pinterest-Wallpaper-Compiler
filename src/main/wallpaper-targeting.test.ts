@@ -74,19 +74,12 @@ test("macOS all-desktop implementation is diagnostic-driven, transactional, and 
   assert.match(spacesSource, /NSWorkspaceDidWakeNotification/);
 });
 
-test("targeting UI hides low-level targets and exposes only supported wallpaper assignment choices", async () => {
+test("targeting UI hides low-level targets and removes the wallpaper rotation panel", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  const start = source.indexOf("function WallpaperPanel(");
-  const end = source.indexOf("function CanvasDesignPanel(", start);
-  const panel = source.slice(start, end);
-  assert.match(panel, /Use macOS to rotate exported sets/);
-  assert.match(panel, /Create Wallpaper Set/);
-  assert.match(panel, /Show on all Spaces/);
-  assert.doesNotMatch(panel, /Apply to/);
-  assert.doesNotMatch(panel, /value="current-desktop"/);
-  assert.doesNotMatch(panel, /value="all-desktops-all-monitors"/);
-  assert.doesNotMatch(panel, /Target templates/);
-  assert.doesNotMatch(panel, /Previous/);
-  assert.doesNotMatch(panel, /Next/);
+  assert.doesNotMatch(source, /function WallpaperPanel/);
+  assert.doesNotMatch(source, /Wallpaper Rotation/);
+  assert.match(source, /Create Wallpaper Set/);
+  assert.doesNotMatch(source, /Apply to/);
+  assert.doesNotMatch(source, /Target templates/);
   assert.doesNotMatch(source, /Advanced macOS mode: inactive Spaces are updated immediately/);
 });

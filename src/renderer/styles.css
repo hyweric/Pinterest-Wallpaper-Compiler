@@ -5130,3 +5130,39 @@ input[type="range"]::-moz-range-thumb {
 .sidebar.right .properties {
   overflow: visible;
 }
+
+/* Phase 20.3: empty-placeholder guidance and source/sidebar wording cleanup. */
+.empty-placeholder-hint {
+  position: absolute;
+  top: 74px;
+  left: 50%;
+  z-index: 80;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  pointer-events: none;
+  padding: 11px 16px;
+  border: 1px solid rgba(94, 132, 145, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #31424a;
+  box-shadow: 0 14px 42px rgba(31, 43, 50, 0.14);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  animation: empty-placeholder-hint-fade 1.9s ease forwards;
+}
+.empty-placeholder-hint svg {
+  color: #6e96a3;
+}
+@keyframes empty-placeholder-hint-fade {
+  0% { opacity: 0; transform: translate(-50%, -8px); }
+  14% { opacity: 1; transform: translate(-50%, 0); }
+  72% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -4px); }
+}
+.source-help,
+.library-heading h2 {
+  word-break: normal;
+}

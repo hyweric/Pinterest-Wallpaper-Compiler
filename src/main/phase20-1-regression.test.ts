@@ -31,10 +31,10 @@ test("managed overlay sources are treated as overlay-like and not temporary file
   assert.equal(sourceLooksLikeTransparentOverlay(source), true);
 });
 
-test("Add Overlay now reuses canvas drop placement instead of a square contain frame", async () => {
+test("managed overlay import path reuses canvas drop placement instead of a square contain frame", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   assert.match(renderer, /const center = \{ x: projectRef\.current\.canvas\.width \/ 2, y: projectRef\.current\.canvas\.height \/ 2 \}/);
-  assert.match(renderer, /placeSourcesAtCanvasPoint\(\[result\.source\], center/);
+  assert.match(renderer, /await placeSourcesAtCanvasPoint\(\[result\.source\], center/);
   assert.doesNotMatch(renderer, /projectRef\.current\.canvas\.width \* 0\.42/);
   assert.doesNotMatch(renderer, /keepAspectRatio: true,[\s\S]*sourceId: source\.id/);
 });
@@ -42,7 +42,7 @@ test("Add Overlay now reuses canvas drop placement instead of a square contain f
 test("dropped transparent images and overlays get transparent, non-framed placement defaults", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   assert.match(renderer, /const overlayLike = sourceLooksLikeTransparentOverlay\(source\)/);
-  assert.match(renderer, /cropMode: "contain" as const/);
+  assert.match(renderer, /cropMode: "cover" as const/);
   assert.match(renderer, /backgroundColor: imageBackgroundColor\(layer\.effects\.backgroundColor, firstImage\)/);
   assert.match(renderer, /backgroundColor: imageBackgroundColor\(layer\.effects\.backgroundColor, image\)/);
 

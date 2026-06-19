@@ -846,6 +846,7 @@ function App() {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("settings");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [emptyPlaceholderHint, setEmptyPlaceholderHint] = useState<{ id: number; text: string } | undefined>();
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
@@ -887,6 +888,7 @@ function App() {
   const wheelDeltaRef = useRef(0);
   const wheelAnchorRef = useRef({ clientX: 0, clientY: 0 });
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
+  const sourceImageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
   const wallpaperOperationRef = useRef<SingleFlightWallpaperOperation | undefined>(undefined);
@@ -894,6 +896,7 @@ function App() {
   const exportCancelRef = useRef(false);
   const sourceApplyTimerRef = useRef<number | undefined>(undefined);
   const autosaveTimerRef = useRef<number | undefined>(undefined);
+  const emptyPlaceholderHintTimerRef = useRef<number | undefined>(undefined);
   const sourceApplyVersionRef = useRef(0);
   const selectedLayers = project.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId) ?? selectedLayers.at(-1);
@@ -945,6 +948,7 @@ function App() {
   useEffect(() => () => {
     if (sourceApplyTimerRef.current !== undefined) window.clearTimeout(sourceApplyTimerRef.current);
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
+    if (emptyPlaceholderHintTimerRef.current !== undefined) window.clearTimeout(emptyPlaceholderHintTimerRef.current);
     if (zoomFrameRef.current !== undefined) window.cancelAnimationFrame(zoomFrameRef.current);
     if (zoomCommitTimerRef.current !== undefined) window.clearTimeout(zoomCommitTimerRef.current);
     wallpaperOperationRef.current?.clear();
@@ -1197,6 +1201,45 @@ function App() {
     });
   }
 
+  function showAssignSourceHint() {
+    setLeftPanelOpen(true);
+    setLeftPanelTab("sources");
+    setEmptyPlaceholderHint({ id: Date.now(), text: "Assign a collection from the left sidebar" });
+    if (emptyPlaceholderHintTimerRef.current !== undefined) window.clearTimeout(emptyPlaceholderHintTimerRef.current);
+    emptyPlaceholderHintTimerRef.current = window.setTimeout(() => setEmptyPlaceholderHint(undefined), 1900);
+  }
+
+  async function naturalSizeForImage(image?: LocalImageRef) {
+    if (!image?.url) return undefined;
+    const cached = sourceImageNaturalRef.current[image.id] ?? sourceImageNaturalRef.current[image.url];
+    if (cached) return cached;
+    try {
+      const probe = new Image();
+      probe.decoding = "async";
+      probe.src = renderableLocalFileUrl(image.url);
+      if (probe.decode) await probe.decode();
+      else await new Promise<void>((resolve, reject) => {
+        probe.onload = () => resolve();
+        probe.onerror = () => reject(new Error("Unable to decode image."));
+      });
+      const natural = { width: probe.naturalWidth, height: probe.naturalHeight };
+      if (natural.width > 0 && natural.height > 0) {
+        sourceImageNaturalRef.current[image.id] = natural;
+        sourceImageNaturalRef.current[image.url] = natural;
+        return natural;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  async function naturalAspectForSource(source: ImageSource) {
+    const firstImage = sourceImagesForPolicy(source)[0];
+    const natural = await naturalSizeForImage(firstImage);
+    return natural ? natural.width / Math.max(1, natural.height) : undefined;
+  }
+
   function deleteLayers(ids: string[]) {
     const idSet = new Set(ids);
     const deletable = project.layers.filter((layer) => idSet.has(layer.id) && !layer.locked).map((layer) => layer.id);
@@ -1364,7 +1407,7 @@ function App() {
       return;
     }
     const center = { x: projectRef.current.canvas.width / 2, y: projectRef.current.canvas.height / 2 };
-    const placed = placeSourcesAtCanvasPoint([result.source], center, result.summary, result.warnings);
+    const placed = await placeSourcesAtCanvasPoint([result.source], center, result.summary, result.warnings);
     if (placed) {
       setInspectorTab("image");
       setMessage(`Added managed overlay image: ${result.image?.name ?? result.source.name}.`);
@@ -1418,7 +1461,7 @@ function App() {
         height: Math.round(Math.max(40, Math.min(project.canvas.height, height))),
         x: Math.round(clamp(centerX - width / 2, 0, Math.max(0, project.canvas.width - width))),
         y: Math.round(clamp(centerY - height / 2, 0, Math.max(0, project.canvas.height - height))),
-        keepAspectRatio: true
+        keepAspectRatio: false
       });
     } catch {
       setMessage("Unable to read the current image dimensions.");
@@ -1665,7 +1708,7 @@ function App() {
     assignSourcesToLayer(merged.resolved, layer, importResultMessage(result.summary, merged, result.warnings, layer));
   }
 
-  function placeSourcesAtCanvasPoint(
+  async function placeSourcesAtCanvasPoint(
     incomingSources: ImageSource[],
     point: CanvasDropPoint,
     summary?: LocalImportSummary,
@@ -1687,21 +1730,24 @@ function App() {
       const sourceImages = sourceImagesForPolicy(source);
       const firstImage = sourceImages[0];
       const overlayLike = sourceLooksLikeTransparentOverlay(source);
-      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length);
+      const aspectRatio = await naturalAspectForSource(source);
+      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length, aspectRatio);
       const layer = createPlaceholder(next.canvas, next.layers.length + 1);
-      Object.assign(layer, placement, { name: source.name });
+      Object.assign(layer, placement, {
+        name: source.name,
+        cropMode: "cover" as const,
+        keepAspectRatio: false,
+        effects: {
+          ...layer.effects,
+          backgroundColor: imageBackgroundColor(layer.effects.backgroundColor, firstImage)
+        }
+      });
       if (overlayLike) {
         Object.assign(layer, {
-          cropMode: "contain" as const,
           maskShape: "rectangle" as const,
           borderWidth: 0,
           borderRadius: 0,
-          shadow: false,
-          keepAspectRatio: false,
-          effects: {
-            ...layer.effects,
-            backgroundColor: imageBackgroundColor(layer.effects.backgroundColor, firstImage)
-          }
+          shadow: false
         });
       }
       next = { ...next, layers: [...next.layers, layer] };
@@ -1710,19 +1756,7 @@ function App() {
         next = { ...next, layers: next.layers.filter((item) => item.id !== layer.id) };
         continue;
       }
-      next = overlayLike ? {
-        ...assigned,
-        layers: assigned.layers.map((item) => item.id === layer.id ? {
-          ...item,
-          selectedImageId: firstImage?.id ?? item.selectedImageId,
-          generatedImageId: firstImage?.id ?? item.generatedImageId,
-          sourceState: {
-            ...item.sourceState,
-            mode: "fixed" as const,
-            preventDuplicates: false
-          }
-        } : item)
-      } : assigned;
+      next = assigned;
       createdLayerIds.push(layer.id);
       placedSourceNames.push(source.name);
     }
@@ -1765,7 +1799,7 @@ function App() {
       setMessage(result.error);
       return;
     }
-    placeSourcesAtCanvasPoint(result.sources, point, result.summary, result.warnings);
+    await placeSourcesAtCanvasPoint(result.sources, point, result.summary, result.warnings);
   }
 
   async function addLocalImagesSource() {
@@ -2725,7 +2759,7 @@ function App() {
       return;
     }
 
-    resizeLayer(drag, dx, dy, event.shiftKey || drag.layer.keepAspectRatio);
+    resizeLayer(drag, dx, dy, event.shiftKey);
   }
 
   function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean) {
@@ -2916,7 +2950,7 @@ function App() {
     const existingSourceId = getDroppedSourceId(event);
     if (existingSourceId) {
       const source = projectRef.current.sources.find((item) => item.id === existingSourceId);
-      if (source) placeSourcesAtCanvasPoint([source], point);
+      if (source) await placeSourcesAtCanvasPoint([source], point);
       return;
     }
 
@@ -3414,11 +3448,11 @@ function App() {
             <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
             <p>{project.sources.length} pools · {project.templates.templates.length} templates</p>
           </div>
-          <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide source panel" aria-label="Hide source panel" onClick={() => setLeftPanelOpen(false)}><PanelLeft size={16} /></button>
+          <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide library panel" aria-label="Hide library panel" onClick={() => setLeftPanelOpen(false)}><PanelLeft size={16} /></button>
         </div>
 
         <div className="panel-tabs" role="tablist" aria-label="Editor side panel">
-          <button className={leftPanelTab === "sources" ? "active" : ""} onClick={() => setLeftPanelTab("sources")}><Images size={15} /> Sources</button>
+          <button className={leftPanelTab === "sources" ? "active" : ""} onClick={() => setLeftPanelTab("sources")}><Images size={15} /> Library</button>
           <button className={leftPanelTab === "layers" ? "active" : ""} onClick={() => setLeftPanelTab("layers")}><Layers size={15} /> Layers</button>
         </div>
 
@@ -3439,7 +3473,7 @@ function App() {
           <div className="library-heading">
             <div>
               <span className="eyebrow">COLLECTIONS</span>
-              <h2>Sources</h2>
+              <h2>Image Library</h2>
             </div>
             <AddSourceControl
               onAddFolder={() => void addFolderSource()}
@@ -3459,9 +3493,9 @@ function App() {
                 ? "Unlock the selected frame to change its source."
                 : "Choose a source to assign its whole pool to this frame."
               : selectedSource
-                ? "Source details"
+                ? "Collection details"
                 : sourceLibraryView === "linked"
-                  ? "Select a source to view its details."
+                  ? "Drag a collection onto the canvas or select one to view details."
                   : "Reusable folders, boards, and image collections shared across templates."}
           </p>
 
@@ -3514,7 +3548,7 @@ function App() {
             {visibleSources.length === 0 ? (
               <button className="empty-source-card" onClick={sourceLibraryView === "linked" ? () => setSourceLibraryView("global") : addFolderSource}>
                 <FolderOpen size={20} />
-                <strong>{sourceLibraryView === "linked" ? "No sources linked" : "Add a source collection"}</strong>
+                <strong>{sourceLibraryView === "linked" ? "No collections linked" : "Add a collection"}</strong>
                 <span>{sourceLibraryView === "linked" ? "Choose one from the global library" : "Drop a folder here or import a Pinterest board"}</span>
               </button>
             ) : visibleSources.map((source) => {
@@ -3669,7 +3703,7 @@ function App() {
       </aside>
 
       <section className="workspace">
-        {!leftPanelOpen && <button className="panel-reopen left tooltip-anchor" data-tooltip="Show source panel" aria-label="Show source panel" onClick={() => setLeftPanelOpen(true)}><PanelLeft size={16} /></button>}
+        {!leftPanelOpen && <button className="panel-reopen left tooltip-anchor" data-tooltip="Show library panel" aria-label="Show library panel" onClick={() => setLeftPanelOpen(true)}><PanelLeft size={16} /></button>}
         {!rightPanelOpen && <button className="panel-reopen right tooltip-anchor" data-tooltip="Show inspector" aria-label="Show inspector" onClick={() => setRightPanelOpen(true)}><PanelRight size={16} /></button>}
         <header className="toolbar minimal-toolbar">
           <div className="toolbar-cluster">
@@ -3706,6 +3740,13 @@ function App() {
             </div>
           </div>
         </header>
+
+        {emptyPlaceholderHint && (
+          <div className="empty-placeholder-hint" key={emptyPlaceholderHint.id}>
+            <ImagePlus size={18} />
+            <span>{emptyPlaceholderHint.text}</span>
+          </div>
+        )}
 
         <div
           ref={stageRef}
@@ -3871,7 +3912,12 @@ function App() {
                   }}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
-                    if (!layer.locked) setCropModeLayerId(layer.id);
+                    if (layer.locked) return;
+                    if (!hasAssignedImage) {
+                      showAssignSourceHint();
+                      return;
+                    }
+                    setCropModeLayerId(layer.id);
                   }}
                   onDragEnter={(event) => updateDropFeedback(event, "placeholder", layer.id)}
                   onDragOver={(event) => updateDropFeedback(event, "placeholder", layer.id)}
@@ -4010,7 +4056,6 @@ function App() {
               onResize={resizeCanvas}
               onPreset={setPreset}
             />
-            <WallpaperPanel project={project} />
           </>
         )}
         <Properties
@@ -4701,7 +4746,7 @@ function ExportSetDialog({
       <section className={`modal export-set-modal ${ready ? "setup-mode" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
           <div>
-            <h2>{ready ? "Set Up Your macOS Wallpaper Rotation" : "Create macOS Wallpaper Set"}</h2>
+            <h2>{ready ? "Set Up Your macOS Wallpaper Set" : "Create macOS Wallpaper Set"}</h2>
             <p>{ready
               ? "Read these steps first. Wallpaper Settings opens only when you click the button below."
               : "Generate a new immutable folder of variations, then let macOS shuffle it across every desktop Space."}</p>
@@ -4768,7 +4813,7 @@ function ExportSetDialog({
             </div>
 
             <div className="export-set-grid">
-              <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
+              <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Set" /></label>
               <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
               <div className="format-fixed-note"><span>Format</span><strong>PNG</strong></div>
             </div>
@@ -4857,26 +4902,6 @@ function PinterestDialog({
         )}
       </section>
     </div>
-  );
-}
-
-function WallpaperPanel({ project }: { project: WallpaperProject }) {
-  return (
-    <section className="panel wallpaper-panel settings-section rotation-guide-panel">
-      <details open>
-        <summary>Wallpaper Rotation <ChevronDown size={15} /></summary>
-        <div className="rotation-guide-card">
-          <strong>Use macOS to rotate exported sets</strong>
-          <p>Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings and enable Shuffle plus Show on all Spaces. This app no longer runs a background wallpaper schedule. Create Wallpaper Set is the supported workflow for all Mission Control Spaces. Preview on Current Desktop affects only the active desktop.</p>
-          <ol>
-            <li>Click <b>Create Wallpaper Set</b> in the top bar.</li>
-            <li>Generate the number of variations you want.</li>
-            <li>Open Wallpaper Settings and select the exported folder.</li>
-          </ol>
-        </div>
-        {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
-      </details>
-    </section>
   );
 }
 
@@ -5172,10 +5197,9 @@ function Properties({
 
         <details>
           <summary>Frame Position and Size <ChevronDown size={15} /></summary>
+          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button></div>
           <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<input type="number" min="16" value={Math.round(layer.width)} onChange={numeric("width")} /></label><label>Height<input type="number" min="16" value={Math.round(layer.height)} onChange={numeric("height")} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
-          <label className="toggle-setting"><input type="checkbox" checked={layer.keepAspectRatio} onChange={(event) => onPatch({ keepAspectRatio: event.target.checked })} /> Lock frame ratio</label>
-          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button></div>
         </details>
 
         <details>

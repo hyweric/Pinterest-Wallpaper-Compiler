@@ -23,6 +23,28 @@ export function defaultDroppedPlaceholderSize(canvas: Pick<CanvasSettings, "widt
   };
 }
 
+export function droppedPlaceholderSizeForAspect(
+  canvas: Pick<CanvasSettings, "width" | "height">,
+  aspectRatio?: number
+) {
+  const base = defaultDroppedPlaceholderSize(canvas);
+  if (!aspectRatio || !Number.isFinite(aspectRatio) || aspectRatio <= 0) return base;
+
+  const baseArea = base.width * base.height;
+  let width = Math.sqrt(baseArea * aspectRatio);
+  let height = width / aspectRatio;
+  const maxWidth = Math.max(40, canvas.width * 0.48);
+  const maxHeight = Math.max(40, canvas.height * 0.48);
+  const scale = Math.min(1, maxWidth / Math.max(1, width), maxHeight / Math.max(1, height));
+  width *= scale;
+  height *= scale;
+
+  return {
+    width: Math.max(40, Math.round(width)),
+    height: Math.max(40, Math.round(height))
+  };
+}
+
 /**
  * Centers a new placeholder on the user's drop point. Additional placeholders
  * are offset slightly so a mixed or multi-folder drop remains visible and can
@@ -31,9 +53,10 @@ export function defaultDroppedPlaceholderSize(canvas: Pick<CanvasSettings, "widt
 export function placementForCanvasDrop(
   canvas: Pick<CanvasSettings, "width" | "height">,
   point: CanvasDropPoint,
-  offsetIndex = 0
+  offsetIndex = 0,
+  aspectRatio?: number
 ): CanvasDropPlacement {
-  const { width, height } = defaultDroppedPlaceholderSize(canvas);
+  const { width, height } = droppedPlaceholderSizeForAspect(canvas, aspectRatio);
   const cascadeStep = Math.max(18, Math.round(Math.min(canvas.width, canvas.height) * 0.024));
   const offset = Math.max(0, offsetIndex) * cascadeStep;
   const maxX = Math.max(0, canvas.width - width);

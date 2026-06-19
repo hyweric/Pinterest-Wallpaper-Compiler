@@ -39,6 +39,6 @@ test("failed inactive-Space adoption rolls back to a visible-preserving Store ba
   assert.match(source, /bridgeResult\.privateFrameworksAvailable/);
   assert.match(source, /return candidates\.find\(\(section\) => desktopReferencesPath\(get\(section, 'Desktop'\), assignment\.filePath\)\) \|\| candidates\[0\] \|\| null/);
   assert.doesNotMatch(source, /copyReplacing\(indexPath, backupPath\);\s*const initial = readMutablePlist\(indexPath\)/);
-  assert.match(renderer, /Create Wallpaper Set is the supported workflow for all Mission Control Spaces/);
-  assert.match(renderer, /Preview on Current Desktop affects only the active desktop/);
+  assert.match(renderer, /Create Wallpaper Set/);
+  assert.match(renderer, /Preview on Current Desktop/);
 });
