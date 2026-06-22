@@ -5546,3 +5546,31 @@ input[type="range"]::-moz-range-thumb {
 .minimal-toolbar .toolbar-create-actions {
   display: inline-flex;
 }
+
+/* Phase 22.3.1: restore compact selected-layer actions without making the toolbar screen-wide. */
+.context-toolbar.compact-context-toolbar {
+  gap: 8px;
+}
+.context-toolbar-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid rgba(141, 183, 193, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+}
+.context-toolbar-button-group.layer-actions .icon-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.context-toolbar-button-group.layer-actions .layer-order-icon {
+  width: 17px;
+  height: 17px;
+}
+.context-toolbar-button-group.crop-actions button {
+  min-width: 44px;
+}

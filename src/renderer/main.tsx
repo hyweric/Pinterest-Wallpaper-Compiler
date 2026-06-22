@@ -4665,7 +4665,9 @@ function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onB
 function ContextToolbar({
   layer,
   onPatch,
-  onCrop
+  onCrop,
+  onDuplicate,
+  onOrder
 }: {
   layer: PlaceholderLayer;
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
@@ -4676,10 +4678,19 @@ function ContextToolbar({
 }) {
   return (
     <div className="context-toolbar compact-context-toolbar" aria-label="Selected image quick controls">
-      <button className={layer.cropMode === "cover" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
-      <button className={layer.cropMode === "contain" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
-      <button disabled={layer.locked} onClick={onCrop}>Crop</button>
+      <div className="context-toolbar-button-group crop-actions" aria-label="Image fit controls">
+        <button className={layer.cropMode === "cover" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
+        <button className={layer.cropMode === "contain" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
+        <button disabled={layer.locked} onClick={onCrop}>Crop</button>
+      </div>
       <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
+      <div className="context-toolbar-button-group layer-actions" aria-label="Layer controls">
+        <button className="icon-button tooltip-anchor" data-tooltip="Move layer up" aria-label="Move layer up" disabled={layer.locked} onClick={() => onOrder("forward")}><LayerOrderIcon direction="up" /></button>
+        <button className="icon-button tooltip-anchor" data-tooltip="Move layer down" aria-label="Move layer down" disabled={layer.locked} onClick={() => onOrder("backward")}><LayerOrderIcon direction="down" /></button>
+        <button className="icon-button tooltip-anchor" data-tooltip="Duplicate layer" aria-label="Duplicate layer" disabled={layer.locked} onClick={onDuplicate}><Copy size={15} /></button>
+        <button className="icon-button tooltip-anchor" data-tooltip="Hide layer" aria-label="Hide layer" disabled={layer.locked} onClick={() => onPatch({ hidden: true })}><EyeOff size={15} /></button>
+        <button className="icon-button tooltip-anchor" data-tooltip="Lock layer" aria-label="Lock layer" disabled={layer.locked} onClick={() => onPatch({ locked: true })}><Lock size={15} /></button>
+      </div>
     </div>
   );
 }
@@ -5352,32 +5363,26 @@ function Properties({
             <div className="simple-effect-stack">
               <label>Paper color<input type="color" value={frameType === "polaroid" ? polaroid.frameColor : frameType === "torn" ? tornPaper.paperColor : layer.effects.paperFrame.paperColor} onChange={(event) => frameType === "polaroid" ? patchPolaroid({ frameColor: event.target.value }) : frameType === "torn" ? patchTornPaper({ paperColor: event.target.value }) : patchPaperFrame({ paperColor: event.target.value })} /></label>
               <FilterSlider label="Wrinkles" value={frameType === "torn" ? tornPaper.wrinkles : frameType === "polaroid" ? polaroid.grain : layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => frameType === "torn" ? patchTornPaper({ wrinkles: value, grain: Math.round(value * .55), fibers: Math.round(value * .45) }) : frameType === "polaroid" ? patchPolaroid({ grain: value, warmth: Math.round(value * .12) }) : patchPaperFrame({ textureIntensity: value })} />
+              {frameType === "polaroid" && (
+                <PolaroidInspector
+                  layer={layer}
+                  effect={polaroid}
+                  onPatch={patchPolaroid}
+                  onPatchLayer={onPatch}
+                  onReset={resetPolaroid}
+                />
+              )}
+              {frameType === "torn" && (
+                <TornPaperInspector
+                  layer={layer}
+                  effect={tornPaper}
+                  onPatch={patchTornPaper}
+                  onPatchLayer={onPatch}
+                  onReset={resetTornPaper}
+                />
+              )}
+              {frameType === "clean" && <p className="simple-effect-note">Clean Paper only needs color, wrinkles, and shadow.</p>}
             </div>
-          )}
-        </details>
-
-        <details open>
-          <summary>Frame Style <ChevronDown size={15} /></summary>
-          {frameType === "polaroid" ? (
-            <PolaroidInspector
-              layer={layer}
-              effect={polaroid}
-              onPatch={patchPolaroid}
-              onPatchLayer={onPatch}
-              onReset={resetPolaroid}
-            />
-          ) : frameType === "torn" ? (
-            <TornPaperInspector
-              layer={layer}
-              effect={tornPaper}
-              onPatch={patchTornPaper}
-              onPatchLayer={onPatch}
-              onReset={resetTornPaper}
-            />
-          ) : frameType === "clean" ? (
-            <p className="simple-effect-note">Clean Paper only needs color, wrinkles, and shadow.</p>
-          ) : (
-            <p className="simple-effect-note">Choose Clean Paper, Polaroid, or Torn Paper to show frame controls.</p>
           )}
         </details>
 
