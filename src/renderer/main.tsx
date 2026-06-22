@@ -5354,8 +5354,6 @@ function Properties({
 
   return (
     <section className="panel properties">
-      <div className="panel-title-row"><h2>{layer.name}</h2></div>
-
       {activeTab === "image" && <>
         <details open>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
