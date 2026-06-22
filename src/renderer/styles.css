@@ -5611,3 +5611,25 @@ input[type="range"]::-moz-range-thumb {
   78% { opacity: 1; transform: translate(-50%, 0); }
   100% { opacity: 0; transform: translate(-50%, 8px); }
 }
+
+
+/* Phase 22.3.3: standardize dropdown padding and remove uneven select text placement. */
+select,
+.sidebar select,
+.sidebar.right .settings-section select,
+.sidebar.right .properties select,
+.sidebar.right .two-col select,
+.source-media-policy select {
+  height: 35px !important;
+  min-height: 35px !important;
+  padding: 0 38px 0 12px !important;
+  line-height: 35px !important;
+  border-radius: 8px !important;
+  background-size: 32px 100%, 14px 14px !important;
+  background-position: right 0 center, right 12px center !important;
+  text-overflow: ellipsis !important;
+}
+
+.context-toolbar-button-group.layer-actions {
+  gap: 5px;
+}

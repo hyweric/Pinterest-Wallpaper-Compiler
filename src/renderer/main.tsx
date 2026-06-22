@@ -4717,7 +4717,6 @@ function ContextToolbar({
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer up" aria-label="Move layer up" disabled={layer.locked} onClick={() => onOrder("forward")}><LayerOrderIcon direction="up" /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer down" aria-label="Move layer down" disabled={layer.locked} onClick={() => onOrder("backward")}><LayerOrderIcon direction="down" /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Duplicate layer" aria-label="Duplicate layer" disabled={layer.locked} onClick={onDuplicate}><Copy size={15} /></button>
-        <button className="icon-button tooltip-anchor" data-tooltip="Hide layer" aria-label="Hide layer" disabled={layer.locked} onClick={() => onPatch({ hidden: true })}><EyeOff size={15} /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Lock layer" aria-label="Lock layer" disabled={layer.locked} onClick={() => onPatch({ locked: true })}><Lock size={15} /></button>
       </div>
     </div>
