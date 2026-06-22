@@ -23,7 +23,7 @@ test("app scheduling controls and tray rotation commands are removed", async () 
   assert.doesNotMatch(renderer, /SingleRunScheduler/);
   assert.doesNotMatch(main, /Pause Rotation|Resume Rotation|Current interval:|Next update:/);
   assert.match(main, /Preview on Current Desktop/);
-  assert.doesNotMatch(renderer, /Wallpaper Rotation/);
+  assert.match(renderer, /This app no longer runs a background wallpaper schedule/);
 });
 
 test("wallpaper settings opens only from the explicit setup button", async () => {

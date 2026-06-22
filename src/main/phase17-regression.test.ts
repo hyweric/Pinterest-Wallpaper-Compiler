@@ -26,9 +26,12 @@ test("canvas surface is drawn behind placeholders so uploaded sources remain una
 
 test("all requested surface controls update persisted canvas settings", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  for (const label of ["Enable surface texture", "Intensity", "Opacity", "Scale", "Noise / grain", "Roughness", "Light / dark", "Rotation", "Blend mode", "Texture seed", "Regenerate Texture"]) {
+  for (const label of ["Intensity", "Opacity", "Scale", "Noise / grain", "Roughness", "Light / dark", "Rotation", "Blend mode", "Reset", "Regenerate Texture"]) {
     assert.match(renderer, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.doesNotMatch(renderer, /Enable surface texture/);
+  assert.doesNotMatch(renderer, /Texture seed/);
+  assert.match(renderer, /function resetSurface\(/);
   assert.match(renderer, /patchPaper\(\{ seed: nextSurfaceSeed\(surface\.seed\) \}\)/);
   assert.match(renderer, /backgroundPaper: \{ \.\.\.canvas\.backgroundPaper, \.\.\.patch \}/);
 });

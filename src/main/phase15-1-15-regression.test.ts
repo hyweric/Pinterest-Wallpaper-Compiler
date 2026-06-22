@@ -12,6 +12,7 @@ test("current desktop preview resolves assigned source pools before rendering", 
   const historyStart = renderer.indexOf("async function applyHistoryAt", previewStart);
   const preview = renderer.slice(previewStart, historyStart);
 
+  assert.doesNotMatch(preview, /advancePreviewProjectImages\(previewBase\)/);
   assert.match(preview, /prepareGeneratedProject\(previewBase, previewBase\.templates\.activeTemplateId\)/);
   assert.match(preview, /applyCandidate\(normalizeProject\(prepared\.project\), prepared\.combination/);
   assert.match(preview, /targetMode: "current-desktop"/);

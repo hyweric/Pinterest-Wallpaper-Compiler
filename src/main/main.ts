@@ -14,6 +14,7 @@ import type {
   WallpaperSetFinalizeResult,
   WallpaperApplyDiagnostics,
   ImageFileResult,
+  LocalImageRef,
   PathImportResult,
   PinterestImportProgress,
   PinterestImportRequest,
@@ -447,8 +448,39 @@ async function canDecodeImportedImage(filePath: string) {
   }
 }
 
+function imageSizeForFile(filePath: string) {
+  try {
+    const image = nativeImage.createFromPath(filePath);
+    if (image.isEmpty()) return undefined;
+    const size = image.getSize();
+    if (!size.width || !size.height) return undefined;
+    return { width: Math.round(size.width), height: Math.round(size.height) };
+  } catch {
+    return undefined;
+  }
+}
+
+function enrichLocalImageDimensions(image: LocalImageRef): LocalImageRef {
+  if (image.width && image.height) return image;
+  const size = imageSizeForFile(image.path);
+  return size ? { ...image, ...size } : image;
+}
+
+function enrichSourceImageDimensions<T extends { images?: LocalImageRef[] }>(source: T): T {
+  return { ...source, images: (source.images ?? []).map(enrichLocalImageDimensions) };
+}
+
+function enrichImportedImageDimensions<T extends PathImportResult>(result: T): T {
+  return {
+    ...result,
+    images: result.images.map(enrichLocalImageDimensions),
+    sources: result.sources.map((source) => enrichSourceImageDimensions(source))
+  };
+}
+
 async function importValidatedLocalPaths(paths: unknown) {
-  return importLocalPaths(paths, { validateImage: canDecodeImportedImage });
+  const result = await importLocalPaths(paths, { validateImage: canDecodeImportedImage });
+  return enrichImportedImageDimensions(result);
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
@@ -824,9 +856,10 @@ async function runPinterestJob(
   try {
     const provider = pinterestProvider();
     const normalizedRequest = { ...request, jobId, mode };
-    return mode === "import"
+    const result = mode === "import"
       ? await provider.import(normalizedRequest, sendProgress, controller.signal)
       : await provider.update(normalizedRequest, sendProgress, controller.signal);
+    return result.source ? { ...result, source: enrichSourceImageDimensions(result.source) } : result;
   } finally {
     if (pinterestJobs.get(jobId) === controller) pinterestJobs.delete(jobId);
   }

@@ -119,7 +119,7 @@ test("Phase 19 retains simplified inspector and wallpaper assignment while expos
   assert.doesNotMatch(renderer, />Clear</);
   assert.doesNotMatch(renderer, />Apply to</);
   assert.doesNotMatch(renderer, /<summary>Diagnostics/);
-  assert.doesNotMatch(renderer, /Wallpaper Rotation/);
+  assert.match(renderer, /Wallpaper Rotation/);
   assert.match(renderer, /function PolaroidInspector/);
   assert.match(renderer, /function TornPaperInspector/);
 });

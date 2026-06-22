@@ -4,29 +4,35 @@ import { readFile } from "node:fs/promises";
 
 const source = (path: string) => readFile(path, "utf8");
 
-test("expanded Torn Paper inspector exposes presets, per-edge controls, paper details, image placement, and shadows", async () => {
+test("expanded Torn Paper inspector exposes unified tear controls, paper details, image placement, and shadows", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf("function TornPaperInspector(");
   const end = renderer.indexOf("function ShadowInspector(", start);
   const panel = renderer.slice(start, end);
-  for (const section of ["Presets", "Tear Edges", "Paper Appearance", "Image", "Shadows"]) {
+  for (const section of ["Tear Shape", "Paper Appearance", "Image", "Shadows"]) {
     assert.match(panel, new RegExp(`<summary>${section}`));
   }
   for (const label of [
-    "Regenerate Tear", "Link all edges", "Paper color", "Paper opacity", "Grain", "Fibers", "Wrinkles", "Stains", "Speckles", "Edge darkening",
+    "Tearness", "Regenerate Tear", "Paper color", "Paper opacity", "Grain", "Fibers", "Wrinkles",
     "Image inset", "Image scale", "Image X", "Image Y", "Outer shadow", "Inner shadow", "Reset Torn Paper"
   ]) {
     assert.match(panel, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(panel, /\["top", "right", "bottom", "left"\]/);
+  assert.doesNotMatch(panel, /Link all edges/);
+  assert.doesNotMatch(panel, /Save Current/);
+  assert.doesNotMatch(panel, /Restore Bundled Preset/);
 });
 
-test("torn presets are editable and include save, duplicate, rename, delete, and restore actions", async () => {
+test("torn paper uses one shared tear control instead of per-edge preset management", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  for (const action of ["Save Current", "Duplicate", "Rename", "Delete", "Restore Bundled Preset"]) assert.match(renderer, new RegExp(action));
-  assert.match(renderer, /createCustomTornPaperPreset/);
-  assert.match(renderer, /applyTornPaperPreset/);
-  assert.match(renderer, /customPresets/);
+  const start = renderer.indexOf("function TornPaperInspector(");
+  const end = renderer.indexOf("function ShadowInspector(", start);
+  const panel = renderer.slice(start, end);
+  assert.match(panel, /function patchAllEdges/);
+  assert.match(panel, /FilterSlider label="Tearness"/);
+  assert.doesNotMatch(panel, /\["top", "right", "bottom", "left"\]/);
+  assert.doesNotMatch(panel, /applyTornPaperPreset/);
+  assert.doesNotMatch(panel, /customPresets/);
 });
 
 test("tear regeneration is explicit and does not use Math.random in the Torn inspector", async () => {

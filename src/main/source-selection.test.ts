@@ -55,3 +55,11 @@ test("reuse occurs deterministically only when placeholders outnumber images", (
   assert.equal(new Set([result.assignments.a, result.assignments.b]).size, 2);
   assert.ok(result.assignments.c);
 });
+
+
+test("shuffle generation avoids the current generated image when possible", () => {
+  const current = layer("a", "board");
+  current.generatedImageId = "board-0";
+  const result = selectImagesForGeneration(project([source("board", 2)], [current]), () => 0.99);
+  assert.equal(result.assignments.a, "board-1");
+});

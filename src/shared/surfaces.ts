@@ -80,24 +80,24 @@ export const bundledSurfaceManifest: BundledSurfaceManifestEntry[] = [
 
 export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperType"], Pick<PaperTextureEffect, "intensity" | "scale" | "rotation" | "opacity" | "blendMode" | "noise" | "roughness" | "tone">> = {
   paper: {
-    intensity: 100,
-    scale: 0.2,
+    intensity: 92,
+    scale: 0.24,
     rotation: 0,
-    opacity: 0.66,
+    opacity: 0.54,
     blendMode: "normal",
-    noise: 100,
-    roughness: 100,
-    tone: 12
+    noise: 82,
+    roughness: 76,
+    tone: 10
   },
   "crumpled-paper": {
-    intensity: 67,
-    scale: 0.2,
-    rotation: 39,
-    opacity: 0.36,
+    intensity: 74,
+    scale: 0.24,
+    rotation: 24,
+    opacity: 0.32,
     blendMode: "normal",
-    noise: 68,
-    roughness: 100,
-    tone: 9
+    noise: 72,
+    roughness: 88,
+    tone: 7
   },
   "grid-paper": {
     intensity: 100,

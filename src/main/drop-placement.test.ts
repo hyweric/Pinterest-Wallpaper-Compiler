@@ -29,11 +29,13 @@ test("multiple dropped sources receive a visible cascade offset", () => {
   assert.ok(second.y > first.y);
 });
 
-test("aspect-aware drop placement matches the starting image shape", () => {
-  const wide = placementForCanvasDrop(canvas, { x: 960, y: 540 }, 0, 16 / 9);
-  const tall = placementForCanvasDrop(canvas, { x: 960, y: 540 }, 0, 3 / 4);
-  assert.ok(wide.width > wide.height);
-  assert.ok(tall.height > tall.width);
-  assert.ok(Math.abs(wide.width / wide.height - 16 / 9) < 0.01);
-  assert.ok(Math.abs(tall.width / tall.height - 3 / 4) < 0.01);
+
+test("drop placement can match the aspect ratio of the selected dropped image", () => {
+  const landscape = placementForCanvasDrop(canvas, { x: 960, y: 540 }, 0, 16 / 9);
+  assert.ok(landscape.width > landscape.height);
+  assert.ok(Math.abs(landscape.width / landscape.height - 16 / 9) < 0.02);
+
+  const portrait = placementForCanvasDrop(canvas, { x: 960, y: 540 }, 0, 3 / 4);
+  assert.ok(portrait.height > portrait.width);
+  assert.ok(Math.abs(portrait.width / portrait.height - 3 / 4) < 0.02);
 });

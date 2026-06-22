@@ -183,11 +183,11 @@ export function normalizePolaroidEffect(input: PartialDeep<PolaroidEffect> | und
 export function createDefaultTearEdge(enabled = true): TearEdgeEffect {
   return {
     enabled,
-    depth: 22,
+    depth: 30,
     frequency: 18,
     scale: 1,
-    waviness: 36,
-    roughness: 24
+    waviness: 44,
+    roughness: 34
   };
 }
 
@@ -204,7 +204,7 @@ export function normalizeTearEdge(input?: PartialDeep<TearEdgeEffect>, fallback 
 
 export function createDefaultTornPaperEffect(frame?: PaperFrameEffect): TornPaperEffect {
   const edge = createDefaultTearEdge(true);
-  const edgeRoughness = finite(frame?.edgeRoughness, 24);
+  const edgeRoughness = finite(frame?.edgeRoughness, 34);
   const migratedEdge = { ...edge, depth: edgeRoughness, roughness: edgeRoughness, frequency: 18 };
   const shadowStrength = finite(frame?.shadowStrength, 22);
   return {

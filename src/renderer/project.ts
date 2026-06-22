@@ -201,7 +201,7 @@ export function createDefaultPaperFrame(): PaperFrameEffect {
     type: "none",
     borderWidth: 20,
     paperColor: "#fffdf8",
-    edgeRoughness: 35,
+    edgeRoughness: 46,
     shadowStrength: 35,
     innerPadding: 0,
     rotationVariation: 0,

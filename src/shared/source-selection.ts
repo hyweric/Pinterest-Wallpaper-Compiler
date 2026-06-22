@@ -30,7 +30,7 @@ export function selectImagesForGeneration(
     return copy;
   };
 
-  const drawFromSource = (source: ImageSource, layerId: string, allowReuse: boolean) => {
+  const drawFromSource = (source: ImageSource, layerId: string, allowReuse: boolean, avoidImageId?: string) => {
     const images = eligibleImages(source);
     if (!images.length) return undefined;
     const validIds = new Set(images.map((image) => image.id));
@@ -38,11 +38,13 @@ export function selectImagesForGeneration(
     let queue = state.shuffleQueue.filter((id) => validIds.has(id));
     if (!queue.length) {
       queue = shuffleWith(images.map((image) => image.id));
-      const previous = state.lastImageByLayer[layerId];
+      const previous = state.lastImageByLayer[layerId] ?? avoidImageId;
       if (queue.length > 1 && previous && queue[0] === previous) [queue[0], queue[1]] = [queue[1], queue[0]];
       state.cycle += 1;
     }
-    let index = queue.findIndex((id) => !usedThisGeneration.has(id));
+    let index = queue.findIndex((id) => !usedThisGeneration.has(id) && (queue.length <= 1 || id !== avoidImageId));
+    if (index < 0) index = queue.findIndex((id) => !usedThisGeneration.has(id));
+    if (index < 0 && allowReuse) index = queue.findIndex((id) => queue.length <= 1 || id !== avoidImageId);
     if (index < 0 && allowReuse) index = 0;
     if (index < 0) {
       state.shuffleQueue = queue;
@@ -75,13 +77,14 @@ export function selectImagesForGeneration(
       const orderedSources = shuffleWith(availableSources);
       let chosen: LocalImageRef | undefined;
       let owner: ImageSource | undefined;
+      const currentImageId = layer.generatedImageId ?? layer.selectedImageId;
       for (const source of orderedSources) {
-        chosen = drawFromSource(source, layer.id, false);
+        chosen = drawFromSource(source, layer.id, false, currentImageId);
         if (chosen) { owner = source; break; }
       }
       if (!chosen) {
         for (const source of orderedSources) {
-          chosen = drawFromSource(source, layer.id, true);
+          chosen = drawFromSource(source, layer.id, true, currentImageId);
           if (chosen) { owner = source; break; }
         }
       }

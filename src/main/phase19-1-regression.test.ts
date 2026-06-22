@@ -26,16 +26,21 @@ test("background choices contain only Color and Image and legacy clear projects 
   assert.equal(migrated.canvas.backgroundColor, "#abc123");
 });
 
-test("Wallpaper settings remove Apply to, template mapping, rotation help, Advanced, and Diagnostics", async () => {
+test("Wallpaper Rotation removes Apply to, template mapping, Advanced, and Diagnostics", async () => {
   const renderer = await source("src/renderer/main.tsx");
+  const start = renderer.indexOf("function WallpaperPanel(");
+  const end = renderer.indexOf("function CanvasDesignPanel(", start);
+  const panel = renderer.slice(start, end);
 
-  assert.doesNotMatch(renderer, /function WallpaperPanel/);
-  assert.doesNotMatch(renderer, /Wallpaper Rotation/);
-  assert.doesNotMatch(renderer, /Apply to/);
-  assert.doesNotMatch(renderer, /<label>Template/);
-  assert.doesNotMatch(renderer, /Target templates/);
-  assert.doesNotMatch(renderer, /Diagnostics/);
-  assert.doesNotMatch(renderer, /playlist/);
+  assert.match(panel, /<summary>Wallpaper Rotation/);
+  assert.match(panel, /Use macOS to rotate exported sets/);
+  assert.match(panel, /Create Wallpaper Set/);
+  assert.doesNotMatch(panel, /Apply to/);
+  assert.doesNotMatch(panel, /<label>Template/);
+  assert.doesNotMatch(panel, /Target templates/);
+  assert.doesNotMatch(panel, /<summary>Advanced/);
+  assert.doesNotMatch(panel, /Diagnostics/);
+  assert.doesNotMatch(panel, /playlist/);
 });
 
 test("the Canvas settings panel no longer exposes an Advanced section", async () => {
