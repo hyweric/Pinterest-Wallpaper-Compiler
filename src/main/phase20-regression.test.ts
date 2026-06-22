@@ -6,14 +6,15 @@ import { createDefaultPolaroidEffect, createDefaultTornPaperEffect, bundledTornP
 
 const source = (path: string) => readFile(path, "utf8");
 
-test("Phase 20 simplifies effect choices and maps legacy Deckle/Newsprint into Torn/Clean", async () => {
+test("Phase 20 simplifies effect choices and maps legacy aliases into current paper styles", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(renderer, /<option value="clean">Clean Paper<\/option>/);
+  assert.doesNotMatch(renderer, /<option value="clean">Clean Paper<\/option>/);
+  assert.match(renderer, /<option value="polaroid">Polaroid<\/option>/);
   assert.match(renderer, /<option value="torn">Torn Paper<\/option>/);
   assert.doesNotMatch(renderer, /<option value="deckle">/);
   assert.doesNotMatch(renderer, /<option value="newsprint">/);
 
-  for (const [legacy, expected] of [["deckle", "torn"], ["deckle-edge", "torn"], ["newsprint", "clean"], ["newspaper-cutout", "clean"]] as const) {
+  for (const [legacy, expected] of [["deckle", "torn"], ["deckle-edge", "torn"], ["newsprint", "polaroid"], ["newspaper-cutout", "polaroid"]] as const) {
     const project = createProject();
     const layer = createPlaceholder(project.canvas, 1);
     (layer.effects.paperFrame as { type: string }).type = legacy;

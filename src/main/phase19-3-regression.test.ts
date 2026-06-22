@@ -10,13 +10,13 @@ test("expanded Polaroid inspector is reduced to direct-canvas photo positioning 
   const end = renderer.indexOf("function TornPaperInspector(", start);
   const panel = renderer.slice(start, end);
 
-  for (const label of ["Polaroid", "Canvas controls do the photo positioning", "Border Size", "Corner Radius", "Reset Photo Placement", "Reset"]) {
+  for (const label of ["Polaroid", "Corner Radius", "Reset Photo Placement", "Reset"]) {
     assert.match(panel, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  for (const removed of ["Top border", "Right border", "Bottom border", "Left border", "Paper Surface", "Shadows", "Caption", "Show caption", "Frame opacity", "Paper warmth"]) {
+  for (const removed of ["Border Size", "Top border", "Right border", "Bottom border", "Left border", "Paper Surface", "Shadows", "Caption", "Show caption", "Frame opacity", "Paper warmth"]) {
     assert.doesNotMatch(panel, new RegExp(removed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(panel, /polaroid-direct-edit-note/);
+  assert.doesNotMatch(panel, /polaroid-direct-edit-note/);
 });
 
 test("drop shadow editing is simplified to one slider and no checkbox shadow editor", async () => {

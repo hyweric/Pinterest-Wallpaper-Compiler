@@ -7,7 +7,7 @@ import type { PaperFrameType } from "../shared/types.js";
 const source = (path: string) => readFile(path, "utf8");
 
 test("current Paper Frame styles survive normalization while legacy aliases merge into simplified styles", () => {
-  const supported: PaperFrameType[] = ["none", "clean", "polaroid", "torn"];
+  const supported: PaperFrameType[] = ["none", "polaroid", "torn"];
   for (const type of supported) {
     const project = createProject();
     const layer = createPlaceholder(project.canvas, 1);
@@ -22,13 +22,13 @@ test("current Paper Frame styles survive normalization while legacy aliases merg
 
 test("legacy Paper Frame aliases still migrate to their current style names", () => {
   const aliases: Array<[string, PaperFrameType]> = [
-    ["clean-paper", "clean"],
-    ["photo-print", "clean"],
+    ["clean-paper", "polaroid"],
+    ["photo-print", "polaroid"],
     ["torn-paper", "torn"],
     ["deckle-edge", "torn"],
     ["deckle", "torn"],
-    ["newspaper-cutout", "clean"],
-    ["newsprint", "clean"]
+    ["newspaper-cutout", "polaroid"],
+    ["newsprint", "polaroid"]
   ];
   for (const [legacy, expected] of aliases) {
     const project = createProject();

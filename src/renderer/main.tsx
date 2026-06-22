@@ -4039,8 +4039,8 @@ function App() {
                     width: layer.width,
                     height: layer.height,
                     transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
-                    borderWidth: layer.borderWidth,
-                    borderColor: hexWithOpacity(layer.borderColor, layer.borderOpacity),
+                    borderWidth: paperActive ? 0 : layer.borderWidth,
+                    borderColor: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
                     borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
                     overflow: rough ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, layer.width, layer.height) : undefined,
@@ -4085,7 +4085,7 @@ function App() {
                       ><EyeOff size={14} /></button>
                     </div>
                   )}
-                  {paperActive && <span className="paper-frame-texture" style={{ opacity: expandedFrameTexture / 100, backgroundImage: paperTextureBackground({ ...layer.effects.paper, type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type }, project.customTextures) }} />}
+                  {paperActive && <FrameSurfaceTextureOverlay layer={layer} width={layer.width} height={layer.height} textureIntensity={expandedFrameTexture} customTextures={project.customTextures} />}
                   {polaroidWarmth && <span className="polaroid-warmth-overlay" style={{ backgroundColor: polaroidWarmth.color, opacity: polaroidWarmth.opacity }} />}
                   {tornPaperTexture && <span className="torn-paper-detail-overlay" style={{ backgroundImage: cssImageUrl(tornPaperTexture) }} />}
                   <div
@@ -4515,7 +4515,6 @@ function CanvasSurfaceOverlay({ canvas, customTextures }: { canvas: CanvasSettin
     paper.roughness,
     paper.tone,
     paper.customTextureId,
-    customTexture?.url
   ]);
 
   if (!surfaceEffectIsVisible(paper)) return null;
@@ -4527,6 +4526,57 @@ function CanvasSurfaceOverlay({ canvas, customTextures }: { canvas: CanvasSettin
       style={{ width: canvas.width, height: canvas.height, mixBlendMode: paper.blendMode }}
     />
   );
+}
+
+
+function FrameSurfaceTextureOverlay({ layer, width, height, textureIntensity }: { layer: PlaceholderLayer; width: number; height: number; textureIntensity: number; customTextures: WallpaperProject["customTextures"] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textureType: PaperTextureEffect["type"] = layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  const paper = normalizeSurfaceEffect({
+    ...layer.effects.paper,
+    enabled: true,
+    type: textureType,
+    customTextureId: undefined,
+    intensity: Math.max(textureType === "crumpled-paper" ? 100 : 92, textureIntensity),
+    opacity: Math.max(textureType === "crumpled-paper" ? 0.9 : 0.74, textureIntensity / 100),
+    blendMode: "multiply",
+    noise: Math.max(layer.effects.paper.noise ?? 0, textureType === "crumpled-paper" ? 92 : 78),
+    roughness: Math.max(layer.effects.paper.roughness ?? 0, textureType === "crumpled-paper" ? 96 : 78),
+    tone: layer.effects.paper.tone || (textureType === "crumpled-paper" ? -4 : 6)
+  });
+
+  useEffect(() => {
+    const target = canvasRef.current;
+    if (!target || !surfaceEffectIsVisible(paper)) return;
+    let canceled = false;
+    let frame: number | undefined;
+    frame = window.requestAnimationFrame(() => {
+      void drawSurfacePreview(target, width, height, { ...paper, blendMode: "normal" }).catch((error) => {
+        if (!canceled) console.warn("Frame texture preview could not be rendered", error);
+      });
+    });
+    return () => {
+      canceled = true;
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
+  }, [
+    width,
+    height,
+    paper.enabled,
+    paper.type,
+    paper.intensity,
+    paper.scale,
+    paper.rotation,
+    paper.opacity,
+    paper.blendMode,
+    paper.seed,
+    paper.noise,
+    paper.roughness,
+    paper.tone,
+  ]);
+
+  if (!surfaceEffectIsVisible(paper)) return null;
+  return <canvas ref={canvasRef} className="paper-frame-texture" aria-hidden="true" style={{ width, height, mixBlendMode: "multiply" }} />;
 }
 
 function BackgroundImageView({ canvas }: { canvas: CanvasSettings }) {
@@ -5328,6 +5378,29 @@ function Properties({
     onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
   }
 
+  const frameTextureType: "paper" | "crumpled-paper" = layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  function patchFrameTexture(type: "paper" | "crumpled-paper") {
+    const textureAmount = type === "crumpled-paper" ? 92 : 78;
+    const surfaceDefaults = surfaceDefaultsForType(type) ?? {};
+    const nextPaperFrame = { ...activeLayer.effects.paperFrame, textureIntensity: textureAmount };
+    onPatch({
+      effects: {
+        ...activeLayer.effects,
+        paper: {
+          ...activeLayer.effects.paper,
+          ...surfaceDefaults,
+          enabled: true,
+          type,
+          customTextureId: undefined,
+          seed: activeLayer.effects.paper.seed || 1
+        },
+        paperFrame: nextPaperFrame,
+        polaroid: normalizePolaroidEffect({ ...polaroid, grain: textureAmount, warmth: Math.round(textureAmount * .12) }, nextPaperFrame, activeLayer.effects.innerShadow),
+        tornPaper: normalizeTornPaperEffect({ ...tornPaper, grain: textureAmount, wrinkles: textureAmount, fibers: Math.round(textureAmount * .45) }, nextPaperFrame, activeLayer.effects.innerShadow)
+      }
+    });
+  }
+
   function patchSimpleDropShadow(value: number) {
     const strength = Math.max(0, Math.min(100, value));
     const shadow: ShadowEffect = {
@@ -5376,7 +5449,7 @@ function Properties({
           <summary>Frame Position <ChevronDown size={15} /></summary>
           <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>Height<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
-          <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>← Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image →</button></div>
+          <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image</button></div>
           <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
         </details>
       </>}
@@ -5384,14 +5457,13 @@ function Properties({
       {activeTab === "effects" && <>
         <details open>
           <summary>Paper <ChevronDown size={15} /></summary>
-          <label>Style<select value={frameType === "deckle" ? "torn" : frameType === "newsprint" ? "clean" : frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean Paper</option><option value="polaroid">Polaroid</option><option value="torn">Torn Paper</option></select></label>
+          <label>Style<select value={frameType === "deckle" ? "torn" : frameType === "newsprint" || frameType === "clean" ? "polaroid" : frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="polaroid">Polaroid</option><option value="torn">Torn Paper</option></select></label>
           {frameType !== "none" && (
             <div className="simple-effect-stack">
-              <label>Paper color<input type="color" value={frameType === "polaroid" ? polaroid.frameColor : frameType === "torn" ? tornPaper.paperColor : layer.effects.paperFrame.paperColor} onChange={(event) => frameType === "polaroid" ? patchPolaroid({ frameColor: event.target.value }) : frameType === "torn" ? patchTornPaper({ paperColor: event.target.value }) : patchPaperFrame({ paperColor: event.target.value })} /></label>
-              <FilterSlider label="Wrinkles" value={frameType === "torn" ? tornPaper.wrinkles : frameType === "polaroid" ? polaroid.grain : layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => frameType === "torn" ? patchTornPaper({ wrinkles: value, grain: Math.round(value * .55), fibers: Math.round(value * .45) }) : frameType === "polaroid" ? patchPolaroid({ grain: value, warmth: Math.round(value * .12) }) : patchPaperFrame({ textureIntensity: value })} />
-              {frameType === "polaroid" && (
+              <label>Paper color<input type="color" value={frameType === "polaroid" || frameType === "clean" ? polaroid.frameColor : frameType === "torn" ? tornPaper.paperColor : layer.effects.paperFrame.paperColor} onChange={(event) => frameType === "polaroid" || frameType === "clean" ? patchPolaroid({ frameColor: event.target.value }) : frameType === "torn" ? patchTornPaper({ paperColor: event.target.value }) : patchPaperFrame({ paperColor: event.target.value })} /></label>
+              <label>Texture<select value={frameTextureType} onChange={(event) => patchFrameTexture(event.target.value as "paper" | "crumpled-paper")}><option value="paper">Paper</option><option value="crumpled-paper">Crumpled Paper</option></select></label>
+              {(frameType === "polaroid" || frameType === "clean") && (
                 <PolaroidInspector
-                  layer={layer}
                   effect={polaroid}
                   onPatch={patchPolaroid}
                   onPatchLayer={onPatch}
@@ -5407,7 +5479,6 @@ function Properties({
                   onReset={resetTornPaper}
                 />
               )}
-              {frameType === "clean" && <p className="simple-effect-note">Clean Paper only needs color, wrinkles, and shadow.</p>}
             </div>
           )}
         </details>
@@ -5423,44 +5494,39 @@ function Properties({
 }
 
 function PolaroidInspector({
-  layer,
   effect,
   onPatch,
   onPatchLayer,
   onReset
 }: {
-  layer: PlaceholderLayer;
   effect: PolaroidEffect;
   onPatch: (patch: Partial<PolaroidEffect>) => void;
   onPatchLayer: (patch: Partial<PlaceholderLayer>) => void;
   onReset: () => void;
 }) {
-  const borderSize = Math.round((effect.borderTop + effect.borderRight + effect.borderLeft) / 3);
-  function patchBorderSize(value: number) {
-    const size = Math.max(0, Math.round(value));
+  function patchBorder(patch: Partial<Pick<PolaroidEffect, "borderTop" | "borderRight" | "borderBottom" | "borderLeft">>) {
+    const nextTop = patch.borderTop ?? effect.borderTop;
+    const nextBottom = patch.borderBottom ?? effect.borderBottom;
     onPatch({
-      borderTop: size,
-      borderRight: size,
-      borderLeft: size,
-      borderBottom: Math.round(size * 2.2),
-      captionHeight: Math.round(size * 1.2),
-      imageInset: size
+      ...patch,
+      captionHeight: Math.max(0, nextBottom - nextTop)
     });
   }
 
   return (
     <div className="expanded-effect-editor polaroid-editor simple-effect-editor">
       <div className="effect-editor-heading">
-        <div><strong>Polaroid</strong><small>Simple frame controls. Move and crop the photo directly on the canvas.</small></div>
+        <div><strong>Polaroid</strong></div>
         <button className="button ghost compact" onClick={onReset}>Reset</button>
       </div>
-      <div className="polaroid-direct-edit-note">
-        <strong>Canvas controls do the photo positioning</strong>
-        <span>Drag inside the photo to move it, use the handles to resize/rotate, and use Fill/Fit from the floating toolbar.</span>
+      <div className="polaroid-border-grid">
+        <label>Top<SoftNumberInput value={Math.round(effect.borderTop)} min={0} max={600} onCommit={(value) => patchBorder({ borderTop: Math.round(value) })} /></label>
+        <label>Right<SoftNumberInput value={Math.round(effect.borderRight)} min={0} max={600} onCommit={(value) => patchBorder({ borderRight: Math.round(value) })} /></label>
+        <label>Bottom<SoftNumberInput value={Math.round(effect.borderBottom)} min={0} max={900} onCommit={(value) => patchBorder({ borderBottom: Math.round(value) })} /></label>
+        <label>Left<SoftNumberInput value={Math.round(effect.borderLeft)} min={0} max={600} onCommit={(value) => patchBorder({ borderLeft: Math.round(value) })} /></label>
       </div>
-      <FilterSlider label="Border Size" value={borderSize} min={0} max={180} onChange={patchBorderSize} />
       <FilterSlider label="Corner Radius" value={effect.cornerRadius} min={0} max={160} step={1} onChange={(value) => onPatch({ cornerRadius: value })} />
-      <div className="compact-action-row"><button className="button ghost" onClick={() => {
+      <div className="polaroid-placement-row"><button className="button ghost polaroid-reset-placement-button" onClick={() => {
         onPatch({ imageScale: 1, imageOffsetX: 0, imageOffsetY: 0, imageRotation: 0 });
         onPatchLayer({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" });
       }}>Reset Photo Placement</button></div>
@@ -5512,12 +5578,12 @@ function TornPaperInspector({
   return (
     <div className="expanded-effect-editor torn-paper-editor simple-effect-editor">
       <div className="effect-editor-heading">
-        <div><strong>Torn Paper</strong><small>Only the two controls that change the edge shape.</small></div>
+        <div><strong>Torn Paper</strong></div>
         <button className="button ghost compact" onClick={onReset}>Reset</button>
       </div>
       <FilterSlider label="Tear Depth" value={tearDepth} min={0} max={100} onChange={patchDepth} />
       <FilterSlider label="Ridge Count" value={ridgeCount} min={4} max={80} onChange={patchRidgeCount} />
-      <div className="compact-action-row"><button className="button secondary" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={14} /> Regenerate Tear</button></div>
+      <div className="torn-paper-action-row"><button className="button secondary torn-paper-regenerate-button" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={15} /> Regenerate Tear</button></div>
     </div>
   );
 }

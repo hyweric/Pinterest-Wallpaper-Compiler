@@ -285,9 +285,9 @@ function normalizeCanvas(canvas: CanvasSettings): CanvasSettings {
 }
 
 function normalizePaperFrameType(input: string | undefined): PaperFrameEffect["type"] {
-  if (input === "none" || input === "clean" || input === "polaroid" || input === "torn") return input;
+  if (input === "none" || input === "polaroid" || input === "torn") return input;
+  if (input === "clean" || input === "clean-paper" || input === "photo-print" || input === "newsprint" || input === "newspaper-cutout") return "polaroid";
   if (input === "deckle" || input === "deckle-edge" || input === "torn-paper") return "torn";
-  if (input === "newsprint" || input === "newspaper-cutout" || input === "clean-paper" || input === "photo-print") return "clean";
   return "none";
 }
 
