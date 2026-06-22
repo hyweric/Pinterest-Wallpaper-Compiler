@@ -12,13 +12,13 @@ test("phase 22.3.8 removes Clean Paper and keeps only Polaroid and Torn Paper fr
   assert.match(renderer, /<option value="torn">Torn Paper<\/option>/);
 });
 
-test("phase 22.3.8 replaces texture slider with paper or crumpled paper choices", async () => {
+test("phase 22.3.8 replaces texture slider with curated paper texture choices", async () => {
   const renderer = await source("src/renderer/main.tsx");
   assert.doesNotMatch(renderer, /FilterSlider label="Texture"/);
   assert.match(renderer, /<label>Texture<select/);
   assert.match(renderer, /<option value="paper">Paper<\/option>/);
   assert.match(renderer, /<option value="crumpled-paper">Crumpled Paper<\/option>/);
-  assert.match(renderer, /function patchFrameTexture\(type: "paper" \| "crumpled-paper"\)/);
+  assert.match(renderer, /function patchFrameTexture\(type: "none" \| "paper" \| "crumpled-paper"\)/);
   assert.match(renderer, /surfaceDefaultsForType\(type\)/);
 });
 

@@ -33,7 +33,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
-  Unlock,
   Upload,
   Wallpaper
 } from "lucide-react";
@@ -4073,12 +4072,6 @@ function App() {
                     <div className={`on-canvas-layer-controls ${selected ? "visible" : ""}`} onPointerDown={(event) => event.stopPropagation()}>
                       <button
                         className="tooltip-anchor"
-                        data-tooltip={layer.locked ? "Unlock layer" : "Lock layer"}
-                        aria-label={layer.locked ? "Unlock layer" : "Lock layer"}
-                        onClick={(event) => { event.stopPropagation(); toggleLayerLock(layer.id); }}
-                      >{layer.locked ? <Unlock size={14} /> : <Lock size={14} />}</button>
-                      <button
-                        className="tooltip-anchor"
                         data-tooltip="Hide layer"
                         aria-label="Hide layer"
                         onClick={(event) => { event.stopPropagation(); toggleLayerVisibility(layer.id); }}
@@ -4531,23 +4524,24 @@ function CanvasSurfaceOverlay({ canvas, customTextures }: { canvas: CanvasSettin
 
 function FrameSurfaceTextureOverlay({ layer, width, height, textureIntensity }: { layer: PlaceholderLayer; width: number; height: number; textureIntensity: number; customTextures: WallpaperProject["customTextures"] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const textureType: PaperTextureEffect["type"] = layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  const textureType: PaperTextureEffect["type"] = layer.effects.paper.enabled === false || layer.effects.paper.type === "none" ? "none" : layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  const textureVisible = textureType !== "none" && textureIntensity > 0;
   const paper = normalizeSurfaceEffect({
     ...layer.effects.paper,
-    enabled: true,
-    type: textureType,
+    enabled: textureVisible,
+    type: textureVisible ? textureType : "none",
     customTextureId: undefined,
-    intensity: Math.max(textureType === "crumpled-paper" ? 100 : 92, textureIntensity),
-    opacity: Math.max(textureType === "crumpled-paper" ? 0.9 : 0.74, textureIntensity / 100),
+    intensity: textureVisible ? Math.max(textureType === "crumpled-paper" ? 100 : 92, textureIntensity) : 0,
+    opacity: textureVisible ? Math.max(textureType === "crumpled-paper" ? 0.9 : 0.74, textureIntensity / 100) : 0,
     blendMode: "multiply",
-    noise: Math.max(layer.effects.paper.noise ?? 0, textureType === "crumpled-paper" ? 92 : 78),
-    roughness: Math.max(layer.effects.paper.roughness ?? 0, textureType === "crumpled-paper" ? 96 : 78),
-    tone: layer.effects.paper.tone || (textureType === "crumpled-paper" ? -4 : 6)
+    noise: textureVisible ? Math.max(layer.effects.paper.noise ?? 0, textureType === "crumpled-paper" ? 92 : 78) : 0,
+    roughness: textureVisible ? Math.max(layer.effects.paper.roughness ?? 0, textureType === "crumpled-paper" ? 96 : 78) : 0,
+    tone: textureVisible ? layer.effects.paper.tone || (textureType === "crumpled-paper" ? -4 : 6) : 0
   });
 
   useEffect(() => {
     const target = canvasRef.current;
-    if (!target || !surfaceEffectIsVisible(paper)) return;
+    if (!target || !textureVisible || !surfaceEffectIsVisible(paper)) return;
     let canceled = false;
     let frame: number | undefined;
     frame = window.requestAnimationFrame(() => {
@@ -4575,7 +4569,7 @@ function FrameSurfaceTextureOverlay({ layer, width, height, textureIntensity }: 
     paper.tone,
   ]);
 
-  if (!surfaceEffectIsVisible(paper)) return null;
+  if (!textureVisible || !surfaceEffectIsVisible(paper)) return null;
   return <canvas ref={canvasRef} className="paper-frame-texture" aria-hidden="true" style={{ width, height, mixBlendMode: "multiply" }} />;
 }
 
@@ -4767,7 +4761,6 @@ function ContextToolbar({
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer up" aria-label="Move layer up" disabled={layer.locked} onClick={() => onOrder("forward")}><LayerOrderIcon direction="up" /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer down" aria-label="Move layer down" disabled={layer.locked} onClick={() => onOrder("backward")}><LayerOrderIcon direction="down" /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Duplicate layer" aria-label="Duplicate layer" disabled={layer.locked} onClick={onDuplicate}><Copy size={15} /></button>
-        <button className="icon-button tooltip-anchor" data-tooltip="Lock layer" aria-label="Lock layer" disabled={layer.locked} onClick={() => onPatch({ locked: true })}><Lock size={15} /></button>
       </div>
     </div>
   );
@@ -5378,8 +5371,28 @@ function Properties({
     onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
   }
 
-  const frameTextureType: "paper" | "crumpled-paper" = layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
-  function patchFrameTexture(type: "paper" | "crumpled-paper") {
+  const frameTextureType: "none" | "paper" | "crumpled-paper" = layer.effects.paper.enabled === false || layer.effects.paper.type === "none" ? "none" : layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  function patchFrameTexture(type: "none" | "paper" | "crumpled-paper") {
+    if (type === "none") {
+      const nextPaperFrame = { ...activeLayer.effects.paperFrame, textureIntensity: 0 };
+      onPatch({
+        effects: {
+          ...activeLayer.effects,
+          paper: {
+            ...activeLayer.effects.paper,
+            enabled: false,
+            type: "none",
+            customTextureId: undefined,
+            intensity: 0,
+            opacity: 0
+          },
+          paperFrame: nextPaperFrame,
+          polaroid: normalizePolaroidEffect({ ...polaroid, grain: 0, warmth: 0 }, nextPaperFrame, activeLayer.effects.innerShadow),
+          tornPaper: normalizeTornPaperEffect({ ...tornPaper, grain: 0, wrinkles: 0, fibers: 0 }, nextPaperFrame, activeLayer.effects.innerShadow)
+        }
+      });
+      return;
+    }
     const textureAmount = type === "crumpled-paper" ? 92 : 78;
     const surfaceDefaults = surfaceDefaultsForType(type) ?? {};
     const nextPaperFrame = { ...activeLayer.effects.paperFrame, textureIntensity: textureAmount };
@@ -5461,7 +5474,7 @@ function Properties({
           {frameType !== "none" && (
             <div className="simple-effect-stack">
               <label>Paper color<input type="color" value={frameType === "polaroid" || frameType === "clean" ? polaroid.frameColor : frameType === "torn" ? tornPaper.paperColor : layer.effects.paperFrame.paperColor} onChange={(event) => frameType === "polaroid" || frameType === "clean" ? patchPolaroid({ frameColor: event.target.value }) : frameType === "torn" ? patchTornPaper({ paperColor: event.target.value }) : patchPaperFrame({ paperColor: event.target.value })} /></label>
-              <label>Texture<select value={frameTextureType} onChange={(event) => patchFrameTexture(event.target.value as "paper" | "crumpled-paper")}><option value="paper">Paper</option><option value="crumpled-paper">Crumpled Paper</option></select></label>
+              <label>Texture<select value={frameTextureType} onChange={(event) => patchFrameTexture(event.target.value as "none" | "paper" | "crumpled-paper")}><option value="none">None</option><option value="paper">Paper</option><option value="crumpled-paper">Crumpled Paper</option></select></label>
               {(frameType === "polaroid" || frameType === "clean") && (
                 <PolaroidInspector
                   effect={polaroid}

@@ -38,7 +38,7 @@ test("phase 22.3.10 strengthens visible frame texture", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const styles = await source("src/renderer/styles.css");
 
-  assert.match(renderer, /intensity:\s*Math\.max\(textureType === "crumpled-paper" \? 100 : 92, textureIntensity\)/);
-  assert.match(renderer, /opacity:\s*Math\.max\(textureType === "crumpled-paper" \? 0\.9 : 0\.74, textureIntensity \/ 100\)/);
+  assert.match(renderer, /intensity:\s*textureVisible \? Math\.max\(textureType === "crumpled-paper" \? 100 : 92, textureIntensity\) : 0/);
+  assert.match(renderer, /opacity:\s*textureVisible \? Math\.max\(textureType === "crumpled-paper" \? 0\.9 : 0\.74, textureIntensity \/ 100\) : 0/);
   assert.match(styles, /\.paper-frame\.polaroid \.paper-frame-texture \{[\s\S]*opacity:\s*1;/);
 });

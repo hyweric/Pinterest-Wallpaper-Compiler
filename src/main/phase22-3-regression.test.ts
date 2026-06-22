@@ -21,8 +21,7 @@ test("phase 22.3.1 quick canvas toolbar is compact but keeps layer controls", as
   assert.match(renderer, /aria-label="Move layer up"/);
   assert.match(renderer, /aria-label="Move layer down"/);
   assert.match(renderer, /aria-label="Duplicate layer"/);
-  assert.match(renderer, /aria-label="Hide layer"/);
-  assert.match(renderer, /aria-label="Lock layer"/);
+  assert.doesNotMatch(renderer.match(/function ContextToolbar[\s\S]*?function CropToolbar/)?.[0] ?? "", /aria-label="Lock layer"/);
   assert.doesNotMatch(renderer, /<button disabled=\{layer\.locked\} onClick=\{\(\) => onPatch\(\{ crop: \{ offsetX: 0, offsetY: 0, zoom: 1 \}, cropMode: "original"/);
   assert.match(styles, /\.context-toolbar\.compact-context-toolbar \{[\s\S]*max-width: min\(560px, calc\(100vw - 56px\)\)/);
   assert.match(styles, /\.workspace-fixed-controls \{[\s\S]*width: auto;/);

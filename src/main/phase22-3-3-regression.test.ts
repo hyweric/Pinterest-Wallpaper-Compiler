@@ -12,7 +12,7 @@ describe("phase 22.3.3 toolbar and dropdown polish", () => {
     assert.match(toolbar, /aria-label="Move layer up"/);
     assert.match(toolbar, /aria-label="Move layer down"/);
     assert.match(toolbar, /aria-label="Duplicate layer"/);
-    assert.match(toolbar, /aria-label="Lock layer"/);
+    assert.doesNotMatch(toolbar, /aria-label="Lock layer"/);
     assert.doesNotMatch(toolbar, /aria-label="Hide layer"/);
     assert.doesNotMatch(toolbar, /data-tooltip="Hide layer"/);
   });

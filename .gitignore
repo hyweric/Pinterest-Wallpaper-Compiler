@@ -4,4 +4,3 @@ release/
 .DS_Store
 npm-debug.log*
 *.log
-node_modules
