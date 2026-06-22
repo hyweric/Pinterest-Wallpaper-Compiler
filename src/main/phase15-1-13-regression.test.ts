@@ -17,7 +17,7 @@ test("macOS wallpaper sets are versioned, staged, and finalized atomically", asy
   assert.match(main, /await rename\(session\.stagingPath, session\.finalPath\)/);
   assert.match(sets, /uniqueWallpaperSetPath/);
   assert.match(renderer, /No incomplete folder was published/);
-  assert.match(renderer, /max="500"/);
+  assert.ok(renderer.includes('<SoftNumberInput value={state.count} min={1} max={500}'));
 });
 
 test("Generate and Apply opens set creation for manual inactive-Space requests", async () => {

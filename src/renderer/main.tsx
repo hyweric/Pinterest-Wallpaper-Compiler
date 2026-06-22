@@ -541,6 +541,33 @@ function applyCombinationToProject(current: WallpaperProject, combination: Gener
   };
 }
 
+
+function notifySoftNumberConstraint(message: string) {
+  window.dispatchEvent(new CustomEvent("pwc-soft-number-notice", { detail: message }));
+}
+
+function SoftNumberNotice() {
+  const [notice, setNotice] = useState<string | undefined>();
+  const timerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const onNotice = (event: Event) => {
+      const text = event instanceof CustomEvent && typeof event.detail === "string" ? event.detail : "Check the minimum value.";
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+      setNotice(text);
+      timerRef.current = window.setTimeout(() => setNotice(undefined), 1800);
+    };
+    window.addEventListener("pwc-soft-number-notice", onNotice);
+    return () => {
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current);
+      window.removeEventListener("pwc-soft-number-notice", onNotice);
+    };
+  }, []);
+
+  if (!notice) return null;
+  return createPortal(<div className="soft-number-notice" role="status">{notice}</div>, document.body);
+}
+
 function GlobalTooltip() {
   const [tooltip, setTooltip] = useState<{ text: string; shortcut?: string; left: number; top: number; placement: "top" | "bottom" }>();
   const timerRef = useRef<number | undefined>(undefined);
@@ -4186,6 +4213,8 @@ function App() {
         </div>
       </aside>
 
+      <SoftNumberNotice />
+
       {pinterestDialog.open && (
         <PinterestDialog
           state={pinterestDialog}
@@ -4936,7 +4965,7 @@ function ExportSetDialog({
 
             <div className="export-set-grid">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
-              <label>Variations<input type="number" min="1" max="500" value={state.count} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, count: clamp(Number(event.target.value), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
+              <label>Variations<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
               <div className="format-fixed-note"><span>Format</span><strong>PNG</strong></div>
             </div>
 
@@ -5126,7 +5155,7 @@ function CanvasDesignPanel({
       <details>
         <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
-        <div className="two-col"><label>Width<input type="number" min="64" value={draftWidth} onChange={(event) => changeWidth(Number(event.target.value))} /></label><label>Height<input type="number" min="64" value={draftHeight} onChange={(event) => changeHeight(Number(event.target.value))} /></label></div>
+        <div className="two-col"><label>Width<SoftNumberInput value={draftWidth} min={64} onCommit={changeWidth} /></label><label>Height<SoftNumberInput value={draftHeight} min={64} onCommit={changeHeight} /></label></div>
         <label>Resize content<select value={resizeMode} onChange={(event) => setResizeMode(event.target.value as CanvasResizeMode)}><option value="keep">Keep positions</option><option value="scale">Scale proportionally</option><option value="center">Center content</option></select></label>
         <div className="compact-action-row three-up">
           <button className={lockAspect ? "button selected" : "button secondary"} onClick={() => setLockAspect((value) => !value)}>Lock Ratio</button>
@@ -5332,7 +5361,7 @@ function Properties({
         <details open>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
           <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
-          <div className="two-col"><label>Border<input type="number" min="0" value={layer.borderWidth} onChange={numeric("borderWidth")} /></label><label>Radius<input type="number" min="0" disabled={layer.maskShape !== "rounded"} value={layer.borderRadius} onChange={numeric("borderRadius")} /></label><label>Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<input type="number" min="0" max="1" step=".05" value={layer.borderOpacity} onChange={numeric("borderOpacity")} /></label></div>
+          <div className="two-col"><label>Border<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label>Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
           <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
         </details>
 
@@ -5348,7 +5377,7 @@ function Properties({
 
         <details>
           <summary>Frame Position <ChevronDown size={15} /></summary>
-          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<input type="number" min="16" value={Math.round(layer.width)} onChange={numeric("width")} /></label><label>Height<input type="number" min="16" value={Math.round(layer.height)} onChange={numeric("height")} /></label></div>
+          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>Height<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
           <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>← Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image →</button></div>
           <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
@@ -5496,6 +5525,90 @@ function TornPaperInspector({
   );
 }
 
+
+
+function formatSoftNumber(value: number, step?: number | string) {
+  if (!Number.isFinite(value)) return "";
+  const precision = typeof step === "number" && step > 0 && !Number.isInteger(step)
+    ? Math.min(4, String(step).split(".")[1]?.length ?? 0)
+    : 0;
+  return precision > 0 ? value.toFixed(precision).replace(/0+$/, "").replace(/\.$/, "") : String(Math.round(value));
+}
+
+function SoftNumberInput({
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  onCommit
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number | string;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const [text, setText] = useState(() => formatSoftNumber(value, step));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setText(formatSoftNumber(value, step));
+  }, [value, step, focused]);
+
+  function commit(raw = text) {
+    const trimmed = raw.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || !Number.isFinite(parsed)) {
+      setText(formatSoftNumber(value, step));
+      return;
+    }
+    let next = parsed;
+    if (min !== undefined && next < min) {
+      next = min;
+      notifySoftNumberConstraint(`At least ${formatSoftNumber(min, step)}.`);
+    }
+    if (max !== undefined && next > max) {
+      next = max;
+      notifySoftNumberConstraint(`At most ${formatSoftNumber(max, step)}.`);
+    }
+    onCommit(next);
+    setText(formatSoftNumber(next, step));
+  }
+
+  function handleChange(raw: string) {
+    setText(raw);
+    const parsed = Number(raw);
+    if (raw.trim() && Number.isFinite(parsed) && (min === undefined || parsed >= min) && (max === undefined || parsed <= max)) {
+      onCommit(parsed);
+    }
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      min={min}
+      max={max}
+      step={step}
+      value={text}
+      disabled={disabled}
+      onFocus={() => setFocused(true)}
+      onBlur={() => { setFocused(false); commit(); }}
+      onChange={(event) => handleChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+        if (event.key === "Escape") {
+          setText(formatSoftNumber(value, step));
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
 
 function FilterSlider({ label, value, min, max, step = 1, onChange }: { label: string; value: number; min: number; max: number; step?: number; onChange: (value: number) => void }) {
   const display = Number.isInteger(value) ? String(value) : value.toFixed(value < 1 ? 2 : 1).replace(/\.0$/, "");

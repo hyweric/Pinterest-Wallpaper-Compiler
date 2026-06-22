@@ -5574,3 +5574,40 @@ input[type="range"]::-moz-range-thumb {
 .context-toolbar-button-group.crop-actions button {
   min-width: 44px;
 }
+
+/* Phase 22.3.2: remove the extra backing rectangle behind Add Placeholder. */
+.minimal-toolbar .toolbar-create-actions {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  padding: 0 !important;
+}
+.minimal-toolbar .toolbar-create-actions .compact-top-action {
+  border: 1px solid rgba(43, 48, 58, 0.10);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 10px 24px rgba(80, 82, 86, 0.08);
+}
+.soft-number-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 34px;
+  z-index: 10000;
+  transform: translateX(-50%);
+  padding: 9px 13px;
+  border: 1px solid rgba(91, 126, 138, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #40505a;
+  box-shadow: 0 14px 36px rgba(35, 42, 50, 0.14);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+  animation: soft-number-notice-fade 1.8s ease forwards;
+}
+@keyframes soft-number-notice-fade {
+  0% { opacity: 0; transform: translate(-50%, 8px); }
+  12% { opacity: 1; transform: translate(-50%, 0); }
+  78% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, 8px); }
+}
