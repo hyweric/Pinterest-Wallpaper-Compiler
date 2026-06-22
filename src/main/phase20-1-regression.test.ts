@@ -41,7 +41,7 @@ test("Add Overlay now reuses canvas drop placement instead of a square contain f
 
 test("dropped transparent images and overlays get transparent, non-framed placement defaults", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  assert.match(renderer, /const overlayLike = sourceLooksLikeTransparentOverlay\(source\)/);
+  assert.match(renderer, /const overlayLike = sourceIsManagedOverlay\(source\)/);
   assert.match(renderer, /cropMode: "contain" as const/);
   assert.match(renderer, /backgroundColor: imageBackgroundColor\(layer\.effects\.backgroundColor, chosenDropImage\)/);
   assert.match(renderer, /backgroundColor: imageBackgroundColor\(layer\.effects\.backgroundColor, image\)/);

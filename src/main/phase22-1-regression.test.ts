@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-test("Phase 22.1 enriches imported image dimensions and uses them for dropped placeholder aspect ratio", async () => {
+test("Phase 22.2 keeps imported dimensions available but source drops use stable placeholder sizing", async () => {
   const main = await readFile(path.join(process.cwd(), "src/main/main.ts"), "utf8");
   const types = await readFile(path.join(process.cwd(), "src/shared/types.ts"), "utf8");
   const drop = await readFile(path.join(process.cwd(), "src/shared/drop-placement.ts"), "utf8");
@@ -14,14 +14,12 @@ test("Phase 22.1 enriches imported image dimensions and uses them for dropped pl
   assert.match(main, /function imageSizeForFile/);
   assert.match(main, /function enrichImportedImageDimensions/);
   assert.match(drop, /aspectRatio\?: number/);
-  assert.match(drop, /Math\.sqrt\(area \* aspectRatio\)/);
   assert.match(renderer, /function sourcePreferredAspectRatio/);
   assert.match(renderer, /async function decodedImageAspectRatio/);
   assert.match(renderer, /const chosenDropImage = randomImageFromSource\(source\)/);
-  assert.match(renderer, /const chosenAspect = await decodedImageAspectRatio\(chosenDropImage\)/);
-  assert.match(renderer, /placementForCanvasDrop\(assigned\.canvas, point, createdLayerIds\.length, chosenAspect\)/);
+  assert.match(renderer, /placementForCanvasDrop\(next\.canvas, point, createdLayerIds\.length\)/);
   assert.match(renderer, /projectWithDropImageAssignment\(next, source, layer\.id, chosenDropImage\)/);
-  assert.match(renderer, /projectWithMeasuredImage\(assigned, chosenDropImage, chosenAspect\)/);
+  assert.doesNotMatch(renderer, /const chosenAspect = await decodedImageAspectRatio\(chosenDropImage\)/);
   assert.match(renderer, /cropMode: overlayLike \? "contain" as const : "cover" as const/);
 });
 
@@ -39,7 +37,7 @@ test("Phase 22.1 restores blue inspector styling and keeps the inspector header 
   assert.match(styles, /canvas-stage \{[\s\S]*overflow: auto/);
 });
 
-test("Phase 22.1 exposes previous and next image controls without replacing generation duplicate prevention", async () => {
+test("Phase 22.2 exposes previous and next image controls without replacing generation duplicate prevention", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   const selection = await readFile(path.join(process.cwd(), "src/shared/source-selection.ts"), "utf8");
 
@@ -53,12 +51,12 @@ test("Phase 22.1 exposes previous and next image controls without replacing gene
 });
 
 
-test("Phase 22.1.1 advances current desktop preview and left-aligns Add Placeholder", async () => {
+test("Phase 22.2 advances current desktop preview and left-aligns Add Placeholder", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   const styles = await readFile(path.join(process.cwd(), "src/renderer/styles.css"), "utf8");
 
   assert.match(renderer, /function advancePreviewProjectImages/);
-  assert.match(renderer, /const prepared = prepareGeneratedProject\(previewBase, previewBase\.templates\.activeTemplateId\)/);
+  assert.match(renderer, /const advanced = advancePreviewProjectImages\(previewBase\)/);
   assert.match(renderer, /generatedImageId: choice\.image\.id/);
   assert.match(styles, /Phase 22\.1\.1 hotfix/);
   assert.match(styles, /\.minimal-toolbar \.toolbar-create-actions \{[\s\S]*justify-self: start/);

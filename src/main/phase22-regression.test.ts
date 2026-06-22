@@ -64,10 +64,13 @@ test("Phase 22 compacts the image inspector, simplifies torn controls, and clean
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   const styles = await readFile(path.join(process.cwd(), "src/renderer/styles.css"), "utf8");
 
-  assert.match(renderer, /summary>Border and Shape[\s\S]*summary>Adjustments[\s\S]*summary>Frame Position[\s\S]*summary>Fit and Crop/s);
+  assert.match(renderer, /summary>Border and Shape[\s\S]*summary>Adjustments[\s\S]*summary>Frame Position/s);
+  assert.doesNotMatch(renderer, /summary>Fit and Crop/);
+  assert.doesNotMatch(renderer, /Lock frame ratio/);
   assert.doesNotMatch(renderer, /summary>Source <ChevronDown/);
   assert.doesNotMatch(renderer, /WallpaperPanel project=/);
-  assert.match(renderer, /FilterSlider label="Tearness"/);
+  assert.match(renderer, /FilterSlider label="Tear Depth"/);
+  assert.match(renderer, /FilterSlider label="Ridge Count"/);
   assert.doesNotMatch(renderer, /Link all edges/);
   assert.doesNotMatch(renderer, /Texture seed/);
   assert.doesNotMatch(renderer, /Enable surface texture/);
@@ -78,6 +81,8 @@ test("Phase 22 compacts the image inspector, simplifies torn controls, and clean
   assert.match(renderer, /LayerOrderIcon direction="down"/);
   assert.match(styles, /accent-color: #8db7c1/);
   assert.match(styles, /panel-tabs\.inspector-tabs button\.active/);
+  assert.doesNotMatch(renderer, /type="checkbox"/);
+  assert.doesNotMatch(renderer, /Delete layer/);
 });
 
 test("Phase 22 still avoids duplicate shared-source images across a wallpaper until unique choices are exhausted", () => {

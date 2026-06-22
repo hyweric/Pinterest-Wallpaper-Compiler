@@ -4,38 +4,28 @@ import { readFile } from "node:fs/promises";
 
 const source = (path: string) => readFile(path, "utf8");
 
-test("expanded Polaroid inspector exposes all requested collapsible sections and controls", async () => {
+test("expanded Polaroid inspector is reduced to direct-canvas photo positioning and a few frame controls", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf("function PolaroidInspector(");
-  const end = renderer.indexOf("function ShadowInspector(", start);
+  const end = renderer.indexOf("function TornPaperInspector(", start);
   const panel = renderer.slice(start, end);
-  for (const section of ["Layout", "Photo Placement", "Frame", "Paper Surface", "Shadows", "Caption"]) {
-    assert.match(panel, new RegExp(`<summary>${section}`));
-  }
-  for (const label of [
-    "Top border", "Right border", "Bottom border", "Left border", "Caption area", "Image inset",
-    "Crop mode", "Edit the photo directly on the canvas", "Drag inside the photo to move it",
-    "Frame rotation", "Frame color", "Frame opacity", "Corner radius", "Paper grain", "Paper warmth",
-    "Caption text", "Font", "Size", "Alignment", "Position X", "Position Y"
-  ]) {
+
+  for (const label of ["Polaroid", "Canvas controls do the photo positioning", "Border Size", "Corner Radius", "Reset Photo Placement", "Reset"]) {
     assert.match(panel, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(panel, /Reset Polaroid/);
-  assert.match(panel, /Reset Photo Placement/);
+  for (const removed of ["Top border", "Right border", "Bottom border", "Left border", "Paper Surface", "Shadows", "Caption", "Show caption", "Frame opacity", "Paper warmth"]) {
+    assert.doesNotMatch(panel, new RegExp(removed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
   assert.match(panel, /polaroid-direct-edit-note/);
-  assert.match(panel, /Reset Caption/);
 });
 
-test("drop and inner shadow editors expose position, blur, spread, opacity, and color", async () => {
+test("drop shadow editing is simplified to one slider and no checkbox shadow editor", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  const start = renderer.indexOf("function ShadowInspector(");
-  const end = renderer.indexOf("function FilterSlider(", start);
-  const panel = renderer.slice(start, end);
-  for (const control of [">X<", ">Y<", ">Blur<", ">Spread<", ">Opacity<", ">Color<"]) {
-    assert.match(panel, new RegExp(control));
-  }
-  assert.match(renderer, /label="Drop shadow"/);
-  assert.match(renderer, /label="Inner shadow"/);
+  assert.match(renderer, /function patchSimpleDropShadow/);
+  assert.match(renderer, /FilterSlider label="Drop Shadow"/);
+  assert.doesNotMatch(renderer, /function ShadowInspector/);
+  assert.doesNotMatch(renderer, /type="checkbox"/);
+  assert.doesNotMatch(renderer, /label="Inner shadow"/);
 });
 
 test("editor and export both render Polaroid image transforms, warmth, caption, and shadows", async () => {

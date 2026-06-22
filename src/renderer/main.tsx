@@ -112,7 +112,7 @@ import {
   wallpaperTargetModeNeedsInactiveSpaces
 } from "../shared/wallpaper";
 import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
-import { imageBackgroundColor, sourceLooksLikeTransparentOverlay } from "../shared/image-transparency";
+import { imageBackgroundColor, sourceIsManagedOverlay } from "../shared/image-transparency";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
@@ -498,32 +498,34 @@ function prepareGeneratedProjectWithUsed(current: WallpaperProject, templateId: 
 }
 
 function advancePreviewProjectImages(current: WallpaperProject) {
-  const sourceById = new Map(current.sources.map((source) => [source.id, source]));
+  const usedThisPreview = new Set<string>();
   const layers = current.layers.map((layer) => {
     if (layer.hidden) return layer;
     const pool = collectLayerImages(current, layer);
-    if (pool.length < 2) return layer;
-    const currentImageId = layer.generatedImageId ?? layer.selectedImageId ?? getImageForLayer(current, layer)?.id ?? pool[0].image.id;
-    const currentIndex = pool.findIndex((item) => item.image.id === currentImageId);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % pool.length : 0;
-    const choice = pool[nextIndex];
-    const source = sourceById.get(choice.source.id);
-    const nextSourceState = source ? {
-      ...layer.sourceState,
-      sourceIds: layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : [source.id],
-      mode: layer.sourceState.mode === "fixed" ? layer.sourceState.mode : "shuffle" as ImageSelectionMode,
-      currentIndex: nextIndex,
-      shuffleQueue: layer.sourceState.shuffleQueue.filter((id) => id !== choice.image.id),
-      usedImageIds: [...new Set([...layer.sourceState.usedImageIds, choice.image.id])],
-      preventDuplicates: pool.length > 1
-    } : layer.sourceState;
+    if (pool.length === 0) return layer;
+    const currentImageId = layer.generatedImageId ?? layer.selectedImageId ?? getImageForLayer(current, layer)?.id;
+    const alternatives = pool.filter((item) => pool.length <= 1 || item.image.id !== currentImageId);
+    const nonDuplicateAlternatives = alternatives.filter((item) => !usedThisPreview.has(item.image.id));
+    const nonDuplicatePool = pool.filter((item) => !usedThisPreview.has(item.image.id));
+    const candidates = nonDuplicateAlternatives.length ? nonDuplicateAlternatives : alternatives.length ? alternatives : nonDuplicatePool.length ? nonDuplicatePool : pool;
+    const choice = candidates[0];
+    if (!choice) return layer;
+    usedThisPreview.add(choice.image.id);
+    const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : [choice.source.id];
     return {
       ...layer,
       sourceId: choice.source.id,
       selectedImageId: layer.sourceState.mode === "fixed" ? choice.image.id : layer.selectedImageId,
       generatedImageId: choice.image.id,
       cropMode: "cover" as const,
-      sourceState: nextSourceState
+      sourceState: {
+        ...layer.sourceState,
+        sourceIds,
+        mode: layer.sourceState.mode === "fixed" ? "fixed" as const : "shuffle" as const,
+        shuffleQueue: pool.map((item) => item.image.id).filter((id) => id !== choice.image.id),
+        usedImageIds: [...new Set([...layer.sourceState.usedImageIds, choice.image.id])],
+        preventDuplicates: pool.length > 1
+      }
     };
   });
   return normalizeProject({ ...current, layers });
@@ -1655,6 +1657,8 @@ function App() {
         selectedImageId: eligibleImages.length === 1 ? chosen.id : undefined,
         generatedImageId: chosen.id,
         cropMode: "cover" as const,
+        crop: { offsetX: 0, offsetY: 0, zoom: 1 },
+        alignment: "center" as const,
         sourceState: {
           ...item.sourceState,
           sourceIds: [source.id],
@@ -1823,9 +1827,11 @@ function App() {
     for (const source of merged.resolved) {
       const chosenDropImage = randomImageFromSource(source);
       if (!chosenDropImage) continue;
-      const overlayLike = sourceLooksLikeTransparentOverlay(source);
-      const chosenAspect = await decodedImageAspectRatio(chosenDropImage) ?? sourcePreferredAspectRatio(source);
-      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length, chosenAspect);
+      const overlayLike = sourceIsManagedOverlay(source);
+      // Dropped sources should behave like “Add Placeholder” first, then source assignment.
+      // The starting image is still chosen once at drop time and locked into generatedImageId,
+      // but the frame geometry stays consistent instead of changing with random image ratios.
+      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length);
       const layer = createPlaceholder(next.canvas, next.layers.length + 1);
       Object.assign(layer, placement, { name: source.name, cropMode: "cover" as const, maskShape: "rounded" as const });
       if (overlayLike) {
@@ -1848,14 +1854,15 @@ function App() {
         next = { ...next, layers: next.layers.filter((item) => item.id !== layer.id) };
         continue;
       }
-      const finalPlacement = placementForCanvasDrop(assigned.canvas, point, createdLayerIds.length, chosenAspect);
-      const measuredAssigned = projectWithMeasuredImage(assigned, chosenDropImage, chosenAspect);
+      const finalPlacement = placementForCanvasDrop(assigned.canvas, point, createdLayerIds.length);
       next = {
-        ...measuredAssigned,
-        layers: measuredAssigned.layers.map((item) => item.id === layer.id ? {
+        ...assigned,
+        layers: assigned.layers.map((item) => item.id === layer.id ? {
           ...item,
           ...finalPlacement,
           cropMode: overlayLike ? "contain" as const : "cover" as const,
+          crop: { offsetX: 0, offsetY: 0, zoom: 1 },
+          alignment: "center" as const,
           maskShape: overlayLike ? "rectangle" as const : "rounded" as const,
           selectedImageId: overlayLike ? chosenDropImage.id : item.selectedImageId,
           generatedImageId: chosenDropImage.id,
@@ -2281,12 +2288,16 @@ function App() {
         targetTemplateMode: "single-template"
       }
     });
-    // Preview is still a generation action: resolve every assigned source pool
-    // before rendering, then constrain only the native apply target. Do not
-    // manually advance first and then run generation again; that can bounce
-    // two-image sources back to the same image the user already saw.
-    const prepared = prepareGeneratedProject(previewBase, previewBase.templates.activeTemplateId);
-    const ok = await applyCandidate(normalizeProject(prepared.project), prepared.combination, {
+    // Preview on current desktop is an intentional one-step preview advance.
+    // Keep it separate from generic generation so a source-dropped layer cannot
+    // select the same image again or advance twice before the render.
+    const advanced = advancePreviewProjectImages(previewBase);
+    const assignments = Object.fromEntries(
+      advanced.layers
+        .map((layer) => [layer.id, layer.generatedImageId ?? layer.selectedImageId] as const)
+        .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
+    );
+    const ok = await applyCandidate(advanced, createCombination(assignments, advanced.templates.activeTemplateId), {
       label: "Previewed on current desktop"
     });
     if (ok) setMessage(`Preview applied to current desktop at ${new Date().toLocaleTimeString()}.`);
@@ -3850,10 +3861,7 @@ function App() {
           </div>
         </header>
 
-        <div
-          ref={stageRef}
-          className="canvas-stage"
-        >
+        <div className="workspace-fixed-controls">
           {cropModeLayerId && (
             <div className="floating-canvas-status cropping">
               <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>
@@ -3875,6 +3883,12 @@ function App() {
               onOrder={reorderSelectedLayer}
             />
           ) : null}
+        </div>
+
+        <div
+          ref={stageRef}
+          className="canvas-stage"
+        >
           <div
             ref={canvasZoomShellRef}
             className="canvas-zoom-shell"
@@ -4159,10 +4173,7 @@ function App() {
           layer={selectedLayer}
           activeTab={inspectorTab}
           sources={project.sources}
-          cropMode={cropModeLayerId === selectedLayer?.id}
           onPatch={(patch) => patchSelectedLayer(patch)}
-          onDelete={deleteSelectedLayer}
-          onCrop={() => selectedLayer && setCropModeLayerId(cropModeLayerId === selectedLayer.id ? undefined : selectedLayer.id)}
           onResetFrame={resetFrame}
           onMatchAspect={(layer) => void matchFrameToImage(layer)}
           onRegenerate={(layer) => {
@@ -4654,10 +4665,7 @@ function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onB
 function ContextToolbar({
   layer,
   onPatch,
-  onCrop,
-  onDuplicate,
-  onDelete,
-  onOrder
+  onCrop
 }: {
   layer: PlaceholderLayer;
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
@@ -4667,18 +4675,11 @@ function ContextToolbar({
   onOrder: (action: "front" | "back" | "forward" | "backward") => void;
 }) {
   return (
-    <div className="context-toolbar">
-      <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
-      <button disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
-      <button disabled={layer.locked} onClick={() => onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, cropMode: "original", alignment: "center" })}>Original</button>
+    <div className="context-toolbar compact-context-toolbar" aria-label="Selected image quick controls">
+      <button className={layer.cropMode === "cover" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
+      <button className={layer.cropMode === "contain" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
       <button disabled={layer.locked} onClick={onCrop}>Crop</button>
       <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
-      <button onClick={() => onPatch({ locked: !layer.locked })}>{layer.locked ? <Lock size={16} /> : <Unlock size={16} />}</button>
-      <button onClick={() => onPatch({ hidden: !layer.hidden })}>{layer.hidden ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-      <button onClick={onDuplicate}><Copy size={16} /></button>
-      <button disabled={layer.locked} onClick={() => onOrder("front")}><BringToFront size={16} /></button>
-      <button disabled={layer.locked} onClick={() => onOrder("back")}><SendToBack size={16} /></button>
-      <button disabled={layer.locked} className="danger" onClick={onDelete}><Trash2 size={16} /></button>
     </div>
   );
 }
@@ -4749,7 +4750,6 @@ function LayerContextMenu({
         <button onClick={() => onOrder("backward")}><LayerOrderIcon direction="down" /> Send Backward</button>
         <button onClick={() => onOrder("back")}><SendToBack size={15} /> Send to Back</button>
         <button onClick={onDuplicate}><Copy size={15} /> Duplicate</button>
-        <button className="danger" onClick={onDelete} disabled={layer.locked && selectionCount === 1}><Trash2 size={15} /> Delete</button>
       </div>
     </>
   );
@@ -4942,8 +4942,7 @@ function ExportSetDialog({
             </div>
 
             <div className="export-options">
-              <label><input type="checkbox" checked={state.avoidRepeats} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, avoidRepeats: event.target.checked }))} /> Avoid repeated combinations when possible</label>
-              <label><input type="checkbox" checked={state.advanceLiveState} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, advanceLiveState: event.target.checked }))} /> Continue the source shuffle state after export</label>
+              <div className="toggle-row compact-toggle-row"><button className={state.avoidRepeats ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button><button className={state.advanceLiveState ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, advanceLiveState: !current.advanceLiveState }))}>Advance shuffle state</button></div>
             </div>
 
             {(state.busy || totalFinished > 0) && <>
@@ -5196,24 +5195,18 @@ function Properties({
   layer,
   activeTab,
   sources,
-  cropMode,
   onPatch,
-  onDelete,
   onRegenerate,
   onStepImage,
-  onCrop,
   onResetFrame,
   onMatchAspect
 }: {
   layer?: PlaceholderLayer;
   activeTab: InspectorTab;
   sources: ImageSource[];
-  cropMode: boolean;
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
-  onDelete: () => void;
   onRegenerate: (layer: PlaceholderLayer) => void;
   onStepImage: (layer: PlaceholderLayer, direction: "previous" | "next") => void;
-  onCrop: () => void;
   onResetFrame: (layer: PlaceholderLayer) => void;
   onMatchAspect: (layer: PlaceholderLayer) => void;
 }) {
@@ -5274,14 +5267,10 @@ function Properties({
     if (patch.seed !== undefined) tornPaper.seed = Math.max(1, Math.floor(patch.seed));
     onPatch({ effects: { ...activeLayer.effects, paperFrame, polaroid, tornPaper } });
   }
-  function resetCrop() { onPatch({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" }); }
   const frameType = layer.effects.paperFrame.type;
   const polaroid = normalizePolaroidEffect(layer.effects.polaroid, layer.effects.paperFrame, layer.effects.innerShadow);
   function patchPolaroid(patch: Partial<PolaroidEffect>) {
     onPatch({ effects: { ...activeLayer.effects, polaroid: normalizePolaroidEffect({ ...polaroid, ...patch }, activeLayer.effects.paperFrame, activeLayer.effects.innerShadow) } });
-  }
-  function patchPolaroidShadow(kind: "dropShadow" | "innerShadow", patch: Partial<ShadowEffect>) {
-    patchPolaroid({ [kind]: { ...polaroid[kind], ...patch } } as Partial<PolaroidEffect>);
   }
   function patchPolaroidCaption(patch: Partial<PolaroidEffect["caption"]>) {
     patchPolaroid({ caption: { ...polaroid.caption, ...patch } });
@@ -5294,21 +5283,39 @@ function Properties({
   function patchTornPaper(patch: Partial<TornPaperEffect>, markCustom = true) {
     onPatch({ effects: { ...activeLayer.effects, tornPaper: normalizeTornPaperEffect({ ...tornPaper, ...patch, ...(markCustom && patch.presetId === undefined ? { presetId: "custom" } : {}) }, activeLayer.effects.paperFrame, activeLayer.effects.innerShadow) } });
   }
-  function patchTornPaperShadow(kind: "outerShadow" | "innerShadow", patch: Partial<ShadowEffect>) {
-    patchTornPaper({ [kind]: { ...tornPaper[kind], ...patch } } as Partial<TornPaperEffect>);
-  }
-  function patchTornPaperEdges(edges: TornPaperEffect["edges"]) {
-    patchTornPaper({ edges });
-  }
   function resetTornPaper() {
     const type: PaperFrameType = "torn";
     const defaults = createDefaultTornPaperEffect({ ...createDefaultPaperFrame(), type });
     onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
   }
 
+  function patchSimpleDropShadow(value: number) {
+    const strength = Math.max(0, Math.min(100, value));
+    const shadow: ShadowEffect = {
+      enabled: strength > 0,
+      x: 0,
+      y: Math.round(4 + strength * 0.18),
+      blur: Math.round(12 + strength * 0.48),
+      spread: 0,
+      opacity: Math.min(0.42, strength / 190),
+      color: "#0f172a"
+    };
+    onPatch({
+      shadow: strength > 0,
+      effects: {
+        ...activeLayer.effects,
+        innerShadow: false,
+        glow: false,
+        paperFrame: { ...activeLayer.effects.paperFrame, shadowStrength: strength },
+        polaroid: normalizePolaroidEffect({ ...polaroid, dropShadow: shadow, innerShadow: { ...polaroid.innerShadow, enabled: false } }, activeLayer.effects.paperFrame, false),
+        tornPaper: normalizeTornPaperEffect({ ...tornPaper, outerShadow: shadow, innerShadow: { ...tornPaper.innerShadow, enabled: false } }, activeLayer.effects.paperFrame, false)
+      }
+    });
+  }
+
   return (
     <section className="panel properties">
-      <div className="panel-title-row"><h2>{layer.name}</h2><button className="icon-button danger tooltip-anchor" data-tooltip="Delete layer" aria-label="Delete layer" onClick={onDelete}><Trash2 size={16} /></button></div>
+      <div className="panel-title-row"><h2>{layer.name}</h2></div>
 
       {activeTab === "image" && <>
         <details open>
@@ -5332,32 +5339,30 @@ function Properties({
           <summary>Frame Position <ChevronDown size={15} /></summary>
           <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<input type="number" min="16" value={Math.round(layer.width)} onChange={numeric("width")} /></label><label>Height<input type="number" min="16" value={Math.round(layer.height)} onChange={numeric("height")} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
-          <label className="toggle-setting"><input type="checkbox" checked={layer.keepAspectRatio} onChange={(event) => onPatch({ keepAspectRatio: event.target.checked })} /> Lock frame ratio</label>
-          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button></div>
-        </details>
-
-        <details>
-          <summary>Fit and Crop <ChevronDown size={15} /></summary>
-          <label>Fit<select value={layer.cropMode} onChange={(event) => onPatch({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
-          <label>Alignment<select value={layer.alignment} onChange={(event) => onPatch({ alignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>← Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image →</button></div>
-          <div className="compact-action-row"><button className={cropMode ? "button selected" : "button secondary"} onClick={onCrop}>{cropMode ? "Done Cropping" : "Crop"}</button><button className="button ghost" onClick={resetCrop}>Reset Crop</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
-          <FilterSlider label="Zoom" value={layer.crop.zoom} min={.1} max={6} step={.05} onChange={(value) => onPatch({ crop: { ...layer.crop, zoom: value } })} />
-          <div className="two-col"><label>Offset X<input type="number" value={layer.crop.offsetX} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetX: Number(event.target.value) } })} /></label><label>Offset Y<input type="number" value={layer.crop.offsetY} onChange={(event) => onPatch({ crop: { ...layer.crop, offsetY: Number(event.target.value) } })} /></label></div>
+          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
         </details>
       </>}
 
       {activeTab === "effects" && <>
         <details open>
-          <summary>Paper Frame <ChevronDown size={15} /></summary>
+          <summary>Paper <ChevronDown size={15} /></summary>
           <label>Style<select value={frameType === "deckle" ? "torn" : frameType === "newsprint" ? "clean" : frameType} onChange={(event) => patchPaperFrame({ type: event.target.value as PaperFrameType })}><option value="none">None</option><option value="clean">Clean Paper</option><option value="polaroid">Polaroid</option><option value="torn">Torn Paper</option></select></label>
+          {frameType !== "none" && (
+            <div className="simple-effect-stack">
+              <label>Paper color<input type="color" value={frameType === "polaroid" ? polaroid.frameColor : frameType === "torn" ? tornPaper.paperColor : layer.effects.paperFrame.paperColor} onChange={(event) => frameType === "polaroid" ? patchPolaroid({ frameColor: event.target.value }) : frameType === "torn" ? patchTornPaper({ paperColor: event.target.value }) : patchPaperFrame({ paperColor: event.target.value })} /></label>
+              <FilterSlider label="Wrinkles" value={frameType === "torn" ? tornPaper.wrinkles : frameType === "polaroid" ? polaroid.grain : layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => frameType === "torn" ? patchTornPaper({ wrinkles: value, grain: Math.round(value * .55), fibers: Math.round(value * .45) }) : frameType === "polaroid" ? patchPolaroid({ grain: value, warmth: Math.round(value * .12) }) : patchPaperFrame({ textureIntensity: value })} />
+            </div>
+          )}
+        </details>
+
+        <details open>
+          <summary>Frame Style <ChevronDown size={15} /></summary>
           {frameType === "polaroid" ? (
             <PolaroidInspector
               layer={layer}
               effect={polaroid}
               onPatch={patchPolaroid}
-              onPatchShadow={patchPolaroidShadow}
-              onPatchCaption={patchPolaroidCaption}
               onPatchLayer={onPatch}
               onReset={resetPolaroid}
             />
@@ -5365,34 +5370,21 @@ function Properties({
             <TornPaperInspector
               layer={layer}
               effect={tornPaper}
-              frameType={frameType}
               onPatch={patchTornPaper}
-              onPatchEdges={patchTornPaperEdges}
-              onPatchShadow={patchTornPaperShadow}
               onPatchLayer={onPatch}
               onReset={resetTornPaper}
             />
-          ) : frameType !== "none" && <>
-            <div className="two-col"><label>Paper<input type="color" value={layer.effects.paperFrame.paperColor} onChange={(event) => patchPaperFrame({ paperColor: event.target.value })} /></label><label>Border<input type="number" min="0" max="240" value={layer.effects.paperFrame.borderWidth} onChange={(event) => patchPaperFrame({ borderWidth: Number(event.target.value) })} /></label></div>
-            {frameType === "clean" && <FilterSlider label="Padding" value={layer.effects.paperFrame.innerPadding} min={0} max={120} onChange={(value) => patchPaperFrame({ innerPadding: value })} />}
-            <FilterSlider label="Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={(value) => patchPaperFrame({ shadowStrength: value })} />
-            <FilterSlider label="Texture" value={layer.effects.paperFrame.textureIntensity} min={0} max={100} onChange={(value) => patchPaperFrame({ textureIntensity: value })} />
-          </>}
+          ) : frameType === "clean" ? (
+            <p className="simple-effect-note">Clean Paper only needs color, wrinkles, and shadow.</p>
+          ) : (
+            <p className="simple-effect-note">Choose Clean Paper, Polaroid, or Torn Paper to show frame controls.</p>
+          )}
         </details>
 
-        <details>
+        <details open>
           <summary>Shadow and Blend <ChevronDown size={15} /></summary>
-          <div className="toggle-row"><button className={layer.shadow ? "toggle active" : "toggle"} onClick={() => onPatch({ shadow: !layer.shadow })}>Outer Shadow</button><button className={layer.effects.innerShadow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, innerShadow: !layer.effects.innerShadow } })}>Inner Shadow</button><button className={layer.effects.glow ? "toggle active" : "toggle"} onClick={() => onPatch({ effects: { ...layer.effects, glow: !layer.effects.glow } })}>Glow</button></div>
+          <FilterSlider label="Drop Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={patchSimpleDropShadow} />
           <label>Blend<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
-        </details>
-
-        <details>
-          <summary>Advanced Adjustments <ChevronDown size={15} /></summary>
-          <FilterSlider label="Exposure" value={layer.effects.filters.exposure} min={-20} max={20} onChange={(value) => patchFilters({ exposure: value, presetId: "custom" })} />
-          <FilterSlider label="Blur" value={layer.effects.filters.blur} min={0} max={16} onChange={(value) => patchFilters({ blur: value, presetId: "custom" })} />
-          <FilterSlider label="Sepia" value={layer.effects.filters.sepia} min={0} max={100} onChange={(value) => patchFilters({ sepia: value, presetId: "custom" })} />
-          <FilterSlider label="Mono" value={layer.effects.filters.grayscale} min={0} max={100} onChange={(value) => patchFilters({ grayscale: value, presetId: "custom" })} />
-          <FilterSlider label="Grain" value={layer.effects.filters.grain} min={0} max={100} onChange={(value) => patchFilters({ grain: value, presetId: "custom" })} />
         </details>
       </>}
     </section>
@@ -5403,203 +5395,102 @@ function PolaroidInspector({
   layer,
   effect,
   onPatch,
-  onPatchShadow,
-  onPatchCaption,
   onPatchLayer,
   onReset
 }: {
   layer: PlaceholderLayer;
   effect: PolaroidEffect;
   onPatch: (patch: Partial<PolaroidEffect>) => void;
-  onPatchShadow: (kind: "dropShadow" | "innerShadow", patch: Partial<ShadowEffect>) => void;
-  onPatchCaption: (patch: Partial<PolaroidEffect["caption"]>) => void;
   onPatchLayer: (patch: Partial<PlaceholderLayer>) => void;
   onReset: () => void;
 }) {
-  const number = (key: keyof Pick<PolaroidEffect, "borderTop" | "borderRight" | "borderBottom" | "borderLeft" | "captionHeight" | "imageInset">) =>
-    (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PolaroidEffect>);
+  const borderSize = Math.round((effect.borderTop + effect.borderRight + effect.borderLeft) / 3);
+  function patchBorderSize(value: number) {
+    const size = Math.max(0, Math.round(value));
+    onPatch({
+      borderTop: size,
+      borderRight: size,
+      borderLeft: size,
+      borderBottom: Math.round(size * 2.2),
+      captionHeight: Math.round(size * 1.2),
+      imageInset: size
+    });
+  }
 
   return (
-    <div className="expanded-effect-editor polaroid-editor">
+    <div className="expanded-effect-editor polaroid-editor simple-effect-editor">
       <div className="effect-editor-heading">
-        <div><strong>Polaroid Customization</strong><small>Frame and image settings are saved with this layer.</small></div>
-        <button className="button ghost compact" onClick={onReset}>Reset Polaroid</button>
+        <div><strong>Polaroid</strong><small>Simple frame controls. Move and crop the photo directly on the canvas.</small></div>
+        <button className="button ghost compact" onClick={onReset}>Reset</button>
       </div>
-
-      <details className="effect-subsection" open>
-        <summary>Layout <ChevronDown size={14} /></summary>
-        <div className="two-col">
-          <label>Top border<input type="number" min="0" max="1000" value={effect.borderTop} onChange={number("borderTop")} /></label>
-          <label>Right border<input type="number" min="0" max="1000" value={effect.borderRight} onChange={number("borderRight")} /></label>
-          <label>Bottom border<input type="number" min="0" max="1000" value={effect.borderBottom} onChange={number("borderBottom")} /></label>
-          <label>Left border<input type="number" min="0" max="1000" value={effect.borderLeft} onChange={number("borderLeft")} /></label>
-        </div>
-        <div className="two-col">
-          <label>Caption area<input type="number" min="0" max="1000" value={effect.captionHeight} onChange={number("captionHeight")} /></label>
-          <label>Image inset<input type="number" min="0" max="1000" value={effect.imageInset} onChange={number("imageInset")} /></label>
-        </div>
-      </details>
-
-      <details className="effect-subsection" open>
-        <summary>Photo Placement <ChevronDown size={14} /></summary>
-        <div className="polaroid-direct-edit-note">
-          <strong>Edit the photo directly on the canvas</strong>
-          <span>Drag inside the photo to move it. Drag any corner dot to resize it. Use the round top handle to rotate it. Drag the white frame area to move the complete Polaroid.</span>
-        </div>
-        <label>Crop mode<select value={layer.cropMode} onChange={(event) => onPatchLayer({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
-        <button className="button ghost full-width" onClick={() => {
-          onPatch({ imageScale: 1, imageOffsetX: 0, imageOffsetY: 0, imageRotation: 0 });
-          onPatchLayer({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" });
-        }}>Reset Photo Placement</button>
-      </details>
-
-      <details className="effect-subsection">
-        <summary>Frame <ChevronDown size={14} /></summary>
-        <FilterSlider label="Frame rotation" value={effect.frameRotation} min={-180} max={180} step={1} onChange={(value) => onPatch({ frameRotation: value })} />
-        <div className="two-col">
-          <label>Frame color<input type="color" value={effect.frameColor} onChange={(event) => onPatch({ frameColor: event.target.value })} /></label>
-          <label>Frame opacity<input type="number" min="0" max="1" step=".05" value={effect.frameOpacity} onChange={(event) => onPatch({ frameOpacity: Number(event.target.value) })} /></label>
-        </div>
-        <FilterSlider label="Corner radius" value={effect.cornerRadius} min={0} max={160} step={1} onChange={(value) => onPatch({ cornerRadius: value })} />
-      </details>
-
-      <details className="effect-subsection">
-        <summary>Paper Surface <ChevronDown size={14} /></summary>
-        <FilterSlider label="Paper grain" value={effect.grain} min={0} max={100} onChange={(value) => onPatch({ grain: value })} />
-        <FilterSlider label="Paper warmth" value={effect.warmth} min={-100} max={100} onChange={(value) => onPatch({ warmth: value })} />
-      </details>
-
-      <details className="effect-subsection">
-        <summary>Shadows <ChevronDown size={14} /></summary>
-        <ShadowInspector label="Drop shadow" effect={effect.dropShadow} onPatch={(patch) => onPatchShadow("dropShadow", patch)} />
-        <ShadowInspector label="Inner shadow" effect={effect.innerShadow} onPatch={(patch) => onPatchShadow("innerShadow", patch)} />
-      </details>
-
-      <details className="effect-subsection">
-        <summary>Caption <ChevronDown size={14} /></summary>
-        <label className="toggle-setting"><input type="checkbox" checked={effect.caption.enabled} onChange={(event) => onPatchCaption({ enabled: event.target.checked })} /> Show caption</label>
-        <label>Caption text<textarea value={effect.caption.text} onChange={(event) => onPatchCaption({ text: event.target.value })} placeholder="Add a caption…" /></label>
-        <label>Font<select value={effect.caption.fontFamily} onChange={(event) => onPatchCaption({ fontFamily: event.target.value })}><option value="Avenir Next">Avenir Next</option><option value="Helvetica Neue">Helvetica Neue</option><option value="Georgia">Georgia</option><option value="Courier New">Courier New</option><option value="system-ui">System</option></select></label>
-        <div className="two-col">
-          <label>Size<input type="number" min="6" max="240" value={effect.caption.fontSize} onChange={(event) => onPatchCaption({ fontSize: Number(event.target.value) })} /></label>
-          <label>Weight<select value={effect.caption.fontWeight} onChange={(event) => onPatchCaption({ fontWeight: Number(event.target.value) })}><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semibold</option><option value="700">Bold</option></select></label>
-          <label>Color<input type="color" value={effect.caption.color} onChange={(event) => onPatchCaption({ color: event.target.value })} /></label>
-          <label>Alignment<select value={effect.caption.alignment} onChange={(event) => onPatchCaption({ alignment: event.target.value as PolaroidEffect["caption"]["alignment"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
-          <label>Position X<input type="number" value={effect.caption.x} onChange={(event) => onPatchCaption({ x: Number(event.target.value) })} /></label>
-          <label>Position Y<input type="number" value={effect.caption.y} onChange={(event) => onPatchCaption({ y: Number(event.target.value) })} /></label>
-        </div>
-        <button className="button ghost full-width" onClick={() => onPatchCaption({ enabled: false, text: "", fontFamily: "Avenir Next", fontSize: 28, fontWeight: 600, color: "#2f3033", alignment: "center", x: 0, y: 0 })}>Reset Caption</button>
-      </details>
+      <div className="polaroid-direct-edit-note">
+        <strong>Canvas controls do the photo positioning</strong>
+        <span>Drag inside the photo to move it, use the handles to resize/rotate, and use Fill/Fit from the floating toolbar.</span>
+      </div>
+      <FilterSlider label="Border Size" value={borderSize} min={0} max={180} onChange={patchBorderSize} />
+      <FilterSlider label="Corner Radius" value={effect.cornerRadius} min={0} max={160} step={1} onChange={(value) => onPatch({ cornerRadius: value })} />
+      <div className="compact-action-row"><button className="button ghost" onClick={() => {
+        onPatch({ imageScale: 1, imageOffsetX: 0, imageOffsetY: 0, imageRotation: 0 });
+        onPatchLayer({ crop: { offsetX: 0, offsetY: 0, zoom: 1 }, alignment: "center" });
+      }}>Reset Photo Placement</button></div>
     </div>
   );
 }
 
 
 function TornPaperInspector({
-  layer,
   effect,
   onPatch,
-  onPatchShadow,
-  onPatchLayer,
   onReset
 }: {
   layer: PlaceholderLayer;
   effect: TornPaperEffect;
-  frameType: PaperFrameType;
   onPatch: (patch: Partial<TornPaperEffect>, markCustom?: boolean) => void;
-  onPatchEdges: (edges: TornPaperEffect["edges"]) => void;
-  onPatchShadow: (kind: "outerShadow" | "innerShadow", patch: Partial<ShadowEffect>) => void;
   onPatchLayer: (patch: Partial<PlaceholderLayer>) => void;
   onReset: () => void;
 }) {
-  const tearness = Math.round((effect.edges.top.depth + effect.edges.right.depth + effect.edges.bottom.depth + effect.edges.left.depth) / 4);
+  const tearDepth = Math.round((effect.edges.top.depth + effect.edges.right.depth + effect.edges.bottom.depth + effect.edges.left.depth) / 4);
+  const ridgeCount = Math.round((effect.edges.top.frequency + effect.edges.right.frequency + effect.edges.bottom.frequency + effect.edges.left.frequency) / 4);
 
-  function patchAllEdges(value: number) {
-    const nextDepth = Math.max(0, Math.min(100, value));
-    const nextRoughness = Math.max(0, Math.min(100, Math.round(nextDepth * 0.95)));
-    const nextWaviness = Math.max(0, Math.min(100, Math.round(26 + nextDepth * 0.65)));
-    const nextFrequency = Math.max(4, Math.min(128, Math.round(12 + nextDepth * 0.28)));
-    const next = {
-      enabled: true,
-      depth: nextDepth,
-      roughness: nextRoughness,
-      waviness: nextWaviness,
-      frequency: nextFrequency,
-      scale: 1
-    };
+  function patchEdges(patch: Partial<TearEdgeEffect>) {
+    const next = { enabled: true, scale: 1, ...patch };
     onPatch({
       edges: {
         top: { ...effect.edges.top, ...next },
         right: { ...effect.edges.right, ...next },
         bottom: { ...effect.edges.bottom, ...next },
         left: { ...effect.edges.left, ...next }
-      },
-      fibers: Math.max(0, Math.min(100, Math.round(nextDepth * 0.78)))
+      }
     });
   }
 
+  function patchDepth(value: number) {
+    const depth = Math.max(0, Math.min(100, Math.round(value)));
+    patchEdges({
+      depth,
+      roughness: Math.max(0, Math.min(100, Math.round(depth * 0.92))),
+      waviness: Math.max(0, Math.min(100, Math.round(24 + depth * 0.55)))
+    });
+  }
+
+  function patchRidgeCount(value: number) {
+    const frequency = Math.max(4, Math.min(80, Math.round(value)));
+    patchEdges({ frequency });
+  }
+
   return (
-    <div className="expanded-effect-editor torn-paper-editor">
+    <div className="expanded-effect-editor torn-paper-editor simple-effect-editor">
       <div className="effect-editor-heading">
-        <div><strong>Torn Paper</strong><small>All four edges use the same tear setting.</small></div>
-        <button className="button ghost compact" onClick={onReset}>Reset Torn Paper</button>
+        <div><strong>Torn Paper</strong><small>Only the two controls that change the edge shape.</small></div>
+        <button className="button ghost compact" onClick={onReset}>Reset</button>
       </div>
-
-      <details className="effect-subsection" open>
-        <summary>Tear Shape <ChevronDown size={14} /></summary>
-        <FilterSlider label="Tearness" value={tearness} min={0} max={100} onChange={patchAllEdges} />
-        <div className="compact-action-row"><button className="button secondary" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={14} /> Regenerate Tear</button></div>
-      </details>
-
-      <details className="effect-subsection" open>
-        <summary>Paper Appearance <ChevronDown size={14} /></summary>
-        <div className="two-col">
-          <label>Paper color<input type="color" value={effect.paperColor} onChange={(event) => onPatch({ paperColor: event.target.value })} /></label>
-          <label>Paper opacity<input type="number" min="0" max="1" step=".05" value={effect.paperOpacity} onChange={(event) => onPatch({ paperOpacity: Number(event.target.value) })} /></label>
-        </div>
-        <FilterSlider label="Grain" value={effect.grain} min={0} max={100} onChange={(value) => onPatch({ grain: value })} />
-        <FilterSlider label="Fibers" value={effect.fibers} min={0} max={100} onChange={(value) => onPatch({ fibers: value })} />
-        <FilterSlider label="Wrinkles" value={effect.wrinkles} min={0} max={100} onChange={(value) => onPatch({ wrinkles: value })} />
-      </details>
-
-      <details className="effect-subsection" open>
-        <summary>Image <ChevronDown size={14} /></summary>
-        <label>Crop mode<select value={layer.cropMode} onChange={(event) => onPatchLayer({ cropMode: event.target.value as CropMode })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="tile">Tile</option></select></label>
-        <FilterSlider label="Image inset" value={effect.imageInset} min={0} max={300} onChange={(value) => onPatch({ imageInset: value })} />
-        <FilterSlider label="Image scale" value={effect.imageScale} min={.1} max={6} step={.05} onChange={(value) => onPatch({ imageScale: value })} />
-        <div className="two-col">
-          <label>Image X<input type="number" value={effect.imageOffsetX} onChange={(event) => onPatch({ imageOffsetX: Number(event.target.value) })} /></label>
-          <label>Image Y<input type="number" value={effect.imageOffsetY} onChange={(event) => onPatch({ imageOffsetY: Number(event.target.value) })} /></label>
-        </div>
-        <button className="button ghost full-width" onClick={() => onPatch({ imageInset: 20, imageScale: 1, imageOffsetX: 0, imageOffsetY: 0 })}>Reset Image Placement</button>
-      </details>
-
-      <details className="effect-subsection">
-        <summary>Shadows <ChevronDown size={14} /></summary>
-        <ShadowInspector label="Outer shadow" effect={effect.outerShadow} onPatch={(patch) => onPatchShadow("outerShadow", patch)} />
-        <ShadowInspector label="Inner shadow" effect={effect.innerShadow} onPatch={(patch) => onPatchShadow("innerShadow", patch)} />
-      </details>
+      <FilterSlider label="Tear Depth" value={tearDepth} min={0} max={100} onChange={patchDepth} />
+      <FilterSlider label="Ridge Count" value={ridgeCount} min={4} max={80} onChange={patchRidgeCount} />
+      <div className="compact-action-row"><button className="button secondary" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={14} /> Regenerate Tear</button></div>
     </div>
   );
 }
 
-function ShadowInspector({ label, effect, onPatch }: { label: string; effect: ShadowEffect; onPatch: (patch: Partial<ShadowEffect>) => void }) {
-  return (
-    <div className="shadow-inspector">
-      <label className="toggle-setting"><input type="checkbox" checked={effect.enabled} onChange={(event) => onPatch({ enabled: event.target.checked })} /> {label}</label>
-      {effect.enabled && <>
-        <div className="two-col">
-          <label>X<input type="number" value={effect.x} onChange={(event) => onPatch({ x: Number(event.target.value) })} /></label>
-          <label>Y<input type="number" value={effect.y} onChange={(event) => onPatch({ y: Number(event.target.value) })} /></label>
-          <label>Blur<input type="number" min="0" max="300" value={effect.blur} onChange={(event) => onPatch({ blur: Number(event.target.value) })} /></label>
-          <label>Spread<input type="number" min="-100" max="200" value={effect.spread} onChange={(event) => onPatch({ spread: Number(event.target.value) })} /></label>
-          <label>Opacity<input type="number" min="0" max="1" step=".05" value={effect.opacity} onChange={(event) => onPatch({ opacity: Number(event.target.value) })} /></label>
-          <label>Color<input type="color" value={effect.color} onChange={(event) => onPatch({ color: event.target.value })} /></label>
-        </div>
-      </>}
-    </div>
-  );
-}
 
 function FilterSlider({ label, value, min, max, step = 1, onChange }: { label: string; value: number; min: number; max: number; step?: number; onChange: (value: number) => void }) {
   const display = Number.isInteger(value) ? String(value) : value.toFixed(value < 1 ? 2 : 1).replace(/\.0$/, "");

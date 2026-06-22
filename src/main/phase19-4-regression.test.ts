@@ -4,33 +4,29 @@ import { readFile } from "node:fs/promises";
 
 const source = (path: string) => readFile(path, "utf8");
 
-test("expanded Torn Paper inspector exposes unified tear controls, paper details, image placement, and shadows", async () => {
+test("expanded Torn Paper inspector exposes only depth, ridge count, and regenerate", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf("function TornPaperInspector(");
-  const end = renderer.indexOf("function ShadowInspector(", start);
+  const end = renderer.indexOf("function FilterSlider(", start);
   const panel = renderer.slice(start, end);
-  for (const section of ["Tear Shape", "Paper Appearance", "Image", "Shadows"]) {
-    assert.match(panel, new RegExp(`<summary>${section}`));
-  }
-  for (const label of [
-    "Tearness", "Regenerate Tear", "Paper color", "Paper opacity", "Grain", "Fibers", "Wrinkles",
-    "Image inset", "Image scale", "Image X", "Image Y", "Outer shadow", "Inner shadow", "Reset Torn Paper"
-  ]) {
+
+  for (const label of ["Torn Paper", "Tear Depth", "Ridge Count", "Regenerate Tear", "Reset"]) {
     assert.match(panel, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.doesNotMatch(panel, /Link all edges/);
-  assert.doesNotMatch(panel, /Save Current/);
-  assert.doesNotMatch(panel, /Restore Bundled Preset/);
+  for (const removed of ["Tearness", "Paper Appearance", "Image", "Shadows", "Paper opacity", "Image inset", "Image scale", "Outer shadow", "Inner shadow"]) {
+    assert.doesNotMatch(panel, new RegExp(removed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
-test("torn paper uses one shared tear control instead of per-edge preset management", async () => {
+test("torn paper uses two shared tear controls instead of per-edge preset management", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf("function TornPaperInspector(");
-  const end = renderer.indexOf("function ShadowInspector(", start);
+  const end = renderer.indexOf("function FilterSlider(", start);
   const panel = renderer.slice(start, end);
-  assert.match(panel, /function patchAllEdges/);
-  assert.match(panel, /FilterSlider label="Tearness"/);
-  assert.doesNotMatch(panel, /\["top", "right", "bottom", "left"\]/);
+  assert.match(panel, /function patchDepth/);
+  assert.match(panel, /function patchRidgeCount/);
+  assert.match(panel, /FilterSlider label="Tear Depth"/);
+  assert.match(panel, /FilterSlider label="Ridge Count"/);
   assert.doesNotMatch(panel, /applyTornPaperPreset/);
   assert.doesNotMatch(panel, /customPresets/);
 });
@@ -38,7 +34,7 @@ test("torn paper uses one shared tear control instead of per-edge preset managem
 test("tear regeneration is explicit and does not use Math.random in the Torn inspector", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const start = renderer.indexOf("function TornPaperInspector(");
-  const end = renderer.indexOf("function ShadowInspector(", start);
+  const end = renderer.indexOf("function FilterSlider(", start);
   const panel = renderer.slice(start, end);
   assert.match(panel, /nextStableSeed\(effect\.seed\)/);
   assert.doesNotMatch(panel, /Math\.random/);

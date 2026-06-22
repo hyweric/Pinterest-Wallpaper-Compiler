@@ -5430,3 +5430,119 @@ input[type="range"]::-moz-range-thumb {
   grid-row: 1;
   justify-self: end;
 }
+
+/* Phase 22.2 focused simplification hotfix */
+.workspace-fixed-controls {
+  position: absolute;
+  top: 66px;
+  left: 0;
+  right: 0;
+  z-index: 36;
+  pointer-events: none;
+}
+
+.workspace-fixed-controls .context-toolbar {
+  position: relative;
+  top: auto;
+  left: 50%;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.workspace-fixed-controls .floating-canvas-status {
+  position: absolute;
+  top: 48px;
+  right: 22px;
+  bottom: auto;
+  pointer-events: auto;
+}
+
+.simple-effect-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.simple-effect-editor {
+  gap: 10px;
+}
+
+.compact-toggle-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.layer-context-menu .danger,
+.context-toolbar .danger {
+  display: none !important;
+}
+
+/* Phase 22.3 focused regression repair: normal source drops fill, compact quick bar, 3-part simple effects. */
+.workspace-fixed-controls {
+  left: 50%;
+  right: auto;
+  width: auto;
+  max-width: min(640px, calc(100% - 32px));
+  transform: translateX(-50%);
+}
+
+.workspace-fixed-controls .context-toolbar {
+  left: auto;
+  transform: none;
+}
+
+.context-toolbar.compact-context-toolbar {
+  display: inline-flex;
+  width: auto;
+  max-width: min(560px, calc(100vw - 56px));
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.context-toolbar.compact-context-toolbar button {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.context-toolbar.compact-context-toolbar .mini-slider {
+  width: clamp(130px, 18vw, 190px);
+  min-width: 130px;
+  padding: 0 8px;
+}
+
+.simple-effect-note {
+  margin: 8px 0 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(91, 126, 138, 0.12);
+  border-radius: 10px;
+  color: #6f7b84;
+  background: rgba(246, 250, 251, 0.78);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.simple-effect-editor {
+  margin-top: 6px;
+}
+
+.minimal-toolbar {
+  background: transparent;
+  border-bottom-color: transparent;
+  backdrop-filter: none;
+  padding: 10px 14px 6px;
+}
+
+.minimal-toolbar .toolbar-cluster,
+.minimal-toolbar .toolbar-create-actions {
+  border: 1px solid rgba(43, 48, 58, 0.08);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 10px 28px rgba(80, 82, 86, 0.07);
+  backdrop-filter: blur(18px);
+  padding: 4px;
+}
+
+.minimal-toolbar .toolbar-create-actions {
+  display: inline-flex;
+}

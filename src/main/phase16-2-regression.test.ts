@@ -74,5 +74,5 @@ test("Settings is shown only by the inspector tab and not repeated inside the pa
   assert.match(renderer, /<summary>Canvas /);
   assert.match(renderer, /<summary>Background /);
   assert.match(renderer, /<summary>Surface /);
-  assert.match(renderer, /<summary>Advanced /);
+  assert.doesNotMatch(renderer, /<h2>Settings<\/h2>/);
 });
