@@ -19,7 +19,7 @@ const html = `<!doctype html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Pinterest Wallpaper Compiler</title>
+    <title>Pin Paper</title>
     <style>${css}</style>
   </head>
   <body>

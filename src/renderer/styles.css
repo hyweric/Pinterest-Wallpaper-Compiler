@@ -5742,3 +5742,71 @@ select,
   clip-path: inherit;
   overflow: hidden;
 }
+
+/* Phase 22.3.10.5: tighter import dialogs, inline-safe branding, and quieter template open flow. */
+.modal-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.modal-title-copy {
+  min-width: 0;
+  max-width: 460px;
+}
+
+.modal-title-row p {
+  max-width: 42ch;
+  margin: 0;
+  color: #777d87;
+  font-size: 12px;
+  line-height: 1.28;
+}
+
+.modal-title-row > button,
+.import-dialog-close-button {
+  width: auto;
+  min-width: 132px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 16px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.import-modal {
+  gap: 12px;
+}
+
+.import-modal .dialog-actions {
+  align-items: center;
+}
+
+.import-modal .dialog-actions .pill-button {
+  width: auto;
+  min-width: 142px;
+  min-height: 34px;
+  padding: 0 16px;
+}
+
+.home-hero h2 {
+  display: block !important;
+  max-width: none;
+}
+
+.home-hero h2 .home-slogan {
+  display: block;
+  white-space: nowrap;
+}
+
+.home-hero h2 small {
+  display: block;
+  margin-top: 12px;
+  max-width: 720px;
+}
+
+.brand-mark.pin-paper-mark,
+.home-brand-mark.pin-paper-mark {
+  object-fit: contain;
+}

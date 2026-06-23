@@ -124,7 +124,7 @@ import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-rendere
 import { nextSurfaceSeed, normalizeSurfaceEffect, surfaceEffectIsVisible } from "../shared/surface-rendering";
 import { applyTornPaperPreset, bundledTornPaperPresets, createCustomTornPaperPreset, createDefaultPolaroidEffect, createDefaultTornPaperEffect, nextStableSeed, normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, shadowToCss, tornPaperTextureDataUrl } from "../shared/frame-effects";
 import { clampPolaroidRotation, distanceBetween, pointerAngleDegrees, polaroidScaleFromPointerDistance, rotatePoint, screenDeltaToFrameDelta, shortestAngleDelta } from "../shared/polaroid-interaction";
-import pinPaperIcon from "../assets/pin-paper-icon.png";
+import { pinPaperIcon } from "./brand-icon";
 import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
@@ -3277,7 +3277,7 @@ function App() {
     setSourceLibraryView("linked");
     setHistory({ past: [], future: [] });
     setView("editor");
-    setMessage(`Opened template "${template.name}".`);
+    setMessage("");
   }
 
   function createBlankTemplate() {
@@ -5193,13 +5193,13 @@ function PinterestDialog({
 }) {
   return (
     <div className="modal-backdrop">
-      <section className="modal">
-        <div className="modal-title-row">
-          <div>
+      <section className="modal import-modal">
+        <div className="modal-title-row import-title-row">
+          <div className="modal-title-copy">
             <h2>Import Pinterest Board</h2>
-            <p>Paste a public board URL. The app will cache imported images locally for offline wallpaper rotation.</p>
+            <p>Paste a public board URL. Cached locally for offline wallpaper rotation.</p>
           </div>
-          <button onClick={state.busy ? onCancel : onClose}>{state.busy ? "Stop Import" : "Close"}</button>
+          <button className="button secondary import-dialog-close-button" onClick={state.busy ? onCancel : onClose}>{state.busy ? "Stop Import" : "Close"}</button>
         </div>
         <label>Pinterest board URL<input value={state.url} onChange={(event) => onChange((current) => ({ ...current, url: event.target.value }))} placeholder="https://www.pinterest.com/user/board-name/" /></label>
         <div className="dialog-actions">
