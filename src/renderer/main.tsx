@@ -3688,7 +3688,6 @@ function App() {
           project={project}
           templates={visibleTemplates}
           filter={templateFilter}
-          message={message}
           onFilter={setTemplateFilter}
           onCreate={createBlankTemplate}
           onOpen={openTemplate}
@@ -3773,9 +3772,9 @@ function App() {
                 ? "Unlock the selected frame to change its source."
                 : "Choose a source to assign its whole pool to this frame."
               : selectedSource
-                ? "Source details"
+                ? "Source selected."
                 : sourceLibraryView === "linked"
-                  ? "Select a source to view its details."
+                  ? "Select a source to view it."
                   : "Reusable folders, boards, and image collections shared across templates."}
           </p>
 
@@ -3798,20 +3797,6 @@ function App() {
                 <span>{sourceImagesForPolicy(selectedSource).length} available</span>
                 <span className={`status-dot ${selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}`} />
               </div>
-              <div className="source-media-policy"><span>Media</span><strong>Images + video thumbnails</strong></div>
-              <details className="source-technical-details">
-                <summary>Details <ChevronDown size={14} /></summary>
-                <dl>
-                  <div><dt>Total</dt><dd>{selectedSource.mediaCounts?.total ?? selectedSource.images.length}{selectedSource.expectedItemCount ? ` / ${selectedSource.expectedItemCount}` : ""}</dd></div>
-                  <div><dt>Images</dt><dd>{selectedSource.mediaCounts?.images ?? selectedSource.images.filter((image) => image.mediaType !== "video").length}</dd></div>
-                  <div><dt>Videos</dt><dd>{selectedSource.mediaCounts?.videos ?? selectedSource.images.filter((image) => image.mediaType === "video").length}</dd></div>
-                  <div><dt>Available</dt><dd>{sourceImagesForPolicy(selectedSource).length}</dd></div>
-                  <div><dt>Location</dt><dd title={sourceLocationLabel(selectedSource)}>{sourceLocationLabel(selectedSource)}</dd></div>
-                  <div><dt>Status</dt><dd>{selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}</dd></div>
-                  <div><dt>Updated</dt><dd>{selectedSource.lastImportCompletedAt ? new Date(selectedSource.lastImportCompletedAt).toLocaleString() : selectedSource.lastScannedAt ? new Date(selectedSource.lastScannedAt).toLocaleString() : "Not scanned"}</dd></div>
-                </dl>
-              </details>
-              
               <div className="source-detail-actions">
                 <button className="pill-button" onClick={() => void rescanSource(selectedSource)}>Refresh</button>
                 <button className="pill-button" onClick={() => void showSourceInFolder(selectedSource)}>Show</button>
@@ -4289,7 +4274,6 @@ function App() {
           </div>
           </div>
         </div>
-        <footer className="status">{message}</footer>
       </section>
 
       <aside className={`sidebar right ${rightPanelOpen ? "" : "collapsed"}`}>
@@ -4343,7 +4327,6 @@ function App() {
           state={pinterestDialog}
           onChange={setPinterestDialog}
           onImport={() => void runPinterestImport("import")}
-          onUpdate={() => void runPinterestImport("update")}
           onCancel={() => void cancelPinterestImport()}
           onClose={() => setPinterestDialog((current) => ({ ...current, open: false }))}
         />
@@ -4370,7 +4353,6 @@ function TemplateHome({
   project,
   templates,
   filter,
-  message,
   onFilter,
   onCreate,
   onOpen,
@@ -4387,7 +4369,6 @@ function TemplateHome({
   project: WallpaperProject;
   templates: WallpaperTemplate[];
   filter: TemplateFilter;
-  message: string;
   onFilter: React.Dispatch<React.SetStateAction<TemplateFilter>>;
   onCreate: () => void;
   onOpen: (template: WallpaperTemplate) => void;
@@ -4479,7 +4460,6 @@ function TemplateHome({
         ))}
       </section>
 
-      <footer className="home-status">{message}</footer>
     </main>
   );
 }
@@ -5180,14 +5160,12 @@ function PinterestDialog({
   state,
   onChange,
   onImport,
-  onUpdate,
   onCancel,
   onClose
 }: {
   state: PinterestDialogState;
   onChange: React.Dispatch<React.SetStateAction<PinterestDialogState>>;
   onImport: () => void;
-  onUpdate: () => void;
   onCancel: () => void;
   onClose: () => void;
 }) {
@@ -5204,7 +5182,6 @@ function PinterestDialog({
         <label>Pinterest board URL<input value={state.url} onChange={(event) => onChange((current) => ({ ...current, url: event.target.value }))} placeholder="https://www.pinterest.com/user/board-name/" /></label>
         <div className="dialog-actions">
           <button className="pill-button primary" disabled={state.busy} onClick={onImport}>Import Board</button>
-          <button className="pill-button" disabled={state.busy} onClick={onUpdate}>Update from Web</button>
         </div>
         <div className="progress-track"><span style={{ width: `${state.progress}%` }} /></div>
         <div className="import-stats">
@@ -5217,7 +5194,7 @@ function PinterestDialog({
             <strong>{state.stage === "partial" ? "Pinterest import incomplete" : state.stage === "canceled" ? "Pinterest import stopped" : "Pinterest import unavailable"}</strong>
             <p>{state.error}</p>
             <div className="dialog-actions">
-              <button className="pill-button primary" disabled={state.busy} onClick={onUpdate}>{state.stage === "partial" || state.stage === "canceled" ? "Resume Update" : "Retry"}</button>
+              <button className="pill-button primary" disabled={state.busy} onClick={onImport}>{state.stage === "partial" || state.stage === "canceled" ? "Resume Import" : "Retry"}</button>
               <button className="pill-button" onClick={onClose}>Close</button>
             </div>
           </div>
@@ -5343,7 +5320,7 @@ function CanvasDesignPanel({
           <button className={canvas.backgroundBaseMode === "color" ? "active" : ""} onClick={() => onPatch({ backgroundBaseMode: "color", backgroundTransparent: false })}>Color</button>
           <button className={canvas.backgroundBaseMode === "image" ? "active" : ""} onClick={() => canvas.backgroundImage ? onPatch({ backgroundBaseMode: "image", backgroundTransparent: false }) : onChooseBackground()}>Image</button>
         </div>
-        {canvas.backgroundBaseMode === "color" && <label>Color<input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>}
+        {canvas.backgroundBaseMode === "color" && <label className="color-input-only" aria-label="Background color"><input type="color" value={canvas.backgroundColor} onChange={(event) => onPatch({ backgroundColor: event.target.value, backgroundTransparent: false })} /></label>}
         {canvas.backgroundBaseMode === "image" && <>
           <div className="compact-action-row"><button className="button secondary" onClick={onChooseBackground}><ImagePlus size={15} /> {canvas.backgroundImage ? "Replace" : "Choose"}</button><button className="button ghost" disabled={!canvas.backgroundImage} onClick={onClearBackground}>Remove</button></div>
           <label>Fit<select value={canvas.backgroundMode} onChange={(event) => onPatch({ backgroundMode: event.target.value as CanvasSettings["backgroundMode"] })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="center">Center</option><option value="tile">Tile</option></select></label>

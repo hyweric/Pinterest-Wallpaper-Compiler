@@ -91,6 +91,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "icon": "build/icon.png"
+    "icon": "build/icon.png",
+    "afterPack": "scripts/strip-macos-media-usage.cjs"
   }
 }

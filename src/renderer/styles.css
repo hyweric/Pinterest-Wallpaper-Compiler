@@ -757,18 +757,6 @@ h2,
   height: 1px;
 }
 
-.status {
-  min-height: 34px;
-  padding: 8px 14px;
-  border-top: 1px solid rgba(43, 48, 58, 0.08);
-  color: #636974;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.76);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .panel-title-row,
 .toggle-row {
   display: flex;
@@ -1723,8 +1711,7 @@ summary {
 .home-header,
 .home-hero,
 .template-filter-bar,
-.template-gallery,
-.home-status {
+.template-gallery {
   width: min(1480px, 100%);
   margin-inline: auto;
 }
@@ -2024,19 +2011,6 @@ summary {
   font-size: 12px;
 }
 
-.home-status {
-  position: sticky;
-  bottom: 12px;
-  width: fit-content;
-  margin-top: 34px;
-  padding: 8px 12px;
-  color: #6f767e;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(43, 48, 58, 0.08);
-  border-radius: 999px;
-  backdrop-filter: blur(16px);
-  font-size: 11px;
-}
 
 @media (max-width: 760px) {
   .template-home {
@@ -2844,21 +2818,6 @@ summary {
   background: radial-gradient(circle at center, transparent 42%, rgba(12, 18, 26, 0.82) 100%);
 }
 
-.source-media-policy {
-  display: grid;
-  gap: 6px;
-  padding-top: 4px;
-}
-
-.source-exclusion-note {
-  margin: -2px 0 0 !important;
-  padding: 7px 9px;
-  border-radius: 8px;
-  color: #747c85 !important;
-  background: rgba(242, 243, 243, 0.82);
-  font-size: 10px !important;
-}
-
 .export-set-modal {
   width: min(620px, calc(100vw - 40px));
   max-height: min(720px, calc(100vh - 40px));
@@ -3029,18 +2988,13 @@ summary {
   font-size: 10.5px;
   line-height: 1.45;
 }
-.source-technical-details {
-  margin-top: 5px;
-  border-top: 1px solid rgba(25,30,40,.08);
-  padding-top: 7px;
+
+.color-input-only {
+  display: block;
 }
-.source-technical-details summary {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: #737b87;
-  cursor: pointer;
+
+.color-input-only input[type="color"] {
+  width: 100%;
 }
 .source-summary-line {
   font-size: 11px;
@@ -5555,8 +5509,7 @@ select,
 .sidebar select,
 .sidebar.right .settings-section select,
 .sidebar.right .properties select,
-.sidebar.right .two-col select,
-.source-media-policy select {
+.sidebar.right .two-col select {
   height: 35px !important;
   min-height: 35px !important;
   padding: 0 38px 0 12px !important;

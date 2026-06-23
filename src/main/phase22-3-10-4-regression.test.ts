@@ -25,7 +25,8 @@ test("Phase 22.3.10.4 removes the images-only UI and keeps video thumbnails elig
   const removedVideoNote = ["video", "thumbnails", "excluded"].join(" ");
   assert.equal(renderer.includes(removedImagesOnlyLabel), false);
   assert.equal(renderer.includes(removedVideoNote), false);
-  assert.match(renderer, /Images \+ video thumbnails/);
+  assert.doesNotMatch(renderer, /Images \+ video thumbnails/);
+  assert.doesNotMatch(renderer, /source-media-policy/);
   assert.match(project, /mediaPolicy: "images-and-video-thumbnails"/);
   assert.match(project, /image\.mediaType !== "video" \|\| image\.videoThumbnail !== false/);
 });

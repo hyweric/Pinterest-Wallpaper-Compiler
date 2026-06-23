@@ -151,7 +151,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
           log: source.importLog ?? [],
           page: pageCount,
           bookmark: finalBookmark,
-          error: "Pinterest import canceled. Run Update from Web to resume; cached pins will not be downloaded again."
+          error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
         };
       }
       discoveryError = error instanceof Error ? error.message : "Unable to retrieve Pinterest board.";
@@ -219,7 +219,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
           log: source.importLog ?? [],
           page: pageCount,
           bookmark: finalBookmark,
-          error: "Pinterest import canceled. Run Update from Web to resume; cached pins will not be downloaded again."
+          error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
         };
       }
       const batch = missingPins.slice(offset, offset + concurrency);
@@ -261,7 +261,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
           log: source.importLog ?? [],
           page: pageCount,
           bookmark: finalBookmark,
-          error: "Pinterest import canceled. Run Update from Web to resume; cached pins will not be downloaded again."
+          error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
         };
       }
       const total = missingPins.length;
@@ -306,7 +306,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     });
 
     const error = partial
-      ? `Partial import: cached ${images.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}. Use Update from Web to resume.`
+      ? `Partial import: cached ${images.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}. Import this board again to resume.`
       : undefined;
     report(partial ? "partial" : "complete", images.length, expectedCount ?? uniquePins.length, 100, error ?? `Imported all ${images.length} pins.`, pageCount, finalBookmark);
 
