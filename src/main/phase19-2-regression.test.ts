@@ -33,7 +33,8 @@ test("legacy Paper Frame controls synchronize the new expanded effect structures
   const end = renderer.indexOf("function resetCrop", start);
   const patcher = renderer.slice(start, end);
   assert.match(patcher, /polaroid\.borderTop = base/);
-  assert.match(patcher, /tornPaper\.imageInset = base/);
+  assert.doesNotMatch(patcher, /tornPaper\.imageInset = base/);
+  assert.match(renderer, /FilterSlider label="Paper Border"/);
   assert.match(patcher, /polaroid\.frameColor = patch\.paperColor/);
   assert.match(patcher, /tornPaper\.edges = Object\.fromEntries/);
   assert.match(patcher, /tornPaper\.seed =/);

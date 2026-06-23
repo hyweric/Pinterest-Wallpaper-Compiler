@@ -1,8 +1,7 @@
 import type { ImageSource, LocalImageRef, WallpaperProject } from "./types.js";
 
-function eligibleImages(source: ImageSource): LocalImageRef[] {
-  if (source.mediaPolicy === "images-and-video-thumbnails") return source.images;
-  return source.images.filter((image) => image.mediaType !== "video");
+export function eligibleImages(source: ImageSource): LocalImageRef[] {
+  return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
 }
 
 export function selectImagesForGeneration(

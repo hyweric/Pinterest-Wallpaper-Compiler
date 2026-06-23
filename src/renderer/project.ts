@@ -233,9 +233,7 @@ function mediaCounts(images: ImageSource["images"]) {
 }
 
 export function sourceImagesForPolicy(source: ImageSource) {
-  const policy = source.mediaPolicy ?? "images-only";
-  if (policy === "images-and-video-thumbnails") return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
-  return source.images.filter((image) => image.mediaType !== "video");
+  return source.images.filter((image) => image.mediaType !== "video" || image.videoThumbnail !== false);
 }
 
 function normalizeSource(source: ImageSource): ImageSource {
@@ -243,7 +241,7 @@ function normalizeSource(source: ImageSource): ImageSource {
   return {
     ...source,
     images,
-    mediaPolicy: source.mediaPolicy === "images-and-video-thumbnails" ? "images-and-video-thumbnails" : "images-only",
+    mediaPolicy: "images-and-video-thumbnails",
     mediaCounts: mediaCounts(images),
     providerId: source.providerId ?? (source.type === "mock-web" ? undefined : source.type),
     importStatus: source.importStatus ?? "ready",

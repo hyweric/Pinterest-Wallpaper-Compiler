@@ -21,8 +21,8 @@ function source(mediaPolicy: SourceMediaPolicy): ImageSource {
   };
 }
 
-test("images-only excludes all video items", () => {
-  assert.deepEqual(sourceImagesForPolicy(source("images-only")).map((image) => image.id), ["image-1", "image-2"]);
+test("legacy images-only policy is normalized to include usable video thumbnails", () => {
+  assert.deepEqual(sourceImagesForPolicy(source("images-only")).map((image) => image.id), ["image-1", "image-2", "video-thumb"]);
 });
 
 test("images-and-video-thumbnails includes usable thumbnails but not raw video", () => {

@@ -35,6 +35,7 @@ const api = {
   chooseImageFiles: (): Promise<ImageFileResult> => ipcRenderer.invoke("dialog:choose-image-files"),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   importPaths: (paths: string[]): Promise<PathImportResult> => ipcRenderer.invoke("source:import-paths", paths),
+  importWebImage: (payload: { url?: string; dataUrl?: string; name?: string; mimeType?: string }): Promise<ImageFileResult> => ipcRenderer.invoke("source:import-web-image", payload),
   rescanFolder: (path: string) => ipcRenderer.invoke("source:rescan-folder", path),
   showInFolder: (path: string): Promise<boolean> => ipcRenderer.invoke("source:show-in-folder", path),
   deleteCache: (path: string): Promise<boolean> => ipcRenderer.invoke("source:delete-cache", path),

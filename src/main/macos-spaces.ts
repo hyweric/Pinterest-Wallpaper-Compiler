@@ -109,7 +109,7 @@ export function planStableAssetSlotUpdates(
   diagnostic: MacOSWallpaperDiagnosticReport,
   assignments: MacOSSpaceAssignment[],
   mode: Extract<WallpaperTargetMode, "all-desktops-current-monitor" | "all-desktops-all-monitors">,
-  vaultRoot = path.join(os.homedir(), "Pictures", "Pinterest Wallpaper Compiler", "Wallpaper Vault")
+  vaultRoot = path.join(os.homedir(), "Pictures", "Pin Paper", "Wallpaper Vault")
 ): StableAssetSlotPlan {
   const errors: string[] = [];
   const updates: StableAssetSlotUpdate[] = [];

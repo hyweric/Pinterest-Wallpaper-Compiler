@@ -2771,18 +2771,6 @@ summary {
   box-shadow: none;
 }
 
-.texture-swatch {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1.55;
-  border-radius: 7px;
-  border: 1px solid rgba(49, 55, 64, 0.07);
-  background-color: #f2f0ea;
-  background-repeat: repeat;
-  background-size: 44px 44px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.48);
-}
-
 .texture-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -3361,11 +3349,6 @@ textarea:focus-visible {
 
 .texture-choice {
   min-height: 82px;
-}
-.texture-swatch {
-  background-size: cover;
-  background-position: center;
-  background-repeat: repeat;
 }
 .texture-overlay,
 .paper-frame-texture {
@@ -5036,20 +5019,6 @@ input[type="range"]::-moz-range-thumb {
   gap: 4px;
   padding: 8px;
 }
-.texture-choice .texture-swatch.neutral-surface-swatch {
-  width: 34px;
-  height: 16px;
-  aspect-ratio: auto;
-  border-radius: 999px;
-  background-image: none !important;
-  background-color: #eeece7;
-  background-size: auto;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
-}
-.texture-choice.active .texture-swatch.neutral-surface-swatch {
-  background-color: #dfeef0;
-  border-color: #c1dbe2;
-}
 .texture-choice > span:last-child,
 .texture-choice.custom > button span:last-child {
   font-size: 11.5px;
@@ -5705,4 +5674,71 @@ select,
 
 .paper-frame.torn .paper-frame-texture {
   opacity: 0.78;
+}
+
+/* Phase 22.3.10.4: Pin Paper branding, no surface thumbnails, and shape-aware image effects. */
+.brand-mark.pin-paper-mark,
+.home-brand-mark.pin-paper-mark {
+  display: block;
+  object-fit: cover;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.brand-mark.pin-paper-mark {
+  border-radius: 12px;
+}
+
+.compact-brand .brand-mark.pin-paper-mark {
+  border-radius: 11px;
+  background: transparent;
+}
+
+.home-brand-mark.pin-paper-mark {
+  border-radius: 13px;
+}
+
+.home-hero h2 {
+  max-width: none;
+}
+
+.home-hero h2 .home-slogan {
+  display: inline-block;
+  white-space: nowrap;
+  max-width: none;
+  margin: 0 !important;
+  color: inherit;
+  font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+}
+
+.home-hero h2 small {
+  display: inline-block;
+  max-width: 620px;
+  color: #777d87;
+  font-family: var(--ui-font);
+  font-size: clamp(16px, 1.7vw, 22px);
+  font-weight: 520;
+  letter-spacing: -.015em;
+  line-height: 1.35;
+}
+
+.texture-picker-grid.compact-texture-grid .texture-choice {
+  min-height: 44px;
+  justify-content: center;
+}
+
+.texture-picker-grid.compact-texture-grid .texture-choice button {
+  min-height: 36px;
+}
+
+.placeholder-image-area .texture-overlay {
+  inset: 0;
+  border-radius: inherit;
+  clip-path: inherit;
+  overflow: hidden;
 }

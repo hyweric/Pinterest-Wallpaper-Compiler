@@ -115,6 +115,7 @@ import { imageBackgroundColor, sourceIsManagedOverlay } from "../shared/image-tr
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
 import { selectImagesForGeneration } from "../shared/source-selection";
+import { advancePreviewProjectImages } from "../shared/preview-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
 import { resizeRectAroundCenter, type ResizeHandle } from "../shared/resize-geometry";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
@@ -123,6 +124,7 @@ import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-rendere
 import { nextSurfaceSeed, normalizeSurfaceEffect, surfaceEffectIsVisible } from "../shared/surface-rendering";
 import { applyTornPaperPreset, bundledTornPaperPresets, createCustomTornPaperPreset, createDefaultPolaroidEffect, createDefaultTornPaperEffect, nextStableSeed, normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, shadowToCss, tornPaperTextureDataUrl } from "../shared/frame-effects";
 import { clampPolaroidRotation, distanceBetween, pointerAngleDegrees, polaroidScaleFromPointerDistance, rotatePoint, screenDeltaToFrameDelta, shortestAngleDelta } from "../shared/polaroid-interaction";
+import pinPaperIcon from "../assets/pin-paper-icon.png";
 import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
@@ -393,8 +395,15 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   }
 
   const valid = folders > 0 || supportedImages > 0;
+  if (!valid && hasWebImageTransfer(dataTransfer)) {
+    return target === "placeholder"
+      ? { label: "Assign web image to this placeholder", valid: true, placementCount: 1 }
+      : target === "canvas"
+        ? { label: "Release to place web image here", valid: true, placementCount: 1 }
+        : { label: "Add web image as source", valid: true, placementCount: 1 };
+  }
   if (!valid && types.includes("text/uri-list") && target === "sources") return { label: "Add linked source", valid: true };
-  if (!valid) return { label: unsupported > 0 ? "Unsupported files cannot be imported" : "Drop image files or folders", valid: false };
+  if (!valid) return { label: unsupported > 0 ? "Unsupported files cannot be imported" : "Drop image files, folders, or web images", valid: false };
 
   // Finder groups all loose images into one reusable source. Each folder is
   // its own source, so mixed and multi-folder drops can place several frames.
@@ -420,8 +429,92 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   return { label: `Add ${supportedImages} images as source`, valid: true, placementCount: 1 };
 }
 
+function getTransferText(dataTransfer: DataTransfer, type: string) {
+  try {
+    return dataTransfer.getData(type).trim();
+  } catch {
+    return "";
+  }
+}
+
+function firstUrlFromText(value: string) {
+  const match = value.match(/https?:\/\/[^\s<>"']+|data:image\/[^\s<>"']+/i);
+  return match?.[0]?.replace(/&amp;/g, "&");
+}
+
+function firstImageUrlFromHtml(html: string) {
+  const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+  return match?.[1]?.replace(/&amp;/g, "&");
+}
+
+type WebImageCandidate = { url?: string; file?: File; name?: string; mimeType?: string };
+
+function webImageCandidatesFromTransfer(dataTransfer: DataTransfer | null): WebImageCandidate[] {
+  if (!dataTransfer) return [];
+  const candidates: WebImageCandidate[] = [];
+  const seen = new Set<string>();
+  for (const file of Array.from(dataTransfer.files ?? [])) {
+    if (!file.type.startsWith("image/")) continue;
+    let localPath = "";
+    try {
+      localPath = window.wallpaperApi.getPathForFile(file);
+    } catch {
+      localPath = "";
+    }
+    if (localPath) continue;
+    const key = `file:${file.name}:${file.size}:${file.type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ file, name: file.name || "web image", mimeType: file.type });
+  }
+
+  const addUrl = (raw?: string, name?: string) => {
+    const url = raw?.trim();
+    if (!url || seen.has(url)) return;
+    if (!/^https?:\/\//i.test(url) && !/^data:image\//i.test(url)) return;
+    seen.add(url);
+    candidates.push({ url, name });
+  };
+
+  addUrl(firstImageUrlFromHtml(getTransferText(dataTransfer, "text/html")));
+  addUrl(firstUrlFromText(getTransferText(dataTransfer, "text/uri-list")));
+  addUrl(firstUrlFromText(getTransferText(dataTransfer, "text/plain")));
+  return candidates.slice(0, 24);
+}
+
+function hasWebImageTransfer(dataTransfer: DataTransfer) {
+  return webImageCandidatesFromTransfer(dataTransfer).length > 0;
+}
+
+function readImageFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read copied image."));
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function importWebImageCandidates(candidates: WebImageCandidate[]) {
+  const sources: ImageSource[] = [];
+  const warnings: string[] = [];
+  for (const candidate of candidates) {
+    const payload = candidate.file
+      ? {
+          dataUrl: await readImageFileAsDataUrl(candidate.file),
+          name: candidate.name || candidate.file.name || "copied image",
+          mimeType: candidate.mimeType || candidate.file.type
+        }
+      : { url: candidate.url, name: candidate.name, mimeType: candidate.mimeType };
+    const result = await window.wallpaperApi.importWebImage(payload);
+    if (result.source) sources.push(result.source);
+    else if (result.error) warnings.push(result.error);
+  }
+  return { sources, warnings };
+}
+
 function getDroppedPinterestUrl(event: React.DragEvent) {
-  const text = event.dataTransfer.getData("text/uri-list") || event.dataTransfer.getData("text/plain");
+  const text = getTransferText(event.dataTransfer, "text/uri-list") || getTransferText(event.dataTransfer, "text/plain");
   return text.includes("pinterest.") || text.includes("pin.it") ? text.trim() : undefined;
 }
 
@@ -494,40 +587,6 @@ function prepareGeneratedProject(current: WallpaperProject, templateId = current
 
 function prepareGeneratedProjectWithUsed(current: WallpaperProject, templateId: string | undefined, _used: Set<string>) {
   return prepareGeneratedProject(current, templateId);
-}
-
-function advancePreviewProjectImages(current: WallpaperProject) {
-  const usedThisPreview = new Set<string>();
-  const layers = current.layers.map((layer) => {
-    if (layer.hidden) return layer;
-    const pool = collectLayerImages(current, layer);
-    if (pool.length === 0) return layer;
-    const currentImageId = layer.generatedImageId ?? layer.selectedImageId ?? getImageForLayer(current, layer)?.id;
-    const alternatives = pool.filter((item) => pool.length <= 1 || item.image.id !== currentImageId);
-    const nonDuplicateAlternatives = alternatives.filter((item) => !usedThisPreview.has(item.image.id));
-    const nonDuplicatePool = pool.filter((item) => !usedThisPreview.has(item.image.id));
-    const candidates = nonDuplicateAlternatives.length ? nonDuplicateAlternatives : alternatives.length ? alternatives : nonDuplicatePool.length ? nonDuplicatePool : pool;
-    const choice = candidates[0];
-    if (!choice) return layer;
-    usedThisPreview.add(choice.image.id);
-    const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : [choice.source.id];
-    return {
-      ...layer,
-      sourceId: choice.source.id,
-      selectedImageId: layer.sourceState.mode === "fixed" ? choice.image.id : layer.selectedImageId,
-      generatedImageId: choice.image.id,
-      cropMode: "cover" as const,
-      sourceState: {
-        ...layer.sourceState,
-        sourceIds,
-        mode: layer.sourceState.mode === "fixed" ? "fixed" as const : "shuffle" as const,
-        shuffleQueue: pool.map((item) => item.image.id).filter((id) => id !== choice.image.id),
-        usedImageIds: [...new Set([...layer.sourceState.usedImageIds, choice.image.id])],
-        preventDuplicates: pool.length > 1
-      }
-    };
-  });
-  return normalizeProject({ ...current, layers });
 }
 
 function applyCombinationToProject(current: WallpaperProject, combination: GeneratedCombination) {
@@ -1614,7 +1673,7 @@ function App() {
       name: images.length === 1 ? images[0].name : `${images.length} local images`,
       images,
       importStatus: "ready",
-      mediaPolicy: "images-only",
+      mediaPolicy: "images-and-video-thumbnails",
       mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
       importLog: [`Imported ${images.length} local files as one collection.`],
       updatedAt: new Date().toISOString()
@@ -1831,6 +1890,48 @@ function App() {
     const merged = addSourcesToProjectDetailed(result.sources, true, false);
     if (merged.resolved.length === 0) return;
     assignSourcesToLayer(merged.resolved, layer, importResultMessage(result.summary, merged, result.warnings, layer));
+  }
+
+  async function importWebImagesAsSources(candidates: WebImageCandidate[]) {
+    if (candidates.length === 0) {
+      setMessage("No copied or dragged web image was available.");
+      return;
+    }
+    const result = await importWebImageCandidates(candidates);
+    if (result.sources.length === 0) {
+      setMessage(result.warnings[0] ?? "Unable to cache the web image.");
+      return;
+    }
+    const merged = addSourcesToProjectDetailed(result.sources, true, false);
+    setMessage(`${merged.resolved.length} web image source${merged.resolved.length === 1 ? "" : "s"} cached and linked.${result.warnings[0] ? ` ${result.warnings[0]}` : ""}`);
+  }
+
+  async function assignWebImagesToLayer(candidates: WebImageCandidate[], layer: PlaceholderLayer) {
+    if (candidates.length === 0) {
+      setMessage("No copied or dragged web image was available.");
+      return;
+    }
+    const result = await importWebImageCandidates(candidates);
+    if (result.sources.length === 0) {
+      setMessage(result.warnings[0] ?? "Unable to cache the web image.");
+      return;
+    }
+    const merged = addSourcesToProjectDetailed(result.sources, true, false);
+    if (merged.resolved.length === 0) return;
+    assignSourcesToLayer(merged.resolved, layer, `Cached web image assigned to ${layer.name}.${result.warnings[0] ? ` ${result.warnings[0]}` : ""}`);
+  }
+
+  async function placeWebImagesAtCanvasPoint(candidates: WebImageCandidate[], point: CanvasDropPoint) {
+    if (candidates.length === 0) {
+      setMessage("No copied or dragged web image was available.");
+      return;
+    }
+    const result = await importWebImageCandidates(candidates);
+    if (result.sources.length === 0) {
+      setMessage(result.warnings[0] ?? "Unable to cache the web image.");
+      return;
+    }
+    await placeSourcesAtCanvasPoint(result.sources, point, undefined, result.warnings);
   }
 
   async function placeSourcesAtCanvasPoint(
@@ -3071,6 +3172,8 @@ function App() {
 
   async function handleSourceDrop(event: React.DragEvent) {
     event.preventDefault();
+    const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
+    const paths = getDroppedPaths(event);
     setDropFeedback(undefined);
     if (getDroppedSourceId(event)) {
       setMessage("This source is already in the library.");
@@ -3081,11 +3184,14 @@ function App() {
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
       return;
     }
-    await importDroppedPaths(getDroppedPaths(event));
+    if (paths.length > 0) await importDroppedPaths(paths);
+    else await importWebImagesAsSources(webCandidates);
   }
 
   async function handleCanvasDrop(event: React.DragEvent) {
     event.preventDefault();
+    const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
+    const paths = getDroppedPaths(event);
     const point = canvasPointFromClient(event.clientX, event.clientY);
     setDropFeedback(undefined);
     if (!point) {
@@ -3107,12 +3213,15 @@ function App() {
       return;
     }
 
-    await importDroppedPathsAtCanvasPoint(getDroppedPaths(event), point);
+    if (paths.length > 0) await importDroppedPathsAtCanvasPoint(paths, point);
+    else await placeWebImagesAtCanvasPoint(webCandidates, point);
   }
 
   async function handlePlaceholderDrop(event: React.DragEvent, layer: PlaceholderLayer) {
     event.preventDefault();
     event.stopPropagation();
+    const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
+    const paths = getDroppedPaths(event);
     setDropFeedback(undefined);
     const existingSourceId = getDroppedSourceId(event);
     if (existingSourceId) {
@@ -3120,7 +3229,8 @@ function App() {
       if (source) assignSourceToLayer(source, layer);
       return;
     }
-    await assignDroppedPathsToLayer(getDroppedPaths(event), layer);
+    if (paths.length > 0) await assignDroppedPathsToLayer(paths, layer);
+    else await assignWebImagesToLayer(webCandidates, layer);
   }
 
   async function goHome() {
@@ -3547,6 +3657,30 @@ function App() {
     };
   }, [selectedLayer, selectedLayers, clipboardLayers, cropModeLayerId, project, projectPath, selectedLayerIds, view]);
 
+  useEffect(() => {
+    function onPaste(event: ClipboardEvent) {
+      if (isTypingTarget(event.target)) return;
+      const candidates = webImageCandidatesFromTransfer(event.clipboardData);
+      if (candidates.length === 0) return;
+      event.preventDefault();
+      void (async () => {
+        if (view === "editor" && selectedLayer && !selectedLayer.locked) {
+          await assignWebImagesToLayer(candidates, selectedLayer);
+          return;
+        }
+        if (view === "editor") {
+          const canvas = projectRef.current.canvas;
+          await placeWebImagesAtCanvasPoint(candidates, { x: canvas.width / 2, y: canvas.height / 2 });
+          return;
+        }
+        await importWebImagesAsSources(candidates);
+      })();
+    }
+
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [selectedLayer, view]);
+
   if (view === "home") {
     return (
       <>
@@ -3589,7 +3723,7 @@ function App() {
     <main className={`app-shell ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
       <aside className={`sidebar left ${leftPanelOpen ? "" : "collapsed"}`}>
         <div className="brand compact-brand">
-          <div className="brand-mark">P</div>
+          <img className="brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
           <div className="brand-copy">
             <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
             <p>{project.sources.length} pools · {project.templates.templates.length} templates</p>
@@ -3664,11 +3798,7 @@ function App() {
                 <span>{sourceImagesForPolicy(selectedSource).length} available</span>
                 <span className={`status-dot ${selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}`} />
               </div>
-              <label className="source-media-policy">Media<select value={selectedSource.mediaPolicy} onChange={(event) => {
-                const mediaPolicy = event.target.value as SourceMediaPolicy;
-                commitProject((current) => ({ ...current, sources: current.sources.map((source) => source.id === selectedSource.id ? { ...source, mediaPolicy } : source) }));
-                setMessage(`Updated ${selectedSource.name}: ${mediaPolicy.replace(/-/g, " ")}.`);
-              }}><option value="images-only">Images only</option><option value="images-and-video-thumbnails">Images + video thumbnails</option></select></label>
+              <div className="source-media-policy"><span>Media</span><strong>Images + video thumbnails</strong></div>
               <details className="source-technical-details">
                 <summary>Details <ChevronDown size={14} /></summary>
                 <dl>
@@ -3681,7 +3811,7 @@ function App() {
                   <div><dt>Updated</dt><dd>{selectedSource.lastImportCompletedAt ? new Date(selectedSource.lastImportCompletedAt).toLocaleString() : selectedSource.lastScannedAt ? new Date(selectedSource.lastScannedAt).toLocaleString() : "Not scanned"}</dd></div>
                 </dl>
               </details>
-              {(selectedSource.mediaCounts?.videos ?? 0) > 0 && selectedSource.mediaPolicy === "images-only" && <p className="source-exclusion-note">{selectedSource.mediaCounts?.videos} video thumbnail{selectedSource.mediaCounts?.videos === 1 ? "" : "s"} excluded</p>}
+              
               <div className="source-detail-actions">
                 <button className="pill-button" onClick={() => void rescanSource(selectedSource)}>Refresh</button>
                 <button className="pill-button" onClick={() => void showSourceInFolder(selectedSource)}>Show</button>
@@ -4280,9 +4410,9 @@ function TemplateHome({
     <main className="template-home">
       <header className="home-header">
         <div className="home-brand">
-          <div className="home-brand-mark">P</div>
+          <img className="home-brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
           <div>
-            <span className="home-kicker">WALLPAPER STUDIO</span>
+            <span className="home-kicker">PIN PAPER</span>
             <h1>Your templates</h1>
           </div>
         </div>
@@ -4295,7 +4425,7 @@ function TemplateHome({
 
       <section className="home-hero">
         <div>
-          <h2>Wallpaper, made personal <span>Turn the images you love into an evolving visual space.</span></h2>
+          <h2><span className="home-slogan">Wallpaper, made personal</span><small>Wallpapers made out of collections you love.</small></h2>
         </div>
       </section>
 
@@ -5231,14 +5361,12 @@ function CanvasDesignPanel({
               className={(choice.type === "none" ? !surface.enabled || surface.type === "none" : surface.enabled && surface.type === choice.type) ? "texture-choice active" : "texture-choice"}
               onClick={() => selectSurface(choice.type)}
             >
-              <span className="texture-swatch neutral-surface-swatch" />
               <span>{choice.label}</span>
             </button>
           ))}
           {customTextures.map((texture) => (
             <div className={surface.enabled && surface.type === "custom" && surface.customTextureId === texture.id ? "texture-choice custom active" : "texture-choice custom"} key={texture.id}>
               <button onClick={() => selectSurface("custom", texture.id)}>
-                <span className="texture-swatch" style={{ backgroundImage: cssImageUrl(texture.url) }} />
                 <span>{texture.name}</span>
               </button>
               <div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div>
@@ -5326,7 +5454,6 @@ function Properties({
       polaroid.borderLeft = base;
       polaroid.borderBottom = base * 2.2;
       polaroid.captionHeight = Math.max(0, polaroid.borderBottom - base);
-      tornPaper.imageInset = base;
     }
     if (patch.paperColor !== undefined) {
       polaroid.frameColor = patch.paperColor;
@@ -5367,8 +5494,8 @@ function Properties({
   }
   function resetTornPaper() {
     const type: PaperFrameType = "torn";
-    const defaults = createDefaultTornPaperEffect({ ...createDefaultPaperFrame(), type });
-    onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, customPresets: tornPaper.customPresets } } });
+    const defaults = createDefaultTornPaperEffect({ ...createDefaultPaperFrame(), type, borderWidth: 0, innerPadding: 0 });
+    onPatch({ effects: { ...activeLayer.effects, paperFrame: { ...activeLayer.effects.paperFrame, type }, tornPaper: { ...defaults, enabled: true, imageInset: 0, customPresets: tornPaper.customPresets } } });
   }
 
   const frameTextureType: "none" | "paper" | "crumpled-paper" = layer.effects.paper.enabled === false || layer.effects.paper.type === "none" ? "none" : layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
@@ -5596,6 +5723,7 @@ function TornPaperInspector({
       </div>
       <FilterSlider label="Tear Depth" value={tearDepth} min={0} max={100} onChange={patchDepth} />
       <FilterSlider label="Ridge Count" value={ridgeCount} min={4} max={80} onChange={patchRidgeCount} />
+      <FilterSlider label="Paper Border" value={effect.imageInset} min={0} max={300} onChange={(value) => onPatch({ imageInset: Math.round(value) })} />
       <div className="torn-paper-action-row"><button className="button secondary torn-paper-regenerate-button" onClick={() => onPatch({ seed: nextStableSeed(effect.seed) })}><RefreshCcw size={15} /> Regenerate Tear</button></div>
     </div>
   );

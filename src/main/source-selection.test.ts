@@ -7,7 +7,7 @@ function source(id: string, count: number): ImageSource {
   return {
     id, name: id, type: "local-folder", path: `/${id}`, providerId: "local-folder",
     images: Array.from({ length: count }, (_, index) => ({ id: `${id}-${index}`, name: `${index}.jpg`, path: `/${id}/${index}.jpg`, url: `file:///${id}/${index}.jpg`, mediaType: "image" })),
-    mediaPolicy: "images-only", updatedAt: "2026-01-01T00:00:00.000Z"
+    mediaPolicy: "images-and-video-thumbnails", updatedAt: "2026-01-01T00:00:00.000Z"
   };
 }
 

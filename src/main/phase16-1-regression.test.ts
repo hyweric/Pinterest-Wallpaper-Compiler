@@ -30,7 +30,8 @@ test("empty-canvas Finder and existing-source drops create positioned placeholde
   const block = renderer.slice(start, end);
   assert.match(block, /canvasPointFromClient\(event\.clientX, event\.clientY\)/);
   assert.match(block, /placeSourcesAtCanvasPoint\(\[source\], point\)/);
-  assert.match(block, /importDroppedPathsAtCanvasPoint\(getDroppedPaths\(event\), point\)/);
+  assert.match(block, /if \(paths\.length > 0\) await importDroppedPathsAtCanvasPoint\(paths, point\)/);
+  assert.match(block, /else await placeWebImagesAtCanvasPoint\(webCandidates, point\)/);
   assert.doesNotMatch(block, /import reusable sources only/);
 });
 

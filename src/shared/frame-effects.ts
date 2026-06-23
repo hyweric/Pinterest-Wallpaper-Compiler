@@ -92,7 +92,7 @@ export function normalizePolaroidCaption(input?: PartialDeep<PolaroidCaptionEffe
 }
 
 function legacyFrameBase(frame?: PaperFrameEffect) {
-  return Math.max(0, finite(frame?.borderWidth, 20) + finite(frame?.innerPadding, 0));
+  return Math.max(0, finite(frame?.borderWidth, 0) + finite(frame?.innerPadding, 0));
 }
 
 function legacyFrameRotation(frame?: PaperFrameEffect) {

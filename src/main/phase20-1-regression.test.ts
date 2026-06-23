@@ -24,7 +24,7 @@ test("managed overlay sources are treated as overlay-like and not temporary file
     type: "local-file" as const,
     name: "Overlay · Logo",
     images: [{ id: "image-overlay", name: "logo.png", path: "/managed/logo.png", url: "file:///managed/logo.png", mediaType: "image" as const }],
-    mediaPolicy: "images-only" as const,
+    mediaPolicy: "images-and-video-thumbnails" as const,
     updatedAt: "now"
   };
   assert.equal(sourceIsManagedOverlay(source), true);

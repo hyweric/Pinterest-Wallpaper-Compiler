@@ -514,7 +514,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       name: input.existing?.name ?? boardNameFromUrl(input.input.url),
       url: input.input.url.trim(),
       images: input.images,
-      mediaPolicy: input.existing?.mediaPolicy ?? "images-only",
+      mediaPolicy: "images-and-video-thumbnails",
       mediaCounts: {
         total: input.images.length,
         images: input.images.filter((image) => image.mediaType !== "video").length,
@@ -660,7 +660,7 @@ export class LocalFileProvider {
       type: "local-file",
       name: images.length === 1 ? images[0].name : `${images.length} local images`,
       images,
-      mediaPolicy: "images-only",
+      mediaPolicy: "images-and-video-thumbnails",
       mediaCounts: { total: images.length, images: images.filter((image) => image.mediaType !== "video").length, videos: images.filter((image) => image.mediaType === "video").length },
       importStatus: "ready",
       updatedAt: new Date().toISOString()

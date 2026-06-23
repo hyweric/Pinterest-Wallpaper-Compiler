@@ -1,10 +1,10 @@
 {
-  "name": "pinterest-wallpaper-compiler",
-  "productName": "Pinterest Wallpaper Compiler",
+  "name": "pin-paper",
+  "productName": "Pin Paper",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first desktop wallpaper template editor and generator.",
-  "author": "Pinterest Wallpaper Compiler contributors",
+  "description": "Local-first desktop wallpaper collection editor and generator.",
+  "author": "Pin Paper contributors",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && node scripts/start-electron.cjs .\"",
@@ -38,14 +38,15 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.progayer.pinterest-wallpaper-compiler",
-    "productName": "Pinterest Wallpaper Compiler",
+    "appId": "com.progayer.pin-paper",
+    "productName": "Pin Paper",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "build/icon.png"
     ],
     "asar": true,
     "mac": {
@@ -65,7 +66,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.png"
     },
     "win": {
       "target": [
@@ -88,6 +90,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "icon": "build/icon.png"
   }
 }

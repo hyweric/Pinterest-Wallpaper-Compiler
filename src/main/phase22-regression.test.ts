@@ -20,7 +20,7 @@ function source(id: string, count: number): ImageSource {
       url: `file:///${id}/${index}.jpg`,
       mediaType: "image"
     })),
-    mediaPolicy: "images-only",
+    mediaPolicy: "images-and-video-thumbnails",
     updatedAt: "2026-01-01T00:00:00.000Z"
   };
 }

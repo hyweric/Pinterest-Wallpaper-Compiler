@@ -53,11 +53,12 @@ test("Phase 22.2 exposes previous and next image controls without replacing gene
 
 test("Phase 22.2 advances current desktop preview and left-aligns Add Placeholder", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
+  const previewSelection = await readFile(path.join(process.cwd(), "src/shared/preview-selection.ts"), "utf8");
   const styles = await readFile(path.join(process.cwd(), "src/renderer/styles.css"), "utf8");
 
-  assert.match(renderer, /function advancePreviewProjectImages/);
   assert.match(renderer, /const advanced = advancePreviewProjectImages\(previewBase\)/);
-  assert.match(renderer, /generatedImageId: choice\.image\.id/);
+  assert.match(previewSelection, /function advancePreviewProjectImages/);
+  assert.match(previewSelection, /generatedImageId: choice\.image\.id/);
   assert.match(styles, /Phase 22\.1\.1 hotfix/);
   assert.match(styles, /\.minimal-toolbar \.toolbar-create-actions \{[\s\S]*justify-self: start/);
 });

@@ -19,7 +19,7 @@ describe("phase 22.3.3 toolbar and dropdown polish", () => {
 
   it("keeps one final dropdown padding standard for inspector and sidebar selects", () => {
     assert.match(styles, /Phase 22\.3\.3: standardize dropdown padding/);
-    assert.match(styles, /select,[\s\S]*?\.source-media-policy select \{[\s\S]*?height: 35px !important;/);
+    assert.match(styles, /select,[\s\S]*?height: 35px !important;/);
     assert.match(styles, /padding: 0 38px 0 12px !important;/);
     assert.match(styles, /line-height: 35px !important;/);
     assert.match(styles, /background-position: right 0 center, right 12px center !important;/);

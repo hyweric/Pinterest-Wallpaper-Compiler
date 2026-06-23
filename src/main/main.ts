@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, session, shell, systemPreferences, Tray } from "electron";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -46,6 +47,7 @@ import {
   wallpaperSetManifestFile,
   wallpaperSetTemporaryPrefix
 } from "./wallpaper-sets.js";
+import { installStrictMediaPermissionPolicy } from "./media-permissions.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
 const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -76,8 +78,30 @@ type WallpaperSetSession = {
 
 const wallpaperSetSessions = new Map<string, WallpaperSetSession>();
 
+function pinPaperPicturesRoot() {
+  return path.join(app.getPath("pictures"), "Pin Paper");
+}
+
 function defaultWallpaperSetsRoot() {
-  return path.join(app.getPath("pictures"), "Pinterest Wallpaper Compiler", "Wallpaper Sets");
+  return path.join(pinPaperPicturesRoot(), "Wallpaper Sets");
+}
+
+function persistentSourceCacheRoot() {
+  return path.join(pinPaperPicturesRoot(), "Source Cache");
+}
+
+function persistentWebImportCacheRoot() {
+  return path.join(persistentSourceCacheRoot(), "Web Imports");
+}
+
+function pinPaperIconPath() {
+  return path.join(app.getAppPath(), "build", "icon.png");
+}
+
+function pinPaperTrayImage() {
+  const image = nativeImage.createFromPath(pinPaperIconPath());
+  if (image.isEmpty()) return nativeImage.createEmpty();
+  return image.resize({ width: 18, height: 18 });
 }
 
 function formatBytes(value: number) {
@@ -128,7 +152,8 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     backgroundColor: "#f5f5f2",
-    title: "Pinterest Wallpaper Compiler",
+    title: "Pin Paper",
+    icon: pinPaperIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -247,9 +272,8 @@ function updateTrayMenu() {
 
 function createTray() {
   if (tray) return;
-  const image = nativeImage.createFromNamedImage("NSImageNameColorPanel", [-1, 0, 1]);
-  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image);
-  tray.setToolTip("Pinterest Wallpaper Compiler");
+  tray = new Tray(pinPaperTrayImage());
+  tray.setToolTip("Pin Paper");
   tray.on("click", showWindow);
   updateTrayMenu();
 }
@@ -393,7 +417,7 @@ async function loadPublicPinterestBoard(
 }
 
 function pinterestProvider() {
-  return new PinterestBoardProvider(path.join(app.getPath("userData"), "Image Cache", "Pinterest"), loadPublicPinterestBoard);
+  return new PinterestBoardProvider(path.join(persistentSourceCacheRoot(), "Pinterest"), loadPublicPinterestBoard);
 }
 
 async function canDecodeImportedImage(filePath: string) {
@@ -486,7 +510,109 @@ async function importValidatedLocalPaths(paths: unknown) {
 function dataUrlToBuffer(dataUrl: string): Buffer {
   const comma = dataUrl.indexOf(",");
   if (comma === -1) throw new Error("Invalid image data.");
-  return Buffer.from(dataUrl.slice(comma + 1), "base64");
+  const header = dataUrl.slice(0, comma);
+  const body = dataUrl.slice(comma + 1);
+  return header.includes(";base64") ? Buffer.from(body, "base64") : Buffer.from(decodeURIComponent(body));
+}
+
+function mimeToImageExtension(mimeType: string, fallback = ".png") {
+  const normalized = mimeType.toLowerCase().split(";")[0].trim();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return ".jpg";
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "image/heic") return ".heic";
+  if (normalized === "image/heif") return ".heif";
+  return fallback;
+}
+
+function sanitizeCacheFileStem(value: string) {
+  const cleaned = value.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || "web-image";
+}
+
+async function cacheWebImage(payload: unknown): Promise<ImageFileResult> {
+  try {
+    if (!payload || typeof payload !== "object") return { canceled: false, error: "No web image was provided." };
+    const input = payload as { url?: unknown; dataUrl?: unknown; name?: unknown; mimeType?: unknown };
+    const rawUrl = typeof input.url === "string" ? input.url.trim() : "";
+    const rawDataUrl = typeof input.dataUrl === "string" ? input.dataUrl.trim() : "";
+    const requestedName = typeof input.name === "string" ? input.name.trim() : "";
+    const requestedMime = typeof input.mimeType === "string" ? input.mimeType.trim() : "";
+
+    let data: Buffer;
+    let mimeType = requestedMime;
+    let sourceUrl = rawUrl || undefined;
+    let name = requestedName || "web image";
+
+    if (rawDataUrl.startsWith("data:image/")) {
+      const header = rawDataUrl.slice(0, rawDataUrl.indexOf(","));
+      mimeType = mimeType || header.slice("data:".length).split(";")[0];
+      data = dataUrlToBuffer(rawDataUrl);
+    } else if (rawUrl.startsWith("data:image/")) {
+      const header = rawUrl.slice(0, rawUrl.indexOf(","));
+      mimeType = mimeType || header.slice("data:".length).split(";")[0];
+      data = dataUrlToBuffer(rawUrl);
+      sourceUrl = undefined;
+    } else if (/^https?:\/\//i.test(rawUrl)) {
+      const response = await fetch(rawUrl, { redirect: "follow" });
+      if (!response.ok) return { canceled: false, error: `Web image download failed with HTTP ${response.status}.` };
+      mimeType = mimeType || response.headers.get("content-type") || "";
+      if (!mimeType.toLowerCase().startsWith("image/")) return { canceled: false, error: "The dropped web item was not an image." };
+      data = Buffer.from(await response.arrayBuffer());
+      try {
+        const url = new URL(rawUrl);
+        const basename = path.basename(url.pathname);
+        if (!requestedName && basename) name = basename;
+      } catch {
+        // Keep the fallback name.
+      }
+    } else {
+      return { canceled: false, error: "Drop or paste an image file, copied image, or direct image URL." };
+    }
+
+    if (data.length < 16) return { canceled: false, error: "The web image was empty." };
+    const extension = mimeToImageExtension(mimeType, path.extname(name).toLowerCase() || ".png");
+    const hash = createHash("sha256").update(data).digest("hex");
+    const cacheDir = persistentWebImportCacheRoot();
+    await mkdir(cacheDir, { recursive: true });
+    const destinationPath = path.join(cacheDir, `${sanitizeCacheFileStem(path.basename(name, path.extname(name)))}-${hash.slice(0, 16)}${extension}`);
+    await writeFile(destinationPath, data);
+    if (!(await canDecodeImportedImage(destinationPath))) {
+      await rm(destinationPath, { force: true }).catch(() => undefined);
+      return { canceled: false, error: "The web image could not be decoded after caching." };
+    }
+    const fileStat = await stat(destinationPath);
+    const timestamp = new Date().toISOString();
+    const image = enrichLocalImageDimensions({
+      id: `web-image-${hash.slice(0, 24)}`,
+      name: requestedName || path.basename(destinationPath),
+      path: destinationPath,
+      url: pathToFileURL(destinationPath).toString(),
+      modifiedAt: fileStat.mtime.toISOString(),
+      size: fileStat.size,
+      sourceUrl,
+      mediaType: "image"
+    });
+    const source = enrichSourceImageDimensions({
+      id: `source-web-${hash.slice(0, 18)}`,
+      identityKey: `web-image:${hash}`,
+      providerId: "local-file" as const,
+      type: "local-file" as const,
+      name: requestedName || path.basename(destinationPath),
+      path: destinationPath,
+      cachePath: cacheDir,
+      images: [image],
+      mediaPolicy: "images-and-video-thumbnails" as const,
+      mediaCounts: { total: 1, images: 1, videos: 0 },
+      importStatus: "ready" as const,
+      importLog: [`Cached web image into ${cacheDir}.`],
+      updatedAt: timestamp
+    });
+    return { canceled: false, image, images: [image], source };
+  } catch (error) {
+    return { canceled: false, error: error instanceof Error ? error.message : "Unable to cache web image." };
+  }
 }
 
 function wallpaperImageBuffer(imageData: ArrayBuffer) {
@@ -541,7 +667,7 @@ async function cleanupGeneratedWallpaperCache(cacheDir: string, currentFilePath:
 }
 
 function wallpaperVaultDirectory() {
-  return path.join(app.getPath("pictures"), "Pinterest Wallpaper Compiler", "Wallpaper Vault");
+  return path.join(pinPaperPicturesRoot(), "Wallpaper Vault");
 }
 
 async function persistAppliedWallpaper(filePath: string) {
@@ -745,7 +871,7 @@ async function applyWallpaperFilePath(
   if (!diagnostics.changed) {
     const baseError = diagnostics.lastError ?? "The operating system did not confirm the desktop wallpaper changed.";
     const permissionHint = diagnostics.permissionStatus === "automation-denied"
-      ? " Allow Pinterest Wallpaper Compiler to control System Events in System Settings > Privacy & Security > Automation, then try Preview again."
+      ? " Allow Pin Paper to control System Events in System Settings > Privacy & Security > Automation, then try Preview again."
       : "";
     throw Object.assign(new Error(`${baseError}${permissionHint}`), { diagnostics });
   }
@@ -824,6 +950,10 @@ ipcMain.handle("source:import-paths", async (_event, paths: unknown): Promise<Pa
   return importValidatedLocalPaths(paths);
 });
 
+ipcMain.handle("source:import-web-image", async (_event, payload: unknown): Promise<ImageFileResult> => {
+  return cacheWebImage(payload);
+});
+
 ipcMain.handle("source:rescan-folder", async (_event, folderPath: unknown) => {
   const imported = await importValidatedLocalPaths([folderPath]);
   const source = imported.sources.find((item) => item.type === "local-folder");
@@ -885,7 +1015,7 @@ ipcMain.handle("project:save", async (_event, project: WallpaperProject, filePat
     const result = await dialog.showSaveDialog({
       title: "Save Wallpaper Project",
       defaultPath: `${project.name || "Wallpaper Project"}.pwc.json`,
-      filters: [{ name: "Wallpaper Compiler Project", extensions: ["pwc.json", "json"] }]
+      filters: [{ name: "Pin Paper Project", extensions: ["pwc.json", "json"] }]
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     targetPath = result.filePath;
@@ -899,7 +1029,7 @@ ipcMain.handle("project:open", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
     title: "Open Wallpaper Project",
-    filters: [{ name: "Wallpaper Compiler Project", extensions: ["pwc.json", "json"] }]
+    filters: [{ name: "Pin Paper Project", extensions: ["pwc.json", "json"] }]
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
@@ -1132,7 +1262,7 @@ ipcMain.handle("overlay:import", async (): Promise<ImageFileResult> => {
       name: `Overlay · ${path.basename(sourcePath, path.extname(sourcePath))}`,
       path: destinationPath,
       images: [image],
-      mediaPolicy: "images-only" as const,
+      mediaPolicy: "images-and-video-thumbnails" as const,
       mediaCounts: { total: 1, images: 1, videos: 0 },
       importStatus: "ready" as const,
       importLog: [`Imported managed overlay asset from ${sourcePath}.`],
@@ -1443,6 +1573,7 @@ ipcMain.handle("app:apply-startup-behavior", (_event, startMinimized: boolean) =
 });
 
 app.whenReady().then(async () => {
+  installStrictMediaPermissionPolicy(session.defaultSession as unknown as import("./media-permissions.js").PermissionPolicySession);
   registerLocalFileProtocol();
   createWindow();
   createTray();
