@@ -5546,7 +5546,7 @@ function Properties({
   function patchFrameMode(frameMode: PlaceholderLayer["frameMode"]) {
     onPatch(frameMode === "adaptive"
       ? { frameMode, cropMode: "contain", alignment: "center", crop: { offsetX: 0, offsetY: 0, zoom: 1 } }
-      : { frameMode: "fixed" });
+      : { frameMode: "fixed", cropMode: "cover", alignment: "center", crop: { offsetX: 0, offsetY: 0, zoom: 1 } });
   }
 
   function patchSimpleDropShadow(value: number) {
@@ -5576,6 +5576,18 @@ function Properties({
   return (
     <section className="panel properties">
       {activeTab === "image" && <>
+        <details>
+          <summary>Frame Position <ChevronDown size={15} /></summary>
+          <div className="frame-mode-choice-grid" role="group" aria-label="Frame Mode">
+            <button type="button" className={(layer.frameMode ?? "fixed") === "fixed" ? "active" : ""} onClick={() => patchFrameMode("fixed")}>Fixed Shape</button>
+            <button type="button" className={layer.frameMode === "adaptive" ? "active" : ""} onClick={() => patchFrameMode("adaptive")}>Adaptive Aspect</button>
+          </div>
+          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>{layer.frameMode === "adaptive" ? "Target W" : "Width"}<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>{layer.frameMode === "adaptive" ? "Target H" : "Height"}<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
+          <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
+          <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image</button></div>
+          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
+        </details>
+
         <details open>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
           <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
@@ -5593,17 +5605,6 @@ function Properties({
           <FilterSlider label="Fade" value={layer.effects.filters.fade} min={0} max={80} onChange={(value) => patchFilters({ fade: value, presetId: "custom" })} />
         </details>
 
-        <details>
-          <summary>Frame Position <ChevronDown size={15} /></summary>
-          <div className="frame-mode-choice-grid" role="group" aria-label="Frame Mode">
-            <button type="button" className={(layer.frameMode ?? "fixed") === "fixed" ? "active" : ""} onClick={() => patchFrameMode("fixed")}>Fixed Shape</button>
-            <button type="button" className={layer.frameMode === "adaptive" ? "active" : ""} onClick={() => patchFrameMode("adaptive")}>Adaptive Aspect</button>
-          </div>
-          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>{layer.frameMode === "adaptive" ? "Target W" : "Width"}<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>{layer.frameMode === "adaptive" ? "Target H" : "Height"}<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
-          <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
-          <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image</button></div>
-          <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
-        </details>
       </>}
 
       {activeTab === "effects" && <>
