@@ -5763,3 +5763,29 @@ select,
 .home-brand-mark.pin-paper-mark {
   object-fit: contain;
 }
+
+.frame-mode-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.frame-mode-choice-grid button {
+  min-width: 0;
+  height: 31px;
+  padding: 0 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+  font-size: 10.5px;
+  border: 1px solid rgba(44, 48, 58, 0.12);
+  background: rgba(255, 255, 255, 0.54);
+  color: #6f7283;
+  box-shadow: none;
+}
+
+.frame-mode-choice-grid button.active {
+  border-color: rgba(112, 117, 179, .45);
+  background: rgba(233, 232, 249, .95);
+  color: #51558a;
+}

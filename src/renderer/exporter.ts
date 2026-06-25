@@ -1,5 +1,6 @@
 import type { CanvasSettings, CustomTextureAsset, PaperFrameEffect, PaperTextureEffect, PlaceholderLayer, ShadowEffect, TornPaperEffect, WallpaperProject } from "../shared/types";
 import { computeImagePlacement, resolveMaskGeometry } from "../shared/geometry";
+import { resolveLayerFrameBounds } from "../shared/adaptive-frame";
 import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/local-file-url";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, tornPaperPolygonPoints, tornPaperTextureDataUrl } from "../shared/frame-effects";
@@ -217,14 +218,17 @@ function drawInsetShadow(
 async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperProject, layer: PlaceholderLayer) {
   if (layer.hidden) return;
   const imageRef = getImageForLayer(project, layer);
+  const image = imageRef ? await loadImage(imageRef.url) : undefined;
+  const frame = resolveLayerFrameBounds(layer, image ?? imageRef);
+  const visualLayer = { ...layer, x: frame.x, y: frame.y, width: frame.width, height: frame.height };
   const paperFrame = layer.effects.paperFrame;
   const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
   const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
   const polaroidActive = paperFrame.type === "polaroid";
   const tornActive = paperFrame.type === "torn" || paperFrame.type === "deckle";
-  const insets = paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper);
-  const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
-  const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
+  const insets = paperFrameInsets(paperFrame, frame.width, frame.height, polaroid, tornPaper);
+  const innerWidth = Math.max(1, frame.width - insets.left - insets.right);
+  const innerHeight = Math.max(1, frame.height - insets.top - insets.bottom);
   const frameRotation = paperFrameRotation(paperFrame, polaroid);
   const frameColor = polaroidActive ? polaroid.frameColor : tornActive ? tornPaper.paperColor : paperFrame.paperColor;
   const frameOpacity = polaroidActive ? polaroid.frameOpacity : tornActive ? tornPaper.paperOpacity : 1;
@@ -239,11 +243,11 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
       : { scale: 1, x: 0, y: 0, rotation: 0 };
 
   context.save();
-  context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+  context.translate(frame.x + frame.width / 2, frame.y + frame.height / 2);
   context.rotate(((layer.rotation + frameRotation) * Math.PI) / 180);
   context.globalAlpha = layer.opacity;
   context.globalCompositeOperation = layer.effects.blendMode === "normal" ? "source-over" : layer.effects.blendMode;
-  context.translate(-layer.width / 2, -layer.height / 2);
+  context.translate(-frame.width / 2, -frame.height / 2);
 
   const expandedShadowApplied = outerShadow ? applyCanvasShadow(context, outerShadow) : false;
   if (!expandedShadowApplied) {
@@ -256,7 +260,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   }
 
   if (paperFrame.type !== "none") {
-    roughPaperPath(context, layer.width, layer.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
+    roughPaperPath(context, frame.width, frame.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
     const previousAlpha = context.globalAlpha;
     context.globalAlpha = layer.opacity * frameOpacity;
     context.fillStyle = frameColor;
@@ -264,7 +268,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.globalAlpha = previousAlpha;
     context.shadowColor = "transparent";
     if (frameTextureIntensity > 0) {
-      await drawSurfaceTexture(context, layer.width, layer.height, {
+      await drawSurfaceTexture(context, frame.width, frame.height, {
         ...layer.effects.paper,
         enabled: true,
         type: layer.effects.paper.type === "none" ? "paper" : layer.effects.paper.type,
@@ -276,23 +280,23 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     const warmth = polaroidActive ? paperWarmthOverlay(polaroid.warmth) : undefined;
     if (warmth) {
       context.save();
-      roughPaperPath(context, layer.width, layer.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
+      roughPaperPath(context, frame.width, frame.height, paperFrame, tornActive ? tornPaper : undefined, frameRadius);
       context.clip();
       context.globalCompositeOperation = "soft-light";
       context.globalAlpha = layer.opacity * warmth.opacity;
       context.fillStyle = warmth.color;
-      context.fillRect(0, 0, layer.width, layer.height);
+      context.fillRect(0, 0, frame.width, frame.height);
       context.restore();
     }
     if (tornActive && (tornPaper.fibers > 0 || tornPaper.wrinkles > 0 || tornPaper.stains > 0 || tornPaper.speckles > 0 || tornPaper.edgeDarkening > 0)) {
-      const texture = await loadImage(tornPaperTextureDataUrl(tornPaper, layer.width, layer.height));
+      const texture = await loadImage(tornPaperTextureDataUrl(tornPaper, frame.width, frame.height));
       context.save();
-      roughPaperPath(context, layer.width, layer.height, paperFrame, tornPaper, frameRadius);
+      roughPaperPath(context, frame.width, frame.height, paperFrame, tornPaper, frameRadius);
       context.clip();
       context.shadowColor = "transparent";
       context.globalAlpha = layer.opacity;
       context.globalCompositeOperation = "source-over";
-      context.drawImage(texture, 0, 0, layer.width, layer.height);
+      context.drawImage(texture, 0, 0, frame.width, frame.height);
       context.restore();
     }
   }
@@ -308,15 +312,22 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.fillStyle = innerBackground;
     context.fillRect(0, 0, innerWidth, innerHeight);
   }
-  if (imageRef) {
-    const image = await loadImage(imageRef.url);
+  if (image) {
     context.save();
     context.filter = filterString(layer);
     context.translate(innerWidth / 2 + imageTransform.x, innerHeight / 2 + imageTransform.y);
     context.rotate((imageTransform.rotation * Math.PI) / 180);
     context.scale(imageTransform.scale, imageTransform.scale);
     context.translate(-innerWidth / 2, -innerHeight / 2);
-    drawPlacedImage(context, image, innerWidth, innerHeight, layer.cropMode, layer.alignment, layer.crop);
+    drawPlacedImage(
+      context,
+      image,
+      innerWidth,
+      innerHeight,
+      layer.frameMode === "adaptive" ? "contain" : layer.cropMode,
+      layer.frameMode === "adaptive" ? "center" : layer.alignment,
+      layer.frameMode === "adaptive" ? { offsetX: 0, offsetY: 0, zoom: 1 } : layer.crop
+    );
     context.restore();
   } else {
     context.fillStyle = "#d9d7d0";
@@ -344,9 +355,9 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
   context.restore();
 
   if (polaroidActive && polaroid.caption.enabled && polaroid.caption.text) {
-    const captionTop = Math.max(insets.top + innerHeight, layer.height - Math.max(polaroid.captionHeight, polaroid.borderBottom - polaroid.borderTop));
-    const captionWidth = Math.max(1, layer.width - polaroid.borderLeft - polaroid.borderRight);
-    const captionHeight = Math.max(1, layer.height - captionTop);
+    const captionTop = Math.max(insets.top + innerHeight, frame.height - Math.max(polaroid.captionHeight, polaroid.borderBottom - polaroid.borderTop));
+    const captionWidth = Math.max(1, frame.width - polaroid.borderLeft - polaroid.borderRight);
+    const captionHeight = Math.max(1, frame.height - captionTop);
     context.save();
     context.translate(polaroid.caption.x, polaroid.caption.y);
     context.fillStyle = polaroid.caption.color;
@@ -366,11 +377,11 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
 
   if (layer.borderWidth > 0) {
     context.save();
-    context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+    context.translate(frame.x + frame.width / 2, frame.y + frame.height / 2);
     context.rotate(((layer.rotation + frameRotation) * Math.PI) / 180);
     context.globalAlpha = layer.opacity * layer.borderOpacity;
-    context.translate(-layer.width / 2, -layer.height / 2);
-    shapePath(context, layer);
+    context.translate(-frame.width / 2, -frame.height / 2);
+    shapePath(context, visualLayer);
     context.strokeStyle = layer.borderColor;
     context.lineWidth = layer.borderWidth;
     context.stroke();

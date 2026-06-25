@@ -86,7 +86,7 @@ import {
   updateActiveTemplateSnapshot,
   workspaceFromTemplate
 } from "./project";
-import { layerSelectionRange, layersIntersectingRect, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
+import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
 import { placeTooltip } from "../shared/ui";
 import {
   canvasPointAtClient,
@@ -118,6 +118,7 @@ import { selectImagesForGeneration } from "../shared/source-selection";
 import { advancePreviewProjectImages } from "../shared/preview-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
 import { resizeRectAroundCenter, type ResizeHandle } from "../shared/resize-geometry";
+import { resolveLayerFrameBounds, type LayerFrameBounds } from "../shared/adaptive-frame";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
 import { surfaceDefaultsForType } from "../shared/surfaces";
 import { clearSurfaceTextureCaches, drawSurfacePreview } from "./surface-renderer";
@@ -136,6 +137,14 @@ const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) ||
 function cssImageUrl(src?: string) {
   if (!src) return undefined;
   return `url("${renderableLocalFileUrl(src).replace(/"/g, "\\\"")}")`;
+}
+
+function measuredLayerFrame(layer: PlaceholderLayer, image?: LocalImageRef, natural?: { width: number; height: number }): LayerFrameBounds {
+  return resolveLayerFrameBounds(layer, natural ?? image);
+}
+
+function layerFrameWithImage(project: WallpaperProject, layer: PlaceholderLayer, natural?: { width: number; height: number }) {
+  return measuredLayerFrame(layer, getImageForLayer(project, layer), natural);
 }
 
 type DragMode =
@@ -1059,6 +1068,7 @@ function App() {
   const wheelDeltaRef = useRef(0);
   const wheelAnchorRef = useRef({ clientX: 0, clientY: 0 });
   const imageNaturalRef = useRef<Record<string, { width: number; height: number }>>({});
+  const [, setNaturalImageVersion] = useState(0);
   const projectRef = useRef(project);
   const applyInFlightRef = useRef(false);
   const wallpaperOperationRef = useRef<SingleFlightWallpaperOperation | undefined>(undefined);
@@ -2905,7 +2915,16 @@ function App() {
       };
       marqueeRef.current = next;
       setSelectionMarquee(next);
-      const hits = layersIntersectingRect(project.layers, next);
+      const hits = project.layers
+        .filter((layer) => !layer.hidden && !layer.locked)
+        .filter((layer) => {
+          const frame = layerFrameWithImage(project, layer, imageNaturalRef.current[layer.id]);
+          return frame.x < next.x + next.width
+            && frame.x + frame.width > next.x
+            && frame.y < next.y + next.height
+            && frame.y + frame.height > next.y;
+        })
+        .map((layer) => layer.id);
       const ids = [...new Set([...next.baseIds, ...hits])];
       setSelectedLayerIds(ids);
       setSelectedLayerId(ids.at(-1));
@@ -4115,6 +4134,8 @@ function App() {
             {project.layers.map((layer) => {
               const image = getImageForLayer(project, layer);
               if (layer.hidden) return null;
+              const natural = imageNaturalRef.current[layer.id];
+              const frame = measuredLayerFrame(layer, image, natural);
               const selected = selectedLayerIds.includes(layer.id);
               const cropping = cropModeLayerId === layer.id;
               const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
@@ -4122,9 +4143,9 @@ function App() {
               const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
               const hasAssignedImage = Boolean(image);
               const visualPaperActive = hasAssignedImage && paperFrame.type !== "none";
-              const insets = visualPaperActive ? paperFrameInsets(paperFrame, layer.width, layer.height, polaroid, tornPaper) : { top: 0, right: 0, bottom: 0, left: 0 };
-              const innerWidth = Math.max(1, layer.width - insets.left - insets.right);
-              const innerHeight = Math.max(1, layer.height - insets.top - insets.bottom);
+              const insets = visualPaperActive ? paperFrameInsets(paperFrame, frame.width, frame.height, polaroid, tornPaper) : { top: 0, right: 0, bottom: 0, left: 0 };
+              const innerWidth = Math.max(1, frame.width - insets.left - insets.right);
+              const innerHeight = Math.max(1, frame.height - insets.top - insets.bottom);
               const paperActive = visualPaperActive;
               const rough = visualPaperActive && paperFrameIsRough(paperFrame);
               const polaroidActive = visualPaperActive && paperFrame.type === "polaroid";
@@ -4137,7 +4158,7 @@ function App() {
               const expandedOuterShadow = polaroidActive ? shadowToCss(polaroid.dropShadow) : tornActive ? shadowToCss(tornPaper.outerShadow) : "";
               const expandedInnerShadow = polaroidActive ? shadowToCss(polaroid.innerShadow) : tornActive ? shadowToCss(tornPaper.innerShadow) : "";
               const polaroidWarmth = polaroidActive ? paperWarmthOverlay(polaroid.warmth) : undefined;
-              const tornPaperTexture = tornActive ? tornPaperTextureDataUrl(tornPaper, layer.width, layer.height) : undefined;
+              const tornPaperTexture = tornActive ? tornPaperTextureDataUrl(tornPaper, frame.width, frame.height) : undefined;
               const imageTransform = polaroidActive
                 ? { scale: polaroid.imageScale, x: polaroid.imageOffsetX, y: polaroid.imageOffsetY, rotation: polaroid.imageRotation }
                 : tornActive
@@ -4148,16 +4169,16 @@ function App() {
                 <div
                   className={`placeholder ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""} ${cropping ? "cropping" : ""} ${!hasAssignedImage ? "unassigned" : ""} ${paperActive ? `paper-frame ${paperFrame.type}` : ""} ${rough ? "rough-paper" : ""} ${dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id ? `drop-target ${dropFeedback.valid ? "drop-valid" : "drop-invalid"}` : ""}`}
                   style={{
-                    left: layer.x,
-                    top: layer.y,
-                    width: layer.width,
-                    height: layer.height,
+                    left: frame.x,
+                    top: frame.y,
+                    width: frame.width,
+                    height: frame.height,
                     transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
                     borderWidth: paperActive ? 0 : layer.borderWidth,
                     borderColor: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
                     borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
                     overflow: rough ? "visible" : "hidden",
-                    clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, layer.width, layer.height) : undefined,
+                    clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, frame.width, frame.height) : undefined,
                     opacity: layer.opacity,
                     backgroundColor: paperActive ? hexWithOpacity(expandedFrameColor, expandedFrameOpacity) : layer.effects.backgroundColor,
                     mixBlendMode: layer.effects.blendMode,
@@ -4169,7 +4190,7 @@ function App() {
                   }}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
-                    if (!layer.locked) setCropModeLayerId(layer.id);
+                    if (!layer.locked && layer.frameMode !== "adaptive") setCropModeLayerId(layer.id);
                   }}
                   onDragEnter={(event) => updateDropFeedback(event, "placeholder", layer.id)}
                   onDragOver={(event) => updateDropFeedback(event, "placeholder", layer.id)}
@@ -4193,7 +4214,7 @@ function App() {
                       ><EyeOff size={14} /></button>
                     </div>
                   )}
-                  {paperActive && <FrameSurfaceTextureOverlay layer={layer} width={layer.width} height={layer.height} textureIntensity={expandedFrameTexture} customTextures={project.customTextures} />}
+                  {paperActive && <FrameSurfaceTextureOverlay layer={layer} width={frame.width} height={frame.height} textureIntensity={expandedFrameTexture} customTextures={project.customTextures} />}
                   {polaroidWarmth && <span className="polaroid-warmth-overlay" style={{ backgroundColor: polaroidWarmth.color, opacity: polaroidWarmth.opacity }} />}
                   {tornPaperTexture && <span className="torn-paper-detail-overlay" style={{ backgroundImage: cssImageUrl(tornPaperTexture) }} />}
                   <div
@@ -4213,12 +4234,16 @@ function App() {
                         src={renderableLocalFileUrl(image.url)}
                         frameWidth={innerWidth}
                         frameHeight={innerHeight}
-                        mode={layer.cropMode}
-                        alignment={layer.alignment}
-                        crop={layer.crop}
+                        mode={layer.frameMode === "adaptive" ? "contain" : layer.cropMode}
+                        alignment={layer.frameMode === "adaptive" ? "center" : layer.alignment}
+                        crop={layer.frameMode === "adaptive" ? { offsetX: 0, offsetY: 0, zoom: 1 } : layer.crop}
                         filter={cssFilter(layer.effects.filters)}
                         imageTransform={imageTransform}
-                        onNatural={(natural) => { imageNaturalRef.current[layer.id] = natural; }}
+                        onNatural={(natural) => {
+                          const previous = imageNaturalRef.current[layer.id];
+                          imageNaturalRef.current[layer.id] = natural;
+                          if (!previous || previous.width !== natural.width || previous.height !== natural.height) setNaturalImageVersion((value) => value + 1);
+                        }}
                       />
                     ) : (
                       <span><ImagePlus size={22} /> Assign source</span>
@@ -4258,10 +4283,10 @@ function App() {
                   <div
                     className="selection-handles-overlay"
                     style={{
-                      left: layer.x,
-                      top: layer.y,
-                      width: layer.width,
-                      height: layer.height,
+                      left: frame.x,
+                      top: frame.y,
+                      width: frame.width,
+                      height: frame.height,
                       transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`
                     }}
                   >
@@ -4862,11 +4887,11 @@ function ContextToolbar({
   return (
     <div className="context-toolbar compact-context-toolbar" aria-label="Selected image quick controls">
       <div className="context-toolbar-button-group crop-actions" aria-label="Image fit controls">
-        <button className={layer.cropMode === "cover" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
-        <button className={layer.cropMode === "contain" ? "active" : ""} disabled={layer.locked} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
-        <button disabled={layer.locked} onClick={onCrop}>Crop</button>
+        <button className={layer.cropMode === "cover" && layer.frameMode !== "adaptive" ? "active" : ""} disabled={layer.locked || layer.frameMode === "adaptive"} onClick={() => onPatch({ cropMode: "cover" })}>Fill</button>
+        <button className={layer.frameMode === "adaptive" || layer.cropMode === "contain" ? "active" : ""} disabled={layer.locked || layer.frameMode === "adaptive"} onClick={() => onPatch({ cropMode: "contain" })}>Fit</button>
+        <button disabled={layer.locked || layer.frameMode === "adaptive"} onClick={onCrop}>Crop</button>
       </div>
-      <label className="mini-slider">Zoom<input disabled={layer.locked} type="range" min="0.5" max="3" step="0.05" value={layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
+      <label className="mini-slider">Zoom<input disabled={layer.locked || layer.frameMode === "adaptive"} type="range" min="0.5" max="3" step="0.05" value={layer.frameMode === "adaptive" ? 1 : layer.crop.zoom} onChange={(event) => onPatch({ crop: { ...layer.crop, zoom: Number(event.target.value) } })} /></label>
       <div className="context-toolbar-button-group layer-actions" aria-label="Layer controls">
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer up" aria-label="Move layer up" disabled={layer.locked} onClick={() => onOrder("forward")}><LayerOrderIcon direction="up" /></button>
         <button className="icon-button tooltip-anchor" data-tooltip="Move layer down" aria-label="Move layer down" disabled={layer.locked} onClick={() => onOrder("backward")}><LayerOrderIcon direction="down" /></button>
@@ -5518,6 +5543,12 @@ function Properties({
     });
   }
 
+  function patchFrameMode(frameMode: PlaceholderLayer["frameMode"]) {
+    onPatch(frameMode === "adaptive"
+      ? { frameMode, cropMode: "contain", alignment: "center", crop: { offsetX: 0, offsetY: 0, zoom: 1 } }
+      : { frameMode: "fixed" });
+  }
+
   function patchSimpleDropShadow(value: number) {
     const strength = Math.max(0, Math.min(100, value));
     const shadow: ShadowEffect = {
@@ -5564,7 +5595,11 @@ function Properties({
 
         <details>
           <summary>Frame Position <ChevronDown size={15} /></summary>
-          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>Height<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
+          <div className="frame-mode-choice-grid" role="group" aria-label="Frame Mode">
+            <button type="button" className={(layer.frameMode ?? "fixed") === "fixed" ? "active" : ""} onClick={() => patchFrameMode("fixed")}>Fixed Shape</button>
+            <button type="button" className={layer.frameMode === "adaptive" ? "active" : ""} onClick={() => patchFrameMode("adaptive")}>Adaptive Aspect</button>
+          </div>
+          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>{layer.frameMode === "adaptive" ? "Target W" : "Width"}<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>{layer.frameMode === "adaptive" ? "Target H" : "Height"}<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
           <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
           <div className="compact-action-row image-step-row"><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "previous")}>Previous Image</button><button className="button secondary" disabled={imageChoiceCount < 2} onClick={() => onStepImage(layer, "next")}>Next Image</button></div>
           <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>

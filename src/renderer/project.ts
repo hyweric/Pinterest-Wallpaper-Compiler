@@ -140,6 +140,7 @@ export function createPlaceholder(canvas: CanvasSettings, index: number): Placeh
     y: Math.round(canvas.height * 0.16 + index * 28),
     width,
     height,
+    frameMode: "fixed",
     rotation: 0,
     cropMode: "cover",
     alignment: "center",
@@ -298,6 +299,7 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
   normalizedTornPaper.enabled = paperType === "torn";
   return {
     ...layer,
+    frameMode: layer.frameMode === "adaptive" ? "adaptive" : "fixed",
     borderOpacity: layer.borderOpacity ?? 1,
     maskShape: layer.maskShape ?? (layer.borderRadius >= Math.min(layer.width, layer.height) / 2 ? "circle" : layer.borderRadius > 0 ? "rounded" : "rectangle"),
     crop: layer.crop ?? { offsetX: 0, offsetY: 0, zoom: 1 },

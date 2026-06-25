@@ -1,6 +1,7 @@
 export type ExportFormat = "png" | "jpeg"; // JPEG remains readable for old files; the UI now exports PNG only.
 
 export type CropMode = "cover" | "contain" | "stretch" | "original" | "tile";
+export type PlaceholderFrameMode = "fixed" | "adaptive";
 
 export type BackgroundFitMode = "cover" | "contain" | "stretch" | "original" | "tile" | "center";
 export type MaskShape = "rectangle" | "rounded" | "circle";
@@ -499,6 +500,7 @@ export interface PlaceholderLayer {
   y: number;
   width: number;
   height: number;
+  frameMode?: PlaceholderFrameMode;
   rotation: number;
   cropMode: CropMode;
   alignment: ImageAlignment;

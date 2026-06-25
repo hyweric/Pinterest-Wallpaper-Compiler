@@ -23,8 +23,8 @@ test("the logical canvas is scaled as one composited surface instead of resizing
   const styles = await source("src/renderer/styles.css");
   assert.match(renderer, /className="canvas-zoom-shell"/);
   assert.match(renderer, /transform: `scale\(\$\{zoomRef\.current\}\)`/);
-  assert.match(renderer, /left: layer\.x,/);
-  assert.match(renderer, /width: layer\.width,/);
+  assert.match(renderer, /left: frame\.x,/);
+  assert.match(renderer, /width: frame\.width,/);
   assert.doesNotMatch(renderer, /left: layer\.x \* zoom/);
   assert.doesNotMatch(renderer, /width: layer\.width \* zoom/);
   assert.match(styles, /\.canvas-zoom-shell > \.canvas \{[\s\S]*transform-origin: 0 0;/);

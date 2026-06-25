@@ -10,10 +10,10 @@ test("editor and exporter consume the same normalized expanded frame geometry", 
   for (const implementation of [renderer, exporter]) {
     assert.match(implementation, /normalizePolaroidEffect/);
     assert.match(implementation, /normalizeTornPaperEffect/);
-    assert.match(implementation, /paperFrameInsets\(paperFrame, layer\.width, layer\.height, polaroid, tornPaper\)/);
+    assert.match(implementation, /paperFrameInsets\(paperFrame, frame\.width, frame\.height, polaroid, tornPaper\)/);
     assert.match(implementation, /paperFrameRotation\(paperFrame, polaroid\)/);
   }
-  assert.match(renderer, /paperFrameClipPath\(paperFrame, tornPaper, layer\.width, layer\.height\)/);
+  assert.match(renderer, /paperFrameClipPath\(paperFrame, tornPaper, frame\.width, frame\.height\)/);
   assert.match(exporter, /tornPaperPolygonPoints/);
 });
 
