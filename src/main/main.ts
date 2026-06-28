@@ -83,7 +83,7 @@ function pinPaperPicturesRoot() {
 }
 
 function defaultWallpaperSetsRoot() {
-  return path.join(pinPaperPicturesRoot(), "Wallpaper Sets");
+  return path.join(app.getPath("desktop"), "Pin Paper Sets");
 }
 
 function persistentSourceCacheRoot() {
@@ -321,7 +321,7 @@ async function loadPublicPinterestBoard(
     let stableRounds = 0;
     let previousCount = 0;
     let previousHeight = 0;
-    let latest: { pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>; atBottom: boolean; bodyText: string } = {
+    let latest: { pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video"; promoted?: boolean }>; atBottom: boolean; bodyText: string } = {
       pins: [],
       atBottom: false,
       bodyText: ""
@@ -344,12 +344,17 @@ async function loadPublicPinterestBoard(
           for (const anchor of document.querySelectorAll('a[href*="/pin/"]')) {
             const match = String(anchor.getAttribute("href") || "").match(/\/pin\/(\d+)/);
             if (!match) continue;
+            const card = anchor.closest('[data-test-id], [role="listitem"], div');
+            const cardText = String(card?.textContent || anchor.textContent || "").slice(0, 500);
+            const promoted = /\b(promoted|sponsored|advertisement|ad)\b/i.test(cardText)
+              || Boolean(anchor.closest('[data-test-id*="promoted"], [data-test-id*="sponsor"], [aria-label*="Promoted"], [aria-label*="Sponsored"]'));
+            if (promoted) continue;
             const img = anchor.querySelector("img");
             if (!img) continue;
             const imageUrl = chooseSrc(img);
             if (!/^https?:/i.test(imageUrl)) continue;
             const mediaType = anchor.querySelector("video") || /video/i.test(String(anchor.getAttribute("aria-label") || "")) || anchor.querySelector('[data-test-id*="video"]') ? "video" : "image";
-            root.__pwcPins[match[1]] = { id: match[1], imageUrl, mediaType };
+            root.__pwcPins[match[1]] = { id: match[1], imageUrl, mediaType, promoted };
           }
           const scrollRoot = document.scrollingElement || document.documentElement;
           const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0, 800);
@@ -375,7 +380,7 @@ async function loadPublicPinterestBoard(
         }
       })()`, true) as {
         ok: boolean;
-        pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video" }>;
+        pins: Array<{ id: string; imageUrl: string; mediaType?: "image" | "video"; promoted?: boolean }>;
         atBottom: boolean;
         bodyText: string;
         pageUrl?: string;
@@ -405,11 +410,12 @@ async function loadPublicPinterestBoard(
 
     const blocked = /log in|sign up|access denied|something went wrong/i.test(latest.bodyText) && latest.pins.length === 0;
     if (blocked) throw new Error("Pinterest did not expose the public board feed in the embedded browser.");
-    const pins = options.expectedTotal ? latest.pins.slice(0, options.expectedTotal) : latest.pins;
+    const pins = latest.pins.filter((pin) => !pin.promoted);
+    const overflow = options.expectedTotal && pins.length > options.expectedTotal ? pins.length - options.expectedTotal : 0;
     return {
       pins,
-      total: options.expectedTotal,
-      log: [`Full-board browser loader discovered ${pins.length} unique pin cards.`]
+      total: options.expectedTotal && options.expectedTotal >= pins.length ? options.expectedTotal : pins.length,
+      log: [`Full-board browser loader discovered ${pins.length} valid pin cards${overflow ? ` (${overflow} above Pinterest's reported count)` : ""}.`]
     };
   } finally {
     closeScraper();

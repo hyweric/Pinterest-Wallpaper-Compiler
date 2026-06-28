@@ -740,9 +740,9 @@ h2,
 
 .guide {
   position: absolute;
-  z-index: 10;
+  z-index: 1200;
   pointer-events: none;
-  background: #94c5d8;
+  background: rgba(156, 117, 204, 0.95);
 }
 
 .guide.vertical {
@@ -2331,9 +2331,12 @@ summary {
 }
 
 
-.canvas > .guide,
 .canvas > .placeholder {
   z-index: 2;
+}
+
+.canvas > .guide {
+  z-index: 1200;
 }
 
 .placeholder .framed-image,
@@ -5788,4 +5791,79 @@ select,
   border-color: rgba(112, 117, 179, .45);
   background: rgba(233, 232, 249, .95);
   color: #51558a;
+}
+
+/* Phase 23-27 polish: cleaner import completion, flat layer side controls, simpler wallpaper set flow. */
+.layer-row.active {
+  background: rgba(239, 232, 248, 0.82) !important;
+  border-color: rgba(157, 128, 190, 0.30) !important;
+  box-shadow: none !important;
+}
+.layer-row:hover {
+  box-shadow: none !important;
+}
+.layer-drag-handle,
+.layer-icon-button,
+.layer-main {
+  box-shadow: none !important;
+  transform: none !important;
+}
+.guide.vertical,
+.guide.horizontal {
+  background: rgba(156, 117, 204, 0.95) !important;
+  box-shadow: 0 0 0 1px rgba(156, 117, 204, 0.18), 0 0 16px rgba(156, 117, 204, 0.28) !important;
+}
+.selection-marquee {
+  border: 1px solid rgba(156, 117, 204, 0.72) !important;
+  background: rgba(156, 117, 204, 0.10) !important;
+}
+.pinterest-complete-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(104, 145, 118, 0.18);
+  border-radius: 14px;
+  background: rgba(238, 247, 241, 0.84);
+  color: #415447;
+}
+.pinterest-complete-card strong { font-size: 13px; }
+.pinterest-complete-card p { margin: 0; font-size: 12px; color: #65736a; }
+.export-set-grid.simplified {
+  grid-template-columns: minmax(0, 1.3fr) minmax(120px, .7fr);
+}
+.wallpaper-set-note.simple {
+  margin-bottom: 10px;
+}
+.wallpaper-count-presets {
+  display: flex;
+  gap: 7px;
+  margin: -2px 0 12px;
+}
+.wallpaper-count-presets button {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(43, 48, 58, 0.09);
+  border-radius: 999px;
+  color: #6f6878;
+  background: rgba(255,255,255,.78);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 760;
+}
+.wallpaper-count-presets button.active {
+  color: #4e3d68;
+  border-color: rgba(156, 117, 204, 0.30);
+  background: rgba(239, 232, 248, 0.88);
+}
+.advanced-wallpaper-set-options {
+  margin-top: 4px;
+  border: 0;
+  background: transparent;
+}
+.advanced-wallpaper-set-options > summary {
+  cursor: pointer;
+  color: #7d7686;
+  font-size: 12px;
+  font-weight: 760;
 }

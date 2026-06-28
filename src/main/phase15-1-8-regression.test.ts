@@ -74,8 +74,8 @@ test("legacy native global controller remains bounded while the renderer uses im
   assert.doesNotMatch(controller, /killall/);
   assert.doesNotMatch(macOS, /CGSManagedDisplaySetCurrentSpace/);
   assert.doesNotMatch(wallpaper, /this\.spaceObserver\.start\(/);
-  assert.match(renderer, /Create Wallpaper Set is the supported workflow for all Mission Control Spaces/);
-  assert.match(renderer, /new immutable folder/);
+  assert.match(renderer, /Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings/);
+  assert.match(renderer, /Pin Paper Sets/);
   assert.match(renderer, /Create Wallpaper Set/);
 });
 

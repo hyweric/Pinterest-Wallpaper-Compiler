@@ -23,16 +23,16 @@ test("app scheduling controls and tray rotation commands are removed", async () 
   assert.doesNotMatch(renderer, /SingleRunScheduler/);
   assert.doesNotMatch(main, /Pause Rotation|Resume Rotation|Current interval:|Next update:/);
   assert.match(main, /Preview on Current Desktop/);
-  assert.match(renderer, /This app no longer runs a background wallpaper schedule/);
+  assert.match(renderer, /Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings/);
 });
 
 test("wallpaper settings opens only from the explicit setup button", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const main = await source("src/main/main.ts");
   const types = await source("src/shared/types.ts");
-  assert.match(renderer, /Read these steps first\. Wallpaper Settings opens only when you click the button below/);
+  assert.match(renderer, /Choose this folder in macOS Wallpaper Settings/);
   assert.match(renderer, /Open Wallpaper Settings/);
-  assert.match(renderer, /Keep this instruction window open/);
+  assert.match(renderer, /Wallpaper Set Ready/);
   assert.match(renderer, /finalizeExportSet\(\{ sessionId \}\)/);
   assert.doesNotMatch(types, /openWallpaperSettings: boolean/);
   assert.doesNotMatch(types, /revealInFinder: boolean/);
@@ -46,8 +46,8 @@ test("setup dialog keeps the exact folder path and readable numbered instruction
   assert.match(renderer, /Folder to select/);
   assert.match(renderer, /setup-step-number/);
   assert.match(renderer, /Show Set in Finder/);
-  assert.match(renderer, /choose Add Photo, choose Choose Folder/);
-  assert.match(renderer, /turn on Show on all Spaces/);
+  assert.match(renderer, /Click Add Folder or Album, then Choose Folder/);
+  assert.match(renderer, /Turn on Shuffle and Show on all Spaces/);
   assert.match(styles, /wallpaper-setup-steps/);
   assert.match(styles, /font-size: 16px/);
 });

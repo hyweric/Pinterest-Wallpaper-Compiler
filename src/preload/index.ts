@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   CustomTextureResult,
   ExportPayload,
@@ -38,6 +38,10 @@ const api = {
   importWebImage: (payload: { url?: string; dataUrl?: string; name?: string; mimeType?: string }): Promise<ImageFileResult> => ipcRenderer.invoke("source:import-web-image", payload),
   rescanFolder: (path: string) => ipcRenderer.invoke("source:rescan-folder", path),
   showInFolder: (path: string): Promise<boolean> => ipcRenderer.invoke("source:show-in-folder", path),
+  copyText: (value: string): boolean => {
+    clipboard.writeText(value);
+    return clipboard.readText() === value;
+  },
   deleteCache: (path: string): Promise<boolean> => ipcRenderer.invoke("source:delete-cache", path),
   importPinterestBoard: (request: PinterestImportRequest): Promise<PinterestImportResult> =>
     ipcRenderer.invoke("provider:pinterest-import", request),

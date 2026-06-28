@@ -134,6 +134,24 @@ const historyLimit = 80;
 const snapDistance = 8;
 const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
 
+
+function createProjectForCurrentScreen() {
+  const project = createProject();
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(640, Math.round(window.screen.width * ratio));
+  const height = Math.max(480, Math.round(window.screen.height * ratio));
+  return {
+    ...project,
+    canvas: {
+      ...project.canvas,
+      width,
+      height,
+      presetId: "custom" as const,
+      orientation: width === height ? "square" as const : width > height ? "landscape" as const : "portrait" as const
+    }
+  };
+}
+
 function cssImageUrl(src?: string) {
   if (!src) return undefined;
   return `url("${renderableLocalFileUrl(src).replace(/"/g, "\\\"")}")`;
@@ -145,6 +163,61 @@ function measuredLayerFrame(layer: PlaceholderLayer, image?: LocalImageRef, natu
 
 function layerFrameWithImage(project: WallpaperProject, layer: PlaceholderLayer, natural?: { width: number; height: number }) {
   return measuredLayerFrame(layer, getImageForLayer(project, layer), natural);
+}
+
+function selectionBoundsForLayers(project: WallpaperProject, layers: PlaceholderLayer[], naturalByLayer: Record<string, { width: number; height: number }>): LayerFrameBounds | undefined {
+  const frames = layers.map((layer) => layerFrameWithImage(project, layer, naturalByLayer[layer.id]));
+  if (frames.length === 0) return undefined;
+  const left = Math.min(...frames.map((frame) => frame.x));
+  const top = Math.min(...frames.map((frame) => frame.y));
+  const right = Math.max(...frames.map((frame) => frame.x + frame.width));
+  const bottom = Math.max(...frames.map((frame) => frame.y + frame.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function oppositeCornerForResize(bounds: LayerFrameBounds, handle: ResizeHandle) {
+  const left = bounds.x;
+  const right = bounds.x + bounds.width;
+  const top = bounds.y;
+  const bottom = bounds.y + bounds.height;
+  return {
+    x: handle.includes("w") ? right : handle.includes("e") ? left : left + bounds.width / 2,
+    y: handle.includes("n") ? bottom : handle.includes("s") ? top : top + bounds.height / 2
+  };
+}
+
+function resizeBoundsFromOppositeCorner(bounds: LayerFrameBounds, handle: ResizeHandle, dx: number, dy: number, limits: { width: number; height: number; minSize: number }) {
+  const pivot = oppositeCornerForResize(bounds, handle);
+  let left = bounds.x;
+  let right = bounds.x + bounds.width;
+  let top = bounds.y;
+  let bottom = bounds.y + bounds.height;
+  if (handle.includes("w")) left = Math.min(pivot.x - limits.minSize, Math.max(0, bounds.x + dx));
+  if (handle.includes("e")) right = Math.max(pivot.x + limits.minSize, Math.min(limits.width, bounds.x + bounds.width + dx));
+  if (handle.includes("n")) top = Math.min(pivot.y - limits.minSize, Math.max(0, bounds.y + dy));
+  if (handle.includes("s")) bottom = Math.max(pivot.y + limits.minSize, Math.min(limits.height, bounds.y + bounds.height + dy));
+  if (!handle.includes("w") && !handle.includes("e")) {
+    left = Math.max(0, bounds.x);
+    right = Math.min(limits.width, bounds.x + bounds.width);
+  }
+  if (!handle.includes("n") && !handle.includes("s")) {
+    top = Math.max(0, bounds.y);
+    bottom = Math.min(limits.height, bounds.y + bounds.height);
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function fitLayerIntoResizedSelection(layer: PlaceholderLayer, originalLayer: PlaceholderLayer, groupBefore: LayerFrameBounds, groupAfter: LayerFrameBounds): Partial<PlaceholderLayer> {
+  const relativeX = (originalLayer.x - groupBefore.x) / Math.max(1, groupBefore.width);
+  const relativeY = (originalLayer.y - groupBefore.y) / Math.max(1, groupBefore.height);
+  const relativeWidth = originalLayer.width / Math.max(1, groupBefore.width);
+  const relativeHeight = originalLayer.height / Math.max(1, groupBefore.height);
+  return {
+    x: Math.round(groupAfter.x + relativeX * groupAfter.width),
+    y: Math.round(groupAfter.y + relativeY * groupAfter.height),
+    width: Math.max(40, Math.round(relativeWidth * groupAfter.width)),
+    height: Math.max(40, Math.round(relativeHeight * groupAfter.height))
+  };
 }
 
 type DragMode =
@@ -167,7 +240,9 @@ type DragState = {
   startY: number;
   layer: PlaceholderLayer;
   groupLayers: PlaceholderLayer[];
+  groupBounds?: LayerFrameBounds;
   historyProject: WallpaperProject;
+  moved?: boolean;
 };
 
 type PolaroidImageDragMode = "move" | "scale" | "rotate";
@@ -205,6 +280,8 @@ type SelectionMarquee = {
   width: number;
   height: number;
   baseIds: string[];
+  additive: boolean;
+  didMove?: boolean;
 };
 
 type PinterestDialogState = {
@@ -345,6 +422,14 @@ function projectWithMeasuredImage(project: WallpaperProject, image: LocalImageRe
       images: source.images.map((item) => item.id === image.id ? { ...item, width: measuredWidth, height: measuredHeight } : item)
     }))
   };
+}
+
+function webImagePasteFingerprint(candidates: WebImageCandidate[]) {
+  return candidates
+    .map((candidate) => candidate.url
+      ? `url:${candidate.url}`
+      : `file:${candidate.name ?? ""}:${candidate.mimeType ?? ""}:${candidate.file?.size ?? 0}:${candidate.file?.lastModified ?? 0}`)
+    .join("|");
 }
 
 const finderDropImageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"]);
@@ -996,11 +1081,11 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error?
 function App() {
   const [project, setProject] = useState<WallpaperProject>(() => {
     const autosaved = localStorage.getItem(autosaveKey);
-    if (!autosaved) return createProject();
+    if (!autosaved) return createProjectForCurrentScreen();
     try {
       return compactProjectForAutosave(normalizeProject(JSON.parse(autosaved) as WallpaperProject));
     } catch {
-      return createProject();
+      return createProjectForCurrentScreen();
     }
   });
   const [view, setView] = useState<AppView>("home");
@@ -1057,6 +1142,7 @@ function App() {
     failed: 0
   });
   const dragRef = useRef<DragState | undefined>(undefined);
+  const lastPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
   const polaroidImageDragRef = useRef<PolaroidImageDragState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1325,7 +1411,9 @@ function App() {
   }
 
   function patchSelectedLayer(patch: Partial<PlaceholderLayer>, historyEnabled = true) {
-    if (selectedLayer) patchLayer(selectedLayer.id, patch, historyEnabled);
+    const editableIds = selectedLayerIds.length ? selectedLayerIds : selectedLayer ? [selectedLayer.id] : [];
+    if (editableIds.length > 1) patchLayers(editableIds, patch, historyEnabled);
+    else if (editableIds[0]) patchLayer(editableIds[0], patch, historyEnabled);
   }
 
   function patchWallpaper(patch: Partial<WallpaperProject["wallpaper"]>) {
@@ -1965,10 +2053,11 @@ function App() {
       const chosenDropImage = randomImageFromSource(source);
       if (!chosenDropImage) continue;
       const overlayLike = sourceIsManagedOverlay(source);
-      // Dropped sources should behave like “Add Placeholder” first, then source assignment.
-      // The starting image is still chosen once at drop time and locked into generatedImageId,
-      // but the frame geometry stays consistent instead of changing with random image ratios.
-      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length);
+      const dropAspectRatio = await decodedImageAspectRatio(chosenDropImage) ?? sourcePreferredAspectRatio(source);
+      next = projectWithMeasuredImage(next, chosenDropImage, dropAspectRatio);
+      // Dropped sources behave like “Add Placeholder” first, then source assignment,
+      // but start with the actual current image ratio instead of a desktop-HD rectangle.
+      const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length, dropAspectRatio);
       const layer = createPlaceholder(next.canvas, next.layers.length + 1);
       Object.assign(layer, placement, { name: source.name, cropMode: "cover" as const, maskShape: "rounded" as const });
       if (overlayLike) {
@@ -1991,7 +2080,7 @@ function App() {
         next = { ...next, layers: next.layers.filter((item) => item.id !== layer.id) };
         continue;
       }
-      const finalPlacement = placementForCanvasDrop(assigned.canvas, point, createdLayerIds.length);
+      const finalPlacement = placementForCanvasDrop(assigned.canvas, point, createdLayerIds.length, dropAspectRatio);
       next = {
         ...assigned,
         layers: assigned.layers.map((item) => item.id === layer.id ? {
@@ -2110,6 +2199,8 @@ function App() {
         imagesFound: result.imagesFound,
         imagesCached: result.imagesCached,
         log: result.log,
+        current: result.imagesCached,
+        total: result.partial ? current.total : Math.max(result.imagesFound, result.imagesCached),
         error: result.error
       }));
 
@@ -2389,7 +2480,7 @@ function App() {
         return;
       }
       openExportSet(targetTemplateId);
-      setMessage("Choose how many wallpaper variations to create, then select the exported folder in macOS Wallpaper Settings.");
+      setMessage("Create a wallpaper set, then choose its folder in macOS Wallpaper Settings.");
       return;
     }
 
@@ -2783,8 +2874,12 @@ function App() {
       setSelectedLayerId(layer.id);
     }
 
-    const movableIds = mode === "move" ? nextSelection : [layer.id];
+    const resizeMode = mode.startsWith("resize-");
+    const movableIds = mode === "move" || resizeMode ? nextSelection : [layer.id];
     const groupLayers = project.layers.filter((item) => movableIds.includes(item.id) && !item.locked);
+    const groupBounds = resizeMode && groupLayers.length > 1
+      ? selectionBoundsForLayers(project, groupLayers, imageNaturalRef.current)
+      : undefined;
     dragRef.current = {
       id: layer.id,
       mode,
@@ -2792,6 +2887,7 @@ function App() {
       startY: event.clientY,
       layer,
       groupLayers,
+      groupBounds,
       historyProject: cloneProject(project)
     };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2862,15 +2958,32 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function snapLayer(layer: PlaceholderLayer, x: number, y: number) {
-    const centerX = x + layer.width / 2;
-    const centerY = y + layer.height / 2;
+  function snapLayer(layer: PlaceholderLayer, x: number, y: number, groupLayers: PlaceholderLayer[] = [layer]) {
+    const activeGroup = groupLayers.length ? groupLayers : [layer];
+    const originalFrameById = new Map(activeGroup.map((item) => [item.id, layerFrameWithImage(project, item, imageNaturalRef.current[item.id])]));
+    const primaryFrame = originalFrameById.get(layer.id) ?? layerFrameWithImage(project, layer, imageNaturalRef.current[layer.id]);
+    const dx = x - layer.x;
+    const dy = y - layer.y;
+    const movedFrames = activeGroup.map((item) => {
+      const frame = originalFrameById.get(item.id) ?? layerFrameWithImage(project, item, imageNaturalRef.current[item.id]);
+      return { id: item.id, x: frame.x + dx, y: frame.y + dy, width: frame.width, height: frame.height };
+    });
+    const left = Math.min(...movedFrames.map((frame) => frame.x));
+    const right = Math.max(...movedFrames.map((frame) => frame.x + frame.width));
+    const top = Math.min(...movedFrames.map((frame) => frame.y));
+    const bottom = Math.max(...movedFrames.map((frame) => frame.y + frame.height));
+    const centerX = (left + right) / 2;
+    const centerY = (top + bottom) / 2;
+    const width = right - left;
+    const height = bottom - top;
+    const selectedIds = new Set(activeGroup.map((item) => item.id));
     const targetsX = [0, project.canvas.width / 2, project.canvas.width];
     const targetsY = [0, project.canvas.height / 2, project.canvas.height];
     for (const other of project.layers) {
-      if (other.id === layer.id) continue;
-      targetsX.push(other.x, other.x + other.width / 2, other.x + other.width);
-      targetsY.push(other.y, other.y + other.height / 2, other.y + other.height);
+      if (selectedIds.has(other.id) || other.hidden) continue;
+      const frame = layerFrameWithImage(project, other, imageNaturalRef.current[other.id]);
+      targetsX.push(frame.x, frame.x + frame.width / 2, frame.x + frame.width);
+      targetsY.push(frame.y, frame.y + frame.height / 2, frame.y + frame.height);
     }
 
     let nextX = x;
@@ -2878,7 +2991,7 @@ function App() {
     let guideX: number | undefined;
     let guideY: number | undefined;
     for (const target of targetsX) {
-      const points = [x, centerX, x + layer.width];
+      const points = [left, centerX, right];
       const hit = points.find((point) => Math.abs(point - target) <= snapDistance);
       if (hit !== undefined) {
         nextX += target - hit;
@@ -2887,7 +3000,7 @@ function App() {
       }
     }
     for (const target of targetsY) {
-      const points = [y, centerY, y + layer.height];
+      const points = [top, centerY, bottom];
       const hit = points.find((point) => Math.abs(point - target) <= snapDistance);
       if (hit !== undefined) {
         nextY += target - hit;
@@ -2896,7 +3009,7 @@ function App() {
       }
     }
     setGuides({ x: guideX, y: guideY });
-    return { x: nextX, y: nextY };
+    return { x: nextX, y: nextY, width, height };
   }
 
   function onCanvasPointerMove(event: PointerEvent) {
@@ -2906,12 +3019,15 @@ function App() {
       const rect = canvas.getBoundingClientRect();
       const currentX = clamp((event.clientX - rect.left) / zoomRef.current, 0, project.canvas.width);
       const currentY = clamp((event.clientY - rect.top) / zoomRef.current, 0, project.canvas.height);
+      const width = Math.abs(currentX - marquee.startX);
+      const height = Math.abs(currentY - marquee.startY);
       const next: SelectionMarquee = {
         ...marquee,
         x: Math.min(marquee.startX, currentX),
         y: Math.min(marquee.startY, currentY),
-        width: Math.abs(currentX - marquee.startX),
-        height: Math.abs(currentY - marquee.startY)
+        width,
+        height,
+        didMove: marquee.didMove || width > 3 || height > 3
       };
       marqueeRef.current = next;
       setSelectionMarquee(next);
@@ -2925,7 +3041,7 @@ function App() {
             && frame.y + frame.height > next.y;
         })
         .map((layer) => layer.id);
-      const ids = [...new Set([...next.baseIds, ...hits])];
+      const ids = next.additive ? [...new Set([...next.baseIds, ...hits])] : hits;
       setSelectedLayerIds(ids);
       setSelectedLayerId(ids.at(-1));
       return;
@@ -2968,11 +3084,12 @@ function App() {
     if (!drag) return;
     const dx = (event.clientX - drag.startX) / zoomRef.current;
     const dy = (event.clientY - drag.startY) / zoomRef.current;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
 
     if (drag.mode === "move") {
-      const snapped = snapLayer(drag.layer, drag.layer.x + dx, drag.layer.y + dy);
-      const primaryX = Math.round(clamp(snapped.x, 0, project.canvas.width - drag.layer.width));
-      const primaryY = Math.round(clamp(snapped.y, 0, project.canvas.height - drag.layer.height));
+      const snapped = snapLayer(drag.layer, drag.layer.x + dx, drag.layer.y + dy, drag.groupLayers);
+      const primaryX = Math.round(clamp(snapped.x, drag.layer.x - Math.min(...drag.groupLayers.map((item) => item.x)), project.canvas.width - snapped.width + drag.layer.x - Math.min(...drag.groupLayers.map((item) => item.x))));
+      const primaryY = Math.round(clamp(snapped.y, drag.layer.y - Math.min(...drag.groupLayers.map((item) => item.y)), project.canvas.height - snapped.height + drag.layer.y - Math.min(...drag.groupLayers.map((item) => item.y))));
       const appliedDx = primaryX - drag.layer.x;
       const appliedDy = primaryY - drag.layer.y;
       const originals = new Map(drag.groupLayers.map((layer) => [layer.id, layer]));
@@ -3029,6 +3146,43 @@ function App() {
   }
 
   function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean) {
+    if (drag.groupLayers.length > 1 && drag.groupBounds && drag.mode.startsWith("resize-")) {
+      const handle = drag.mode as ResizeHandle;
+      const nextGroup = resizeBoundsFromOppositeCorner(
+        drag.groupBounds,
+        handle,
+        dx,
+        dy,
+        { width: project.canvas.width, height: project.canvas.height, minSize: 48 }
+      );
+      if (preserveAspect) {
+        const aspect = drag.groupBounds.width / Math.max(1, drag.groupBounds.height);
+        const centered = resizeRectAroundCenter(
+          drag.groupBounds,
+          handle,
+          dx,
+          dy,
+          true,
+          { width: project.canvas.width, height: project.canvas.height, minSize: 48 }
+        );
+        nextGroup.width = centered.width;
+        nextGroup.height = Math.max(48, Math.round(centered.width / Math.max(0.01, aspect)));
+      }
+      const originals = new Map(drag.groupLayers.map((layer) => [layer.id, layer]));
+      commitProject(
+        (current) => ({
+          ...current,
+          layers: current.layers.map((layer) => {
+            const original = originals.get(layer.id);
+            if (!original || layer.locked) return layer;
+            return { ...layer, ...fitLayerIntoResizedSelection(layer, original, drag.groupBounds!, nextGroup) };
+          })
+        }),
+        false
+      );
+      return;
+    }
+
     const next = resizeRectAroundCenter(
       drag.layer,
       drag.mode as ResizeHandle,
@@ -3048,6 +3202,8 @@ function App() {
       return;
     }
     if (marqueeRef.current) {
+      const marquee = marqueeRef.current;
+      if (!marquee.didMove && !marquee.additive) clearLayerSelection();
       marqueeRef.current = undefined;
       setSelectionMarquee(undefined);
       return;
@@ -3300,7 +3456,7 @@ function App() {
   }
 
   function createBlankTemplate() {
-    const blank = createProject();
+    const blank = createProjectForCurrentScreen();
     const name = `Untitled Template ${project.templates.templates.length + 1}`;
     setProject((current) => {
       const synced = updateActiveTemplateSnapshot(current);
@@ -3478,6 +3634,8 @@ function App() {
         imagesFound: result.imagesFound,
         imagesCached: result.imagesCached,
         log: result.log,
+        current: result.imagesCached,
+        total: result.partial ? current.total : Math.max(result.imagesFound, result.imagesCached),
         error: result.error
       }));
       if (result.source && result.source.images.length > 0) {
@@ -3514,6 +3672,16 @@ function App() {
       return;
     }
     await window.wallpaperApi.showInFolder(itemPath);
+  }
+
+  async function copySourcePath(source: ImageSource) {
+    const itemPath = source.path ?? source.cachePath ?? source.images[0]?.path ?? source.url;
+    if (!itemPath) {
+      setMessage("This source has no path to copy.");
+      return;
+    }
+    const ok = await window.wallpaperApi.copyText(itemPath);
+    setMessage(ok ? "Folder path copied." : "Unable to copy folder path.");
   }
 
   async function deleteSourceCache(source: ImageSource) {
@@ -3629,18 +3797,10 @@ function App() {
       } else if (command && event.key.toLowerCase() === "c" && selectedLayers.length) {
         event.preventDefault();
         setClipboardLayers(structuredClone(selectedLayers));
-      } else if (command && event.key.toLowerCase() === "v" && clipboardLayers.length) {
-        event.preventDefault();
-        const pasted = clipboardLayers.map((layer) => ({
-          ...structuredClone(layer),
-          id: uid("placeholder"),
-          x: layer.x + 28,
-          y: layer.y + 28
-        }));
-        commitProject((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
-        setSelectedLayerIds(pasted.map((layer) => layer.id));
-        setSelectedLayerId(pasted.at(-1)?.id);
-        setSelectionAnchorId(pasted.at(-1)?.id);
+      } else if (command && event.key.toLowerCase() === "v") {
+        // Let the real paste event inspect the system clipboard first. If no
+        // image or URL is present there, the paste handler falls back to copied
+        // Pin Paper layers. This keeps browser/screenshot image paste reliable.
       } else if (command && event.key.toLowerCase() === "d") {
         event.preventDefault();
         duplicateSelectedLayer();
@@ -3680,8 +3840,28 @@ function App() {
     function onPaste(event: ClipboardEvent) {
       if (isTypingTarget(event.target)) return;
       const candidates = webImageCandidatesFromTransfer(event.clipboardData);
-      if (candidates.length === 0) return;
+      if (candidates.length === 0) {
+        if (view !== "editor" || clipboardLayers.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const pasted = clipboardLayers.map((layer) => ({
+          ...structuredClone(layer),
+          id: uid("placeholder"),
+          x: layer.x + 28,
+          y: layer.y + 28
+        }));
+        commitProject((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
+        setSelectedLayerIds(pasted.map((layer) => layer.id));
+        setSelectedLayerId(pasted.at(-1)?.id);
+        setSelectionAnchorId(pasted.at(-1)?.id);
+        return;
+      }
+      const fingerprint = webImagePasteFingerprint(candidates);
+      const now = Date.now();
+      if (lastPasteRef.current?.fingerprint === fingerprint && now - lastPasteRef.current.at < 650) return;
+      lastPasteRef.current = { fingerprint, at: now };
       event.preventDefault();
+      event.stopPropagation();
       void (async () => {
         if (view === "editor" && selectedLayer && !selectedLayer.locked) {
           await assignWebImagesToLayer(candidates, selectedLayer);
@@ -3698,7 +3878,7 @@ function App() {
 
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [selectedLayer, view]);
+  }, [selectedLayer, view, clipboardLayers]);
 
   if (view === "home") {
     return (
@@ -3894,6 +4074,7 @@ function App() {
               onShow={(source) => void showSourceInFolder(source)}
               onRemove={removeSource}
               onDeleteCache={(source) => void deleteSourceCache(source)}
+              onCopyPath={(source) => void copySourcePath(source)}
             />
           )}
         </section>
@@ -4080,17 +4261,14 @@ function App() {
             onPointerLeave={endDrag}
             onPointerDown={(event) => {
               if (event.target !== event.currentTarget) return;
-              if (event.shiftKey) {
-                const rect = event.currentTarget.getBoundingClientRect();
-                const startX = clamp((event.clientX - rect.left) / zoomRef.current, 0, project.canvas.width);
-                const startY = clamp((event.clientY - rect.top) / zoomRef.current, 0, project.canvas.height);
-                const marquee: SelectionMarquee = { startX, startY, x: startX, y: startY, width: 0, height: 0, baseIds: selectedLayerIds };
-                marqueeRef.current = marquee;
-                setSelectionMarquee(marquee);
-                event.currentTarget.setPointerCapture(event.pointerId);
-              } else {
-                clearLayerSelection();
-              }
+              const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+              const rect = event.currentTarget.getBoundingClientRect();
+              const startX = clamp((event.clientX - rect.left) / zoomRef.current, 0, project.canvas.width);
+              const startY = clamp((event.clientY - rect.top) / zoomRef.current, 0, project.canvas.height);
+              const marquee: SelectionMarquee = { startX, startY, x: startX, y: startY, width: 0, height: 0, baseIds: additive ? selectedLayerIds : [], additive };
+              marqueeRef.current = marquee;
+              setSelectionMarquee(marquee);
+              event.currentTarget.setPointerCapture(event.pointerId);
             }}
           >
             <BackgroundImageView canvas={project.canvas} />
@@ -4279,7 +4457,7 @@ function App() {
                   )}
                   {cropping && <span className="crop-mode-badge">CROP MODE</span>}
                 </div>
-                {selectedLayerId === layer.id && !layer.locked && !cropping && (
+                {selected && !layer.locked && !cropping && (
                   <div
                     className="selection-handles-overlay"
                     style={{
@@ -4980,7 +5158,8 @@ function SourceContextMenu({
   onRescan,
   onShow,
   onRemove,
-  onDeleteCache
+  onDeleteCache,
+  onCopyPath
 }: {
   state: SourceMenuState;
   source?: ImageSource;
@@ -4990,6 +5169,7 @@ function SourceContextMenu({
   onShow: (source: ImageSource) => void;
   onRemove: (source: ImageSource) => void;
   onDeleteCache: (source: ImageSource) => void;
+  onCopyPath: (source: ImageSource) => void;
 }) {
   if (!source) return null;
   return (
@@ -4999,6 +5179,7 @@ function SourceContextMenu({
         <button onClick={() => { onRename(source); onClose(); }}>Rename</button>
         <button onClick={() => { onRescan(source); onClose(); }}>{source.type === "pinterest-board" ? "Refresh" : "Rescan"}</button>
         <button onClick={() => { onShow(source); onClose(); }}>Show in Folder</button>
+        {(source.path || source.cachePath) && <button onClick={() => { onCopyPath(source); onClose(); }}>Copy Folder Path</button>}
         {source.cachePath && <button onClick={() => { onDeleteCache(source); onClose(); }}>Delete Cached Files</button>}
         <button className="danger" onClick={() => onRemove(source)}>Remove Source</button>
       </div>
@@ -5074,43 +5255,36 @@ function ExportSetDialog({
       <section className={`modal export-set-modal ${ready ? "setup-mode" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
           <div>
-            <h2>{ready ? "Set Up Your macOS Wallpaper Rotation" : "Create macOS Wallpaper Set"}</h2>
-            <p>{ready
-              ? "Read these steps first. Wallpaper Settings opens only when you click the button below."
-              : "Generate a new immutable folder of variations, then let macOS shuffle it across every desktop Space."}</p>
+            <h2>{ready ? "Wallpaper Set Ready" : "Create Wallpaper Set"}</h2>
+            <p>{ready ? "Choose this folder in macOS Wallpaper Settings." : "Generate wallpapers from the current template and sources."}</p>
           </div>
           <button className="button ghost" disabled={state.busy} onClick={onClose}>Close</button>
         </div>
 
         {ready && state.finalPath ? (
           <div className="wallpaper-setup-guide">
-            <div className="wallpaper-setup-banner">
-              <strong>Your wallpaper set is ready.</strong>
-              <span>Keep this instruction window open while completing the setup in System Settings.</span>
-            </div>
-
             <div className="wallpaper-set-path-card">
               <span>Folder to select</span>
               <code>{state.finalPath}</code>
-              <button className="button ghost" onClick={() => void navigator.clipboard.writeText(state.finalPath ?? "")}>Copy Folder Path</button>
+              <button className="button ghost" onClick={() => state.finalPath && void window.wallpaperApi.copyText(state.finalPath)}>Copy Folder Path</button>
             </div>
 
             <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
               <div className="wallpaper-setup-step">
                 <span className="setup-step-number">1</span>
-                <div><strong>Locate the exported folder</strong><p>Click Show Set in Finder below. Leave that Finder window open so the correct folder is easy to identify.</p></div>
+                <div><strong>Open Wallpaper Settings</strong></div>
               </div>
               <div className="wallpaper-setup-step">
                 <span className="setup-step-number">2</span>
-                <div><strong>Open Wallpaper Settings</strong><p>Click Open Wallpaper Settings only after you have read these instructions.</p></div>
+                <div><strong>Click Add Folder or Album, then Choose Folder</strong></div>
               </div>
               <div className="wallpaper-setup-step">
                 <span className="setup-step-number">3</span>
-                <div><strong>Add the folder</strong><p>Scroll to Your Photos, choose Add Photo, choose Choose Folder, then select the exact folder shown above.</p></div>
+                <div><strong>Select the Pin Paper Sets folder on your Desktop</strong></div>
               </div>
               <div className="wallpaper-setup-step">
                 <span className="setup-step-number">4</span>
-                <div><strong>Enable the rotation</strong><p>Select Shuffle, choose the interval you want, and turn on Show on all Spaces.</p></div>
+                <div><strong>Turn on Shuffle and Show on all Spaces</strong></div>
               </div>
             </div>
 
@@ -5118,10 +5292,6 @@ function ExportSetDialog({
               <button className="button secondary" onClick={() => onReveal(state.finalPath)}>Show Set in Finder</button>
               <button className="button primary" onClick={onOpenSettings}>Open Wallpaper Settings</button>
             </div>
-
-            <p className="settings-warning wallpaper-set-retention-warning">
-              Keep this folder in place while macOS is using it. Before deleting an old set, select a different wallpaper folder in System Settings.
-            </p>
 
             <div className="dialog-actions">
               <button className="button secondary" onClick={() => onChange((current) => ({
@@ -5136,31 +5306,28 @@ function ExportSetDialog({
           </div>
         ) : (
           <>
-            <div className="wallpaper-set-note">
-              Each run creates a new versioned folder. Existing sets are never overwritten, preventing stale macOS folder caches.
-            </div>
-
-            <div className="export-set-grid">
+            <div className="export-set-grid simplified">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
-              <label>Variations<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /><span className="field-note">1–500 wallpapers</span></label>
-              <div className="format-fixed-note"><span>Format</span><strong>PNG</strong></div>
+              <label>How many<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /><span className="field-note">PNG wallpapers</span></label>
             </div>
 
-            <div className="destination-row wallpaper-set-destination">
-              <div>
-                <strong>Wallpaper Sets parent folder</strong>
-                <span title={state.destinationPath}>{state.destinationPath ?? "Loading default Pictures folder…"}</span>
+            <details className="advanced-wallpaper-set-options">
+              <summary>More options</summary>
+              <div className="destination-row wallpaper-set-destination">
+                <div>
+                  <strong>Save location</strong>
+                  <span title={state.destinationPath}>{state.destinationPath ?? "Loading default Pictures folder…"}</span>
+                </div>
+                <div className="destination-actions">
+                  <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
+                  <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
+                  <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
+                </div>
               </div>
-              <div className="destination-actions">
-                <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
-                <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
-                <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
+              <div className="export-options">
+                <div className="toggle-row compact-toggle-row"><button className={state.avoidRepeats ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button><button className={state.advanceLiveState ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, advanceLiveState: !current.advanceLiveState }))}>Advance shuffle state</button></div>
               </div>
-            </div>
-
-            <div className="export-options">
-              <div className="toggle-row compact-toggle-row"><button className={state.avoidRepeats ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button><button className={state.advanceLiveState ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, advanceLiveState: !current.advanceLiveState }))}>Advance shuffle state</button></div>
-            </div>
+            </details>
 
             {(state.busy || totalFinished > 0) && <>
               <div className="progress-track"><span style={{ width: `${progress}%` }} /></div>
@@ -5171,7 +5338,7 @@ function ExportSetDialog({
             <div className="dialog-actions">
               {state.busy
                 ? <button className="button destructive" onClick={onCancel}>Cancel and Remove Temporary Files</button>
-                : <button className="button primary" onClick={onRun}>{`Generate ${Math.max(1, Math.round(state.count))} Wallpapers`}</button>}
+                : <button className="button primary" onClick={onRun}>{`Create ${Math.max(1, Math.round(state.count))} Wallpapers`}</button>}
               {!state.busy && <button className="button ghost" onClick={onClose}>Cancel</button>}
             </div>
           </>
@@ -5210,10 +5377,17 @@ function PinterestDialog({
         </div>
         <div className="progress-track"><span style={{ width: `${state.progress}%` }} /></div>
         <div className="import-stats">
-          <span>{state.current ?? state.imagesFound}{state.total ? ` / ${state.total}` : ""} pins discovered</span>
+          <span>{state.stage === "complete" ? state.imagesCached : state.current ?? state.imagesFound}{state.stage !== "complete" && state.total ? ` / ${state.total}` : ""} pins discovered</span>
           <span>{state.imagesCached} cached</span>
           {state.stage && <span className={`import-stage ${state.stage}`}>{state.stage}</span>}
         </div>
+        {state.stage === "complete" && !state.error && (
+          <div className="pinterest-complete-card">
+            <strong>Import complete</strong>
+            <p>{state.imagesCached} image{state.imagesCached === 1 ? "" : "s"} cached and ready to use.</p>
+            <div className="dialog-actions"><button className="pill-button primary" onClick={onClose}>Done</button></div>
+          </div>
+        )}
         {state.error && (
           <div className={`pinterest-error ${state.stage === "partial" ? "partial" : ""}`}>
             <strong>{state.stage === "partial" ? "Pinterest import incomplete" : state.stage === "canceled" ? "Pinterest import stopped" : "Pinterest import unavailable"}</strong>
@@ -5236,11 +5410,12 @@ function WallpaperPanel({ project }: { project: WallpaperProject }) {
         <summary>Wallpaper Rotation <ChevronDown size={15} /></summary>
         <div className="rotation-guide-card">
           <strong>Use macOS to rotate exported sets</strong>
-          <p>Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings and enable Shuffle plus Show on all Spaces. This app no longer runs a background wallpaper schedule. Create Wallpaper Set is the supported workflow for all Mission Control Spaces. Preview on Current Desktop affects only the active desktop.</p>
+          <p>Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings.</p>
           <ol>
-            <li>Click <b>Create Wallpaper Set</b> in the top bar.</li>
-            <li>Generate the number of variations you want.</li>
-            <li>Open Wallpaper Settings and select the exported folder.</li>
+            <li>Click <b>Create Wallpaper Set</b>.</li>
+            <li>Generate the set.</li>
+            <li>Choose the Desktop Pin Paper Sets folder.</li>
+            <li>Turn on Shuffle and Show on all Spaces.</li>
           </ol>
         </div>
         {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}

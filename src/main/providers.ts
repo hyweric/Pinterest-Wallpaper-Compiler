@@ -22,6 +22,7 @@ export interface PinterestBoardPin {
   id: string;
   imageUrl: string;
   mediaType?: "image" | "video";
+  promoted?: boolean;
 }
 
 export interface PublicPinterestBoardResult {
@@ -52,7 +53,7 @@ export function validatePinterestBoardUrl(rawUrl: string): string | undefined {
     return "Pinterest board links must use pinterest.com or pin.it.";
   }
 
-  const parts = url.pathname.split("/").filter(Boolean);
+  const parts = decodedPinterestPathParts(url);
   if (hostname === "pin.it") {
     return "Short pin.it links can hide their final destination. Open the link in a browser and paste the full board URL.";
   }
@@ -159,6 +160,11 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     }
 
     const uniquePins = dedupePins(pins);
+    const effectiveExpectedCount = expectedCount !== undefined && expectedCount >= uniquePins.length ? expectedCount : uniquePins.length;
+    if (expectedCount !== undefined && uniquePins.length > expectedCount) {
+      log.push(`Pinterest reported about ${expectedCount} board pins, but ${uniquePins.length} valid pins were discovered. Using discovered count for progress.`);
+    }
+    if (pins.some((pin) => pin.promoted)) log.push(`Skipped ${pins.filter((pin) => pin.promoted).length} promoted or non-board pin card${pins.filter((pin) => pin.promoted).length === 1 ? "" : "s"}.`);
     if (uniquePins.length === 0) {
       if (!existing) await rm(sourceCachePath, { recursive: true, force: true });
       const message =
@@ -208,7 +214,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
           importStatus: "canceled",
           bookmark: finalBookmark
         });
-        report("canceled", canceledImages.length, expectedCount ?? uniquePins.length, 100, "Pinterest import canceled.", pageCount, finalBookmark);
+        report("canceled", canceledImages.length, effectiveExpectedCount, 100, "Pinterest import canceled.", pageCount, finalBookmark);
         return {
           canceled: true,
           ok: false,
@@ -250,7 +256,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
           importStatus: "canceled",
           bookmark: finalBookmark
         });
-        report("canceled", canceledImages.length, expectedCount ?? uniquePins.length, 100, "Pinterest import canceled.", pageCount, finalBookmark);
+        report("canceled", canceledImages.length, effectiveExpectedCount, 100, "Pinterest import canceled.", pageCount, finalBookmark);
         return {
           canceled: true,
           ok: false,
@@ -269,9 +275,9 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       report(
         "downloading",
         importedImages.size,
-        expectedCount ?? uniquePins.length,
+        effectiveExpectedCount,
         overall,
-        `Cached ${importedImages.size} / ${expectedCount ?? uniquePins.length} pins...`,
+        `Cached ${importedImages.size} / ${effectiveExpectedCount} pins...`,
         pageCount,
         finalBookmark
       );
@@ -285,12 +291,13 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       .map(([, image]) => image);
     const images = [...orderedImages, ...extras];
 
-    const incompleteByCount = expectedCount !== undefined && uniquePins.length < expectedCount;
+    const incompleteByCount = expectedCount !== undefined && images.length < expectedCount && uniquePins.length < expectedCount;
     const incompleteByDownload = images.length < uniquePins.length;
     const partial = Boolean(discoveryError || incompleteByCount || incompleteByDownload || finalBookmark);
     const status: ImageSource["importStatus"] = partial ? "partial" : "ready";
     if (incompleteByCount) log.push(`Partial discovery: found ${uniquePins.length} of approximately ${expectedCount} board pins.`);
     if (incompleteByDownload) log.push(`Partial cache: cached ${images.length} of ${uniquePins.length} discovered pins.`);
+    if (expectedCount !== undefined && images.length >= expectedCount && uniquePins.length < expectedCount) log.push(`Cached ${images.length} pins, which meets or exceeds Pinterest's approximate ${expectedCount} count; treating import as complete.`);
     if (finalBookmark) log.push(`Pagination stopped with bookmark ${finalBookmark}.`);
 
     const source = await this.buildSource({
@@ -300,15 +307,15 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       input,
       images,
       log,
-      expectedCount,
+      expectedCount: effectiveExpectedCount,
       importStatus: status,
       bookmark: finalBookmark
     });
 
     const error = partial
-      ? `Partial import: cached ${images.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}. Import this board again to resume.`
+      ? `Partial import: cached ${images.length} pins${incompleteByCount ? ` of approximately ${expectedCount}` : ""}. Import this board again to resume.`
       : undefined;
-    report(partial ? "partial" : "complete", images.length, expectedCount ?? uniquePins.length, 100, error ?? `Imported all ${images.length} pins.`, pageCount, finalBookmark);
+    report(partial ? "partial" : "complete", images.length, effectiveExpectedCount, 100, error ?? `Imported all ${images.length} pins.`, pageCount, finalBookmark);
 
     return {
       partial,
@@ -346,6 +353,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     signal?: AbortSignal
   ): Promise<PublicPinterestBoardResult> {
     const board = boardPartsFromUrl(url);
+    const scope = pinterestScopeFromUrl(url);
     const endpoint = `https://api.pinterest.com/v3/pidgets/boards/${encodeURIComponent(board.username)}/${encodeURIComponent(board.board)}/pins/`;
     const initialPins: PinterestBoardPin[] = [];
     let expectedCount: number | undefined;
@@ -358,12 +366,14 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       if (json.status !== "success" || !Array.isArray(json.data?.pins)) {
         throw new Error(json.message || "Pinterest did not return board pins.");
       }
-      expectedCount = numberFromUnknown(json.data.board?.pin_count ?? json.data.board?.pins_count);
+      expectedCount = scope.kind === "section" ? undefined : numberFromUnknown(json.data.board?.pin_count ?? json.data.board?.pins_count);
       for (const pin of json.data.pins) {
         const imageUrl = bestPinterestImageUrl(pin);
         if (pin.id && imageUrl) initialPins.push({ id: pin.id, imageUrl, mediaType: isPinterestVideoPin(pin) ? "video" : "image" });
       }
-      log.push(`Initial public endpoint returned ${initialPins.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}.`);
+      log.push(scope.kind === "section"
+        ? `Initial public endpoint returned ${initialPins.length} whole-board pins; section progress will use discovered section pins.`
+        : `Initial public endpoint returned ${initialPins.length} pins${expectedCount ? ` of approximately ${expectedCount}` : ""}.`);
     } catch (error) {
       log.push(error instanceof Error ? error.message : "Initial public endpoint was unavailable.");
     }
@@ -379,10 +389,13 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
         onProgress: (current, total, message, page) =>
           report("paginating", current, total ?? expectedCount, 8 + Math.min(30, Math.round((current / Math.max(total ?? expectedCount ?? current, 1)) * 30)), message ?? `Importing page ${page ?? 1}: ${current} pins found`, page)
       });
+      const browserPins = dedupePins(browserResult.pins);
+      const mergedPins = scope.kind === "section" && browserPins.length > 0 ? browserPins : dedupePins([...initialPins, ...browserPins]);
+      const reportedTotal = scope.kind === "section" ? browserPins.length || undefined : browserResult.total ?? expectedCount;
       return {
-        pins: dedupePins([...initialPins, ...browserResult.pins]),
-        total: browserResult.total ?? expectedCount,
-        log: [...log, ...(browserResult.log ?? [])]
+        pins: mergedPins,
+        total: reportedTotal,
+        log: [...log, ...(browserResult.log ?? []), ...(scope.kind === "section" ? [`Section URL detected; using ${mergedPins.length} discovered section pins as the completion target.`] : [])]
       };
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -590,7 +603,7 @@ function dedupePins(pins: PinterestBoardPin[]) {
   const byId = new Map<string, PinterestBoardPin>();
   const seenUrls = new Set<string>();
   for (const pin of pins) {
-    if (!pin.id || !pin.imageUrl) continue;
+    if (!pin.id || !pin.imageUrl || pin.promoted) continue;
     const canonicalUrl = pin.imageUrl.replace(/([?&])(width|height|quality|crop)=[^&]*/gi, "$1").replace(/[?&]+$/, "");
     if (byId.has(pin.id) || seenUrls.has(canonicalUrl)) continue;
     byId.set(pin.id, pin);
@@ -604,10 +617,27 @@ function numberFromUnknown(value: unknown) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function boardPartsFromUrl(rawUrl: string) {
+function decodePinterestPart(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodedPinterestPathParts(url: URL) {
+  return url.pathname.split("/").filter(Boolean).map(decodePinterestPart);
+}
+
+function pinterestScopeFromUrl(rawUrl: string) {
   const url = new URL(rawUrl.trim());
-  const [username, board] = url.pathname.split("/").filter(Boolean);
-  return { username, board };
+  const parts = decodedPinterestPathParts(url);
+  return parts.length >= 3 ? { kind: "section" as const, username: parts[0], board: parts[1], section: parts.slice(2).join("/") } : { kind: "board" as const, username: parts[0], board: parts[1] };
+}
+
+function boardPartsFromUrl(rawUrl: string) {
+  const scope = pinterestScopeFromUrl(rawUrl);
+  return { username: scope.username, board: scope.board };
 }
 
 function isPinterestVideoPin(pin: PinterestPidgetPin) {

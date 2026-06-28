@@ -17,9 +17,9 @@ test("Phase 22.2 keeps imported dimensions available but source drops use stable
   assert.match(renderer, /function sourcePreferredAspectRatio/);
   assert.match(renderer, /async function decodedImageAspectRatio/);
   assert.match(renderer, /const chosenDropImage = randomImageFromSource\(source\)/);
-  assert.match(renderer, /placementForCanvasDrop\(next\.canvas, point, createdLayerIds\.length\)/);
+  assert.match(renderer, /placementForCanvasDrop\(next\.canvas, point, createdLayerIds\.length, dropAspectRatio\)/);
   assert.match(renderer, /projectWithDropImageAssignment\(next, source, layer\.id, chosenDropImage\)/);
-  assert.doesNotMatch(renderer, /const chosenAspect = await decodedImageAspectRatio\(chosenDropImage\)/);
+  assert.match(renderer, /const dropAspectRatio = await decodedImageAspectRatio\(chosenDropImage\) \?\? sourcePreferredAspectRatio\(source\)/);
   assert.match(renderer, /cropMode: overlayLike \? "contain" as const : "cover" as const/);
 });
 
