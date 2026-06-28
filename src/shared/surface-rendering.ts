@@ -42,7 +42,9 @@ export function surfaceEffectIsVisible(effect: PaperTextureEffect) {
 export function surfaceCompositeAlpha(effect: PaperTextureEffect) {
   const normalized = normalizeSurfaceEffect(effect);
   if (!surfaceEffectIsVisible(normalized)) return 0;
-  return normalized.opacity * (normalized.intensity / 100);
+  const opacity = normalized.opacity <= 0 ? 0 : Math.min(1, 0.28 + normalized.opacity * 0.86);
+  const intensity = Math.min(1, 0.68 + (normalized.intensity / 100) * 0.42);
+  return Math.min(1, opacity * intensity);
 }
 
 export function surfaceTileCacheKey(effect: PaperTextureEffect, customFingerprint = "") {

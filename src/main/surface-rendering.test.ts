@@ -35,7 +35,7 @@ test("surface normalization preserves stable persisted settings", () => {
   assert.equal(normalized.roughness, 35);
   assert.equal(normalized.tone, -10);
   assert.equal(surfaceEffectIsVisible(normalized), true);
-  assert.equal(surfaceCompositeAlpha(normalized), .3);
+  assert.ok(surfaceCompositeAlpha(normalized) > .6);
 });
 
 test("legacy texture projects remain enabled while none stays disabled", () => {

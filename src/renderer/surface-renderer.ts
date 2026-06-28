@@ -136,9 +136,9 @@ function drawProceduralBase(context: CanvasRenderingContext2D, effect: ReturnTyp
   if (effect.type === "dotted-paper") {
     context.fillStyle = "#efe9e0";
     context.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
-    const spacing = 46;
-    const radius = 1.7;
-    context.fillStyle = "rgba(124,144,168,.56)";
+    const spacing = 42;
+    const radius = 2.35;
+    context.fillStyle = "rgba(92,112,142,.82)";
     for (let y = spacing / 2; y < TILE_SIZE; y += spacing) {
       for (let x = spacing / 2; x < TILE_SIZE; x += spacing) {
         context.beginPath();
@@ -261,6 +261,20 @@ async function createSurfaceTile(effect: PaperTextureEffect, custom?: CustomText
     }
   } else {
     drawProceduralBase(context, normalized);
+  }
+  if (normalized.type === "dotted-paper") {
+    context.save();
+    context.globalAlpha = 0.58;
+    const spacing = 42;
+    context.fillStyle = "rgba(78,98,130,.72)";
+    for (let y = spacing / 2; y < TILE_SIZE; y += spacing) {
+      for (let x = spacing / 2; x < TILE_SIZE; x += spacing) {
+        context.beginPath();
+        context.arc(x, y, 2.15, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    context.restore();
   }
   drawNoiseAndRoughness(context, normalized);
   return canvas;

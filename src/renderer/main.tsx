@@ -1008,7 +1008,6 @@ function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourc
     <div
       ref={rootRef}
       className="add-source-control"
-      onPointerEnter={scheduleOpen}
       onPointerLeave={scheduleClose}
       onFocus={clearCloseTimer}
       onBlur={(event) => {
@@ -3921,7 +3920,9 @@ function App() {
     <main className={`app-shell ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
       <aside className={`sidebar left ${leftPanelOpen ? "" : "collapsed"}`}>
         <div className="brand compact-brand">
-          <img className="brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
+          <button className="brand-home-button tooltip-anchor" data-tooltip="Back to templates" aria-label="Back to templates" onClick={() => void goHome()}>
+            <img className="brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
+          </button>
           <div className="brand-copy">
             <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
             <p>{project.sources.length} pools · {project.templates.templates.length} templates</p>
@@ -3948,11 +3949,7 @@ function App() {
               <span>Folders become reusable pools. Multiple images become one source.</span>
             </div>
           )}
-          <div className="library-heading">
-            <div>
-              <span className="eyebrow">COLLECTIONS</span>
-              <h2>Sources</h2>
-            </div>
+          <div className="library-heading add-source-heading">
             <AddSourceControl
               onAddFolder={() => void addFolderSource()}
               onAddImages={() => void addLocalImagesSource()}
@@ -4158,8 +4155,7 @@ function App() {
         )}
 
         <section className="sidebar-bottom-actions">
-          <button onClick={saveAsTemplate}><LayoutTemplate size={16} /> Save template</button>
-          <button onClick={() => setRightPanelOpen(true)}><SlidersHorizontal size={16} /> Edit details</button>
+          <button onClick={() => void goHome()}>← Back To Templates</button>
         </section>
       </aside>
 
@@ -5256,7 +5252,6 @@ function ExportSetDialog({
         <div className="modal-title-row">
           <div>
             <h2>{ready ? "Wallpaper Set Ready" : "Create Wallpaper Set"}</h2>
-            <p>{ready ? "Choose this folder in macOS Wallpaper Settings." : "Generate wallpapers from the current template and sources."}</p>
           </div>
           <button className="button ghost" disabled={state.busy} onClick={onClose}>Close</button>
         </div>
@@ -5312,7 +5307,7 @@ function ExportSetDialog({
             </div>
 
             <details className="advanced-wallpaper-set-options">
-              <summary>More options</summary>
+              <summary>More options <ChevronDown size={14} /></summary>
               <div className="destination-row wallpaper-set-destination">
                 <div>
                   <strong>Save location</strong>
@@ -5454,8 +5449,23 @@ function CanvasDesignPanel({
   const aspect = canvas.width / Math.max(1, canvas.height);
 
   useEffect(() => { setDraftWidth(canvas.width); setDraftHeight(canvas.height); }, [canvas.width, canvas.height]);
-  function changeWidth(value: number) { const width = Math.max(64, value); setDraftWidth(width); if (lockAspect) setDraftHeight(Math.max(64, Math.round(width / aspect))); }
-  function changeHeight(value: number) { const height = Math.max(64, value); setDraftHeight(height); if (lockAspect) setDraftWidth(Math.max(64, Math.round(height * aspect))); }
+  function applyCanvasSize(width: number, height: number, mode = resizeMode) {
+    const nextWidth = Math.max(64, Math.round(width));
+    const nextHeight = Math.max(64, Math.round(height));
+    setDraftWidth(nextWidth);
+    setDraftHeight(nextHeight);
+    onResize(nextWidth, nextHeight, mode);
+  }
+  function changeWidth(value: number) {
+    const width = Math.max(64, value);
+    const height = lockAspect ? Math.max(64, Math.round(width / aspect)) : draftHeight;
+    applyCanvasSize(width, height);
+  }
+  function changeHeight(value: number) {
+    const height = Math.max(64, value);
+    const width = lockAspect ? Math.max(64, Math.round(height * aspect)) : draftWidth;
+    applyCanvasSize(width, height);
+  }
   function patchPaper(patch: Partial<PaperTextureEffect>) { onPatch({ backgroundPaper: { ...canvas.backgroundPaper, ...patch } }); }
 
   const surfaces = bundledSurfaceChoices;
@@ -5505,13 +5515,12 @@ function CanvasDesignPanel({
         <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
         <div className="two-col"><label>Width<SoftNumberInput value={draftWidth} min={64} onCommit={changeWidth} /></label><label>Height<SoftNumberInput value={draftHeight} min={64} onCommit={changeHeight} /></label></div>
-        <label>Resize content<select value={resizeMode} onChange={(event) => setResizeMode(event.target.value as CanvasResizeMode)}><option value="keep">Keep positions</option><option value="scale">Scale proportionally</option><option value="center">Center content</option></select></label>
+        <label>Resize content<select value={resizeMode} onChange={(event) => { const mode = event.target.value as CanvasResizeMode; setResizeMode(mode); onResize(draftWidth, draftHeight, mode); }}><option value="keep">Keep positions</option><option value="scale">Scale proportionally</option><option value="center">Center content</option></select></label>
         <div className="compact-action-row three-up">
           <button className={lockAspect ? "button selected" : "button secondary"} onClick={() => setLockAspect((value) => !value)}>Lock Ratio</button>
-          <button className="button secondary" onClick={() => { setDraftWidth(canvas.height); setDraftHeight(canvas.width); }}>Swap</button>
-          <button className="button secondary" onClick={() => { const ratio = window.devicePixelRatio || 1; setDraftWidth(Math.round(window.screen.width * ratio)); setDraftHeight(Math.round(window.screen.height * ratio)); }}>Use Current</button>
+          <button className="button secondary" onClick={() => applyCanvasSize(canvas.height, canvas.width)}>Swap</button>
+          <button className="button secondary" onClick={() => { const ratio = window.devicePixelRatio || 1; applyCanvasSize(Math.round(window.screen.width * ratio), Math.round(window.screen.height * ratio)); }}>Use Current</button>
         </div>
-        <button className="button primary full-width" onClick={() => onResize(draftWidth, draftHeight, resizeMode)}>Apply Size</button>
       </details>
 
       <details open>
@@ -5524,7 +5533,6 @@ function CanvasDesignPanel({
         {canvas.backgroundBaseMode === "image" && <>
           <div className="compact-action-row"><button className="button secondary" onClick={onChooseBackground}><ImagePlus size={15} /> {canvas.backgroundImage ? "Replace" : "Choose"}</button><button className="button ghost" disabled={!canvas.backgroundImage} onClick={onClearBackground}>Remove</button></div>
           <label>Fit<select value={canvas.backgroundMode} onChange={(event) => onPatch({ backgroundMode: event.target.value as CanvasSettings["backgroundMode"] })}><option value="cover">Fill</option><option value="contain">Fit</option><option value="stretch">Stretch</option><option value="original">Original</option><option value="center">Center</option><option value="tile">Tile</option></select></label>
-          <label>Alignment<select value={canvas.backgroundAlignment} onChange={(event) => onPatch({ backgroundAlignment: event.target.value as ImageAlignment })}>{alignmentOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <FilterSlider label="Opacity" value={canvas.backgroundOpacity} min={0} max={1} step={0.05} onChange={(value) => onPatch({ backgroundOpacity: value })} />
         </>}
       </details>
@@ -5550,11 +5558,10 @@ function CanvasDesignPanel({
             </div>
           ))}
         </div>
-        <button className="button ghost compact" onClick={onImportTexture}>Import Custom Surface</button>
+        <button className="button secondary full-width surface-import-button" onClick={onImportTexture}>Import Custom Surface</button>
         {surface.enabled && surface.type !== "none" && (
           <div className="surface-controls">
-            <FilterSlider label="Intensity" value={surface.intensity} min={0} max={100} onChange={(value) => patchPaper({ intensity: value })} />
-            <FilterSlider label="Opacity" value={surface.opacity} min={0} max={1} step={.02} onChange={(value) => patchPaper({ opacity: value })} />
+            <FilterSlider label="Opacity" value={surface.opacity} min={0} max={1} step={.02} onChange={(value) => patchPaper({ opacity: value, intensity: 100 })} />
             <FilterSlider label="Scale" value={surface.scale} min={.2} max={5} step={.05} onChange={(value) => patchPaper({ scale: value })} />
             <FilterSlider label="Noise / grain" value={surface.noise} min={0} max={100} onChange={(value) => patchPaper({ noise: value })} />
             <FilterSlider label="Roughness" value={surface.roughness} min={0} max={100} onChange={(value) => patchPaper({ roughness: value })} />
@@ -5562,7 +5569,7 @@ function CanvasDesignPanel({
             <FilterSlider label="Rotation" value={surface.rotation} min={-180} max={180} step={1} onChange={(value) => patchPaper({ rotation: value })} />
             <label>Blend mode<select value={surface.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
             <div className="surface-action-row">
-              <button className="button ghost compact" onClick={resetSurface}>Reset</button>
+              <button className="button ghost compact" onClick={resetSurface}>Reset Surface</button>
               <button className="button secondary compact" onClick={() => patchPaper({ seed: nextSurfaceSeed(surface.seed) })}><RefreshCcw size={14} /> Regenerate Texture</button>
             </div>
           </div>
@@ -5766,7 +5773,7 @@ function Properties({
         <details open>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
           <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
-          <div className="two-col"><label>Border<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label>Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
+          <div className="two-col"><label>Border Thickness<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label>Border Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
           <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
         </details>
 

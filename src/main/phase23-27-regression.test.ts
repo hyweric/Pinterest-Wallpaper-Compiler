@@ -51,7 +51,6 @@ test("Phase 25 through 27 simplify import completion and wallpaper set UI withou
   assert.match(renderer, /pinterest-complete-card/);
   assert.match(renderer, /Import complete/);
   assert.match(renderer, /Create Wallpaper Set/);
-  assert.match(renderer, /Generate wallpapers from the current template and sources/);
   assert.doesNotMatch(renderer, /wallpaper-count-presets/);
   assert.match(renderer, /More options/);
   assert.match(renderer, /Copy Folder Path/);

@@ -101,23 +101,23 @@ test("Phase 22 still avoids duplicate shared-source images across a wallpaper un
 
 test("Phase 22 surface defaults are tuned for paper and crumpled paper", () => {
   assert.deepEqual(surfaceDefaultsForType("paper"), {
-    intensity: 92,
+    intensity: 100,
     scale: 0.24,
     rotation: 0,
-    opacity: 0.54,
+    opacity: 0.72,
     blendMode: "normal",
-    noise: 82,
-    roughness: 76,
-    tone: 10
+    noise: 88,
+    roughness: 82,
+    tone: 12
   });
   assert.deepEqual(surfaceDefaultsForType("crumpled-paper"), {
-    intensity: 74,
+    intensity: 100,
     scale: 0.24,
     rotation: 24,
-    opacity: 0.32,
+    opacity: 0.58,
     blendMode: "normal",
-    noise: 72,
-    roughness: 88,
-    tone: 7
+    noise: 82,
+    roughness: 94,
+    tone: 8
   });
 });

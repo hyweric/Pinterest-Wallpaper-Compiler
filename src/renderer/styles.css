@@ -5867,3 +5867,140 @@ select,
   font-size: 12px;
   font-weight: 760;
 }
+
+/* Phase 28: UI simplification and visual consistency. */
+.brand-home-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+.brand-home-button:hover,
+.brand-home-button:focus-visible {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+.add-source-heading,
+.add-source-heading .add-source-control,
+.add-source-heading .add-source-trigger {
+  width: 100%;
+}
+.add-source-heading {
+  display: block;
+}
+.add-source-trigger {
+  min-height: 52px !important;
+  height: 52px !important;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 14px !important;
+  font-size: 13px !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+}
+.add-source-trigger[aria-expanded="true"] {
+  background: #f4fafb !important;
+}
+.source-library {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+.sidebar-bottom-actions {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+.sidebar-bottom-actions button {
+  min-height: 39px;
+  border: 1px solid rgba(43, 48, 58, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+  color: #59616c;
+  font-weight: 760;
+}
+.canvas-zoom-controls,
+.minimal-toolbar .canvas-zoom-controls {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  padding: 0 !important;
+}
+.surface-import-button {
+  width: 100%;
+  min-height: 40px;
+  margin: 8px 0 4px;
+  justify-content: center;
+}
+.surface-controls {
+  gap: 7px !important;
+  padding-top: 5px !important;
+}
+.sidebar.right .filter-slider,
+.filter-slider {
+  gap: 4px !important;
+  margin: 0 !important;
+}
+.sidebar.right .settings-section details,
+.sidebar.right .properties details {
+  gap: 8px;
+}
+.sidebar.right .settings-section label:not(.filter-slider),
+.sidebar.right .properties label:not(.filter-slider) {
+  align-items: center;
+}
+select,
+.sidebar select,
+.sidebar.right .settings-section select,
+.sidebar.right .properties select,
+.sidebar.right .two-col select {
+  height: 36px !important;
+  min-height: 36px !important;
+  line-height: 36px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.advanced-wallpaper-set-options > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  list-style: none;
+}
+.advanced-wallpaper-set-options > summary::-webkit-details-marker {
+  display: none;
+}
+.advanced-wallpaper-set-options > summary svg {
+  transition: transform 160ms ease;
+}
+.advanced-wallpaper-set-options[open] > summary svg {
+  transform: rotate(180deg);
+}
+.wallpaper-setup-guide {
+  justify-items: center;
+  text-align: center;
+}
+.wallpaper-set-path-card {
+  width: 100%;
+  text-align: left;
+}
+.wallpaper-setup-steps {
+  width: min(520px, 100%);
+  justify-items: stretch;
+}
+.wallpaper-setup-step {
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  align-items: center !important;
+  text-align: left;
+  padding: 10px 12px !important;
+}
+.wallpaper-setup-step div {
+  display: block !important;
+}
+.wallpaper-setup-step strong {
+  display: block;
+  line-height: 1.2 !important;
+}

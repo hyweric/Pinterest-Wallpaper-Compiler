@@ -8,7 +8,7 @@ const source = (relativePath: string) => readFile(path.join(root, relativePath),
 
 test("the Sources header exposes one labeled Add Source control instead of three icon buttons", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  const start = renderer.indexOf('<div className="library-heading">');
+  const start = renderer.indexOf('<div className="library-heading add-source-heading">');
   const end = renderer.indexOf('<div className="source-tabs"', start);
   const heading = renderer.slice(start, end);
 
@@ -35,13 +35,12 @@ test("Add Source menu keeps every existing source workflow with visible labels a
   assert.match(renderer, /action: onAddPinterest/);
 });
 
-test("Add Source menu supports hover grace periods, click toggling, outside clicks, and keyboard navigation", async () => {
+test("Add Source menu supports click toggling, outside clicks, and keyboard navigation without hover-opening", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const styles = await source("src/renderer/styles.css");
 
-  assert.match(renderer, /window\.setTimeout\([\s\S]*?, 120\)/);
   assert.match(renderer, /window\.setTimeout\([\s\S]*?, 220\)/);
-  assert.match(renderer, /onPointerEnter=\{scheduleOpen\}/);
+  assert.doesNotMatch(renderer, /onPointerEnter=\{scheduleOpen\}/);
   assert.match(renderer, /onPointerLeave=\{scheduleClose\}/);
   assert.match(renderer, /document\.addEventListener\("pointerdown", outsidePointer, true\)/);
   assert.match(renderer, /aria-haspopup="menu"/);

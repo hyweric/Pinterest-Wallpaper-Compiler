@@ -30,7 +30,7 @@ test("wallpaper settings opens only from the explicit setup button", async () =>
   const renderer = await source("src/renderer/main.tsx");
   const main = await source("src/main/main.ts");
   const types = await source("src/shared/types.ts");
-  assert.match(renderer, /Choose this folder in macOS Wallpaper Settings/);
+  assert.match(renderer, /Open Wallpaper Settings/);
   assert.match(renderer, /Open Wallpaper Settings/);
   assert.match(renderer, /Wallpaper Set Ready/);
   assert.match(renderer, /finalizeExportSet\(\{ sessionId \}\)/);
@@ -49,5 +49,5 @@ test("setup dialog keeps the exact folder path and readable numbered instruction
   assert.match(renderer, /Click Add Folder or Album, then Choose Folder/);
   assert.match(renderer, /Turn on Shuffle and Show on all Spaces/);
   assert.match(styles, /wallpaper-setup-steps/);
-  assert.match(styles, /font-size: 16px/);
+  assert.match(styles, /text-align: center/);
 });

@@ -80,44 +80,44 @@ export const bundledSurfaceManifest: BundledSurfaceManifestEntry[] = [
 
 export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperType"], Pick<PaperTextureEffect, "intensity" | "scale" | "rotation" | "opacity" | "blendMode" | "noise" | "roughness" | "tone">> = {
   paper: {
-    intensity: 92,
+    intensity: 100,
     scale: 0.24,
     rotation: 0,
-    opacity: 0.54,
+    opacity: 0.72,
     blendMode: "normal",
-    noise: 82,
-    roughness: 76,
-    tone: 10
+    noise: 88,
+    roughness: 82,
+    tone: 12
   },
   "crumpled-paper": {
-    intensity: 74,
+    intensity: 100,
     scale: 0.24,
     rotation: 24,
-    opacity: 0.32,
+    opacity: 0.58,
     blendMode: "normal",
-    noise: 72,
-    roughness: 88,
-    tone: 7
+    noise: 82,
+    roughness: 94,
+    tone: 8
   },
   "grid-paper": {
     intensity: 100,
     scale: 0.95,
     rotation: 0,
-    opacity: 0.62,
+    opacity: 0.78,
     blendMode: "normal",
-    noise: 52,
-    roughness: 0,
-    tone: 37
+    noise: 58,
+    roughness: 6,
+    tone: 40
   },
   "dotted-paper": {
     intensity: 100,
-    scale: 0.95,
+    scale: 0.9,
     rotation: 0,
-    opacity: 0.9,
+    opacity: 1,
     blendMode: "normal",
-    noise: 52,
-    roughness: 0,
-    tone: 63
+    noise: 64,
+    roughness: 10,
+    tone: 68
   }
 };
 
