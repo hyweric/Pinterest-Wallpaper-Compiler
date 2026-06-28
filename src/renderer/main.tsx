@@ -137,20 +137,73 @@ const historyLimit = 80;
 const snapDistance = 8;
 const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
 
+type TextPresetId = "heading" | "caption" | "quote" | "label" | "soft";
+
+const textStylePresets: Array<{ id: TextPresetId; label: string; text: string; fontFamily: string; fontWeight: number; sizeScale: number; lineHeight: number; letterSpacing: number; color: string }> = [
+  { id: "heading", label: "Bold heading", text: "Add a heading", fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", fontWeight: 850, sizeScale: 0.052, lineHeight: 1.02, letterSpacing: -0.4, color: "#26313a" },
+  { id: "caption", label: "Small caption", text: "Add a caption", fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", fontWeight: 650, sizeScale: 0.026, lineHeight: 1.16, letterSpacing: 0, color: "#4c5661" },
+  { id: "quote", label: "Editorial quote", text: "Add a quote", fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 700, sizeScale: 0.044, lineHeight: 1.08, letterSpacing: -0.1, color: "#2c3137" },
+  { id: "label", label: "Tiny label", text: "LABEL", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 800, sizeScale: 0.018, lineHeight: 1.08, letterSpacing: 1.6, color: "#5a6470" },
+  { id: "soft", label: "Soft title", text: "Soft title", fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 600, sizeScale: 0.04, lineHeight: 1.12, letterSpacing: 0.2, color: "#6f675e" }
+];
+
+function textPresetForLayer(layer: PlaceholderLayer): TextPresetId {
+  const fontSize = layer.fontSize ?? 72;
+  if ((layer.letterSpacing ?? 0) >= 1) return "label";
+  if ((layer.fontWeight ?? 800) <= 650 && fontSize < 52) return "caption";
+  if ((layer.fontFamily ?? "").includes("Avenir") && (layer.fontWeight ?? 800) <= 650) return "soft";
+  if ((layer.fontFamily ?? "").includes("Avenir")) return "quote";
+  return "heading";
+}
+
+function applyTextPreset(canvas: CanvasSettings, presetId: TextPresetId, keepText?: string): Partial<PlaceholderLayer> {
+  const preset = textStylePresets.find((item) => item.id === presetId) ?? textStylePresets[0];
+  return {
+    text: keepText?.trim() ? keepText : preset.text,
+    fontFamily: preset.fontFamily,
+    fontSize: Math.max(14, Math.round(canvas.width * preset.sizeScale)),
+    fontWeight: preset.fontWeight,
+    textColor: preset.color,
+    lineHeight: preset.lineHeight,
+    letterSpacing: preset.letterSpacing,
+    textAlign: "center"
+  };
+}
+
+function numberedCopyName(baseName: string, existingNames: Iterable<string>) {
+  const names = new Set(existingNames);
+  const root = baseName.replace(/\s+\(\d+\)$/u, "").trim() || baseName || "Layer";
+  let index = 1;
+  let candidate = `${root} (${index})`;
+  while (names.has(candidate)) {
+    index += 1;
+    candidate = `${root} (${index})`;
+  }
+  names.add(candidate);
+  return candidate;
+}
 
 function createProjectForCurrentScreen() {
   const project = createProject();
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(640, Math.round(window.screen.width * ratio));
   const height = Math.max(480, Math.round(window.screen.height * ratio));
+  const canvas = {
+    ...project.canvas,
+    width,
+    height,
+    presetId: "custom" as const,
+    orientation: width === height ? "square" as const : width > height ? "landscape" as const : "portrait" as const
+  };
   return {
     ...project,
-    canvas: {
-      ...project.canvas,
-      width,
-      height,
-      presetId: "custom" as const,
-      orientation: width === height ? "square" as const : width > height ? "landscape" as const : "portrait" as const
+    canvas,
+    templates: {
+      ...project.templates,
+      templates: project.templates.templates.map((template) => ({
+        ...template,
+        project: { ...template.project, canvas: structuredClone(canvas) }
+      }))
     }
   };
 }
@@ -1483,11 +1536,11 @@ function App() {
     });
   }
 
-  function addTextLayer() {
+  function addTextLayer(presetId: TextPresetId = "heading") {
     setAddObjectMenuOpen(false);
     commitProject((current) => {
       const textCount = current.layers.filter((layer) => layer.objectKind === "text").length;
-      const layer = createTextLayer(current.canvas, textCount + 1);
+      const layer = { ...createTextLayer(current.canvas, textCount + 1), ...applyTextPreset(current.canvas, presetId) };
       selectOnlyLayer(layer.id);
       return { ...current, layers: [...current.layers, layer] };
     });
@@ -1515,15 +1568,20 @@ function App() {
 
   function duplicateLayers(ids: string[]) {
     const idSet = new Set(ids);
+    const existingNames = new Set(project.layers.map((layer) => layer.name));
     const copies = project.layers
       .filter((layer) => idSet.has(layer.id) && !layer.locked)
-      .map((layer) => ({
-        ...structuredClone(layer),
-        id: uid("placeholder"),
-        name: `${layer.name} Copy`,
-        x: layer.x + 32,
-        y: layer.y + 32
-      }));
+      .map((layer) => {
+        const name = numberedCopyName(layer.name, existingNames);
+        existingNames.add(name);
+        return {
+          ...structuredClone(layer),
+          id: uid("placeholder"),
+          name,
+          x: layer.x + 32,
+          y: layer.y + 32
+        };
+      });
     if (copies.length === 0) {
       if (ids.length) setMessage("Unlock the selected layer before duplicating it.");
       return;
@@ -3224,6 +3282,43 @@ function App() {
   }
 
   function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean) {
+    if (drag.layer.objectKind === "text" && drag.mode.startsWith("resize-") && drag.groupLayers.length <= 1) {
+      const handle = drag.mode as ResizeHandle;
+      const minWidth = 36;
+      const minHeight = Math.max(20, (drag.layer.fontSize ?? 72) * 0.45);
+      if (handle === "resize-e" || handle === "resize-w") {
+        const rawWidth = handle === "resize-e" ? drag.layer.width + dx : drag.layer.width - dx;
+        const width = Math.max(minWidth, Math.round(rawWidth));
+        patchLayer(drag.id, {
+          width,
+          x: handle === "resize-w" ? Math.round(drag.layer.x + drag.layer.width - width) : drag.layer.x
+        }, false);
+        return;
+      }
+      const pivot = oppositeCornerForResize(drag.layer, handle);
+      const resized = resizeBoundsFromOppositeCorner(
+        drag.layer,
+        handle,
+        dx,
+        dy,
+        { width: project.canvas.width, height: project.canvas.height, minSize: minWidth }
+      );
+      const widthRatio = resized.width / Math.max(1, drag.layer.width);
+      const heightRatio = resized.height / Math.max(1, drag.layer.height);
+      const scale = clamp(Math.abs(widthRatio - 1) >= Math.abs(heightRatio - 1) ? widthRatio : heightRatio, 0.18, 6);
+      const width = Math.max(minWidth, Math.round(drag.layer.width * scale));
+      const height = Math.max(minHeight, Math.round(drag.layer.height * scale));
+      const left = handle.includes("w") ? pivot.x - width : pivot.x;
+      const top = handle.includes("n") ? pivot.y - height : pivot.y;
+      patchLayer(drag.id, {
+        x: Math.round(clamp(left, 0, project.canvas.width - width)),
+        y: Math.round(clamp(top, 0, project.canvas.height - height)),
+        width,
+        height,
+        fontSize: Math.max(8, Math.round((drag.layer.fontSize ?? 72) * scale))
+      }, false);
+      return;
+    }
     if (drag.groupLayers.length > 1 && drag.groupBounds && drag.mode.startsWith("resize-")) {
       const handle = drag.mode as ResizeHandle;
       const rawGroup = resizeBoundsFromOppositeCorner(
@@ -3931,12 +4026,18 @@ function App() {
         if (view !== "editor" || clipboardLayers.length === 0) return;
         event.preventDefault();
         event.stopPropagation();
-        const pasted = clipboardLayers.map((layer) => ({
-          ...structuredClone(layer),
-          id: uid("placeholder"),
-          x: layer.x + 28,
-          y: layer.y + 28
-        }));
+        const existingNames = new Set(projectRef.current.layers.map((layer) => layer.name));
+        const pasted = clipboardLayers.map((layer) => {
+          const name = numberedCopyName(layer.name, existingNames);
+          existingNames.add(name);
+          return {
+            ...structuredClone(layer),
+            id: uid("placeholder"),
+            name,
+            x: layer.x + 28,
+            y: layer.y + 28
+          };
+        });
         commitProject((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
         setSelectedLayerIds(pasted.map((layer) => layer.id));
         setSelectedLayerId(pasted.at(-1)?.id);
@@ -4056,7 +4157,7 @@ function App() {
                 <span className="source-icon">{selectedSource.type === "local-folder" ? <FolderOpen size={17} /> : selectedSource.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                 <div>
                   <strong>{selectedSource.name}</strong>
-                  <span>{sourceKindLabel(selectedSource)}</span><span>{sourceImagesForPolicy(selectedSource).length} available</span>
+                  <span>{sourceKindLabel(selectedSource)}</span>
                 </div>
               </div>
               <div className="source-detail-actions">
@@ -4268,10 +4369,19 @@ function App() {
             {addObjectMenuOpen && (
               <div className="popover-menu add-object-menu">
                 <button onClick={addPlaceholder}><ImagePlus size={16} /> Frame</button>
-                <button onClick={addTextLayer}><Type size={16} /> Text</button>
+                {textStylePresets.map((preset) => (
+                  <button key={preset.id} onClick={() => addTextLayer(preset.id)}><Type size={16} /> {preset.label}</button>
+                ))}
               </div>
             )}
           </div>
+          {selectedLayer?.objectKind === "text" && (
+            <TextTopBar
+              layer={selectedLayer}
+              canvas={project.canvas}
+              onPatch={(patch) => patchLayer(selectedLayer.id, patch)}
+            />
+          )}
           <div className="toolbar-cluster">
             <button className="secondary-action" disabled={wallpaperBusy} onClick={() => showNextVariation()}>
               <Shuffle size={17} />
@@ -4465,7 +4575,7 @@ function App() {
                     </div>
                     {selected && !layer.locked && (
                       <div className="selection-handles-overlay" style={{ left: layer.x, top: layer.y, width: layer.width, height: layer.height, transform: `rotate(${layer.rotation}deg)` }}>
-                        <SelectionHandles layer={layer} onBeginDrag={beginDrag} />
+                        <SelectionHandles layer={layer} onBeginDrag={beginDrag} variant="text" />
                       </div>
                     )}
                   </React.Fragment>
@@ -4584,7 +4694,10 @@ function App() {
                         }}
                       />
                     ) : (
-                      <span className="assign-source-label" style={{ fontSize: `${clamp(Math.min(innerWidth * 0.11, innerHeight * 0.22), 10, 22)}px` }}><ImagePlus size={22} /> Assign source</span>
+                      (() => {
+                        const assignFont = clamp(Math.min(innerWidth * 0.12, innerHeight * 0.23), 10, Math.max(22, project.canvas.width * 0.018));
+                        return <span className="assign-source-label" style={{ fontSize: `${assignFont}px` }}><ImagePlus size={Math.round(assignFont * 1.05)} /> Assign source</span>;
+                      })()
                     )}
                     <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
                     {selected && polaroidActive && inspectorTab === "effects" && image && !cropping && (
@@ -4670,6 +4783,7 @@ function App() {
         )}
         <Properties
           layer={selectedLayer}
+          canvas={project.canvas}
           activeTab={inspectorTab}
           sources={project.sources}
           onPatch={(patch) => patchSelectedLayer(patch)}
@@ -5218,8 +5332,11 @@ function PolaroidDirectImageEditor({
   );
 }
 
-function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void }) {
-  const handles: DragMode[] = ["resize-nw", "resize-n", "resize-ne", "resize-e", "resize-se", "resize-s", "resize-sw", "resize-w"];
+function SelectionHandles({ layer, onBeginDrag, variant }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; variant?: "text" | "frame" }) {
+  const textMode = variant === "text" || layer.objectKind === "text";
+  const handles: DragMode[] = textMode
+    ? ["resize-nw", "resize-ne", "resize-se", "resize-sw", "resize-e", "resize-w"]
+    : ["resize-nw", "resize-n", "resize-ne", "resize-e", "resize-se", "resize-s", "resize-sw", "resize-w"];
   function startControlDrag(event: PointerEvent, mode: DragMode) {
     event.preventDefault();
     event.stopPropagation();
@@ -5228,11 +5345,31 @@ function SelectionHandles({ layer, onBeginDrag }: { layer: PlaceholderLayer; onB
   }
   return (
     <>
-      <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={13} /></button>
+      {!textMode && <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={13} /></button>}
       {handles.map((handle) => (
-        <button key={handle} className={`resize-handle ${handle}`} onPointerDown={(event) => startControlDrag(event, handle)} aria-label={handle} />
+        <button key={handle} className={`resize-handle ${textMode ? "text-resize-handle" : ""} ${handle}`} onPointerDown={(event) => startControlDrag(event, handle)} aria-label={handle} />
       ))}
     </>
+  );
+}
+
+function TextTopBar({ layer, canvas, onPatch }: { layer: PlaceholderLayer; canvas: CanvasSettings; onPatch: (patch: Partial<PlaceholderLayer>) => void }) {
+  const fontSize = layer.fontSize ?? 72;
+  const weight = layer.fontWeight ?? 800;
+  return (
+    <div className="text-topbar" aria-label="Text controls">
+      <select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>
+        {textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+      </select>
+      <div className="text-size-stepper">
+        <button aria-label="Decrease text size" onClick={() => onPatch({ fontSize: Math.max(8, fontSize - 4) })}>−</button>
+        <span>{Math.round(fontSize)}</span>
+        <button aria-label="Increase text size" onClick={() => onPatch({ fontSize: Math.min(420, fontSize + 4) })}>+</button>
+      </div>
+      <label className="text-color-control" title="Text color"><span>A</span><input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
+      <button className={weight >= 800 ? "active" : ""} onClick={() => onPatch({ fontWeight: weight >= 800 ? 600 : 850 })}>B</button>
+      <button onClick={() => onPatch({ textAlign: layer.textAlign === "left" ? "center" : layer.textAlign === "center" ? "right" : "left" })}>{layer.textAlign === "left" ? "⫷" : layer.textAlign === "right" ? "⫸" : "☰"}</button>
+    </div>
   );
 }
 
@@ -5500,9 +5637,7 @@ function ExportSetDialog({
                   <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
                 </div>
               </div>
-              <div className="export-options simple-export-options">
-                <button className={state.avoidRepeats ? "plain-toggle active" : "plain-toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button>
-              </div>
+
             </details>
 
             {(state.busy || totalFinished > 0) && <>
@@ -5768,6 +5903,7 @@ const alignmentOptions: Array<[ImageAlignment, string]> = [
 
 function Properties({
   layer,
+  canvas,
   activeTab,
   sources,
   onPatch,
@@ -5777,6 +5913,7 @@ function Properties({
   onMatchAspect
 }: {
   layer?: PlaceholderLayer;
+  canvas: CanvasSettings;
   activeTab: InspectorTab;
   sources: ImageSource[];
   onPatch: (patch: Partial<PlaceholderLayer>) => void;
@@ -5809,8 +5946,8 @@ function Properties({
       <section className="panel properties text-properties">
         <details open>
           <summary>Text <ChevronDown size={15} /></summary>
+          <label>Text style<select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>{textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
           <label>Content<textarea value={layer.text ?? "Text"} rows={4} onChange={(event) => onPatch({ text: event.target.value })} /></label>
-          <label>Font<input value={layer.fontFamily ?? "Inter, system-ui"} onChange={(event) => onPatch({ fontFamily: event.target.value })} /></label>
           <div className="two-col">
             <label>Size<SoftNumberInput value={layer.fontSize ?? 72} min={8} max={400} onCommit={(value) => onPatch({ fontSize: Math.round(value) })} /></label>
             <label>Weight<SoftNumberInput value={layer.fontWeight ?? 800} min={100} max={900} step={100} onCommit={(value) => onPatch({ fontWeight: Math.round(value) })} /></label>
