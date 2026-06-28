@@ -51,7 +51,7 @@ test("Phase 22.2 exposes previous and next image controls without replacing gene
 });
 
 
-test("Phase 22.2 advances current desktop preview and left-aligns Add Placeholder", async () => {
+test("Phase 22.2 advances current desktop preview and left-aligns Add Object", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   const previewSelection = await readFile(path.join(process.cwd(), "src/shared/preview-selection.ts"), "utf8");
   const styles = await readFile(path.join(process.cwd(), "src/renderer/styles.css"), "utf8");

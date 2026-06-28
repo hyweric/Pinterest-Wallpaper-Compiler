@@ -79,7 +79,7 @@ export function createProject(): WallpaperProject {
     canvas: {
       width: 1920,
       height: 1080,
-      presetId: "1920x1080",
+      presetId: "custom",
       orientation: "landscape",
       backgroundColor: "#f1eee8",
       backgroundBaseMode: "color",
@@ -135,6 +135,7 @@ export function createPlaceholder(canvas: CanvasSettings, index: number): Placeh
   return {
     id: uid("placeholder"),
     type: "placeholder",
+    objectKind: "frame",
     name: `Image ${index}`,
     x: Math.round(canvas.width * 0.12 + index * 28),
     y: Math.round(canvas.height * 0.16 + index * 28),
@@ -157,6 +158,47 @@ export function createPlaceholder(canvas: CanvasSettings, index: number): Placeh
     crop: { offsetX: 0, offsetY: 0, zoom: 1 },
     effects: createDefaultEffects(),
     sourceState: createDefaultSourceState()
+  };
+}
+
+
+export function createTextLayer(canvas: CanvasSettings, index: number): PlaceholderLayer {
+  const width = Math.round(canvas.width * 0.28);
+  const height = Math.round(canvas.height * 0.12);
+  return {
+    id: uid("text"),
+    type: "placeholder",
+    objectKind: "text",
+    name: `Text ${index}`,
+    text: "Text",
+    x: Math.round(canvas.width * 0.5 - width / 2),
+    y: Math.round(canvas.height * 0.5 - height / 2),
+    width,
+    height,
+    frameMode: "fixed",
+    rotation: 0,
+    cropMode: "contain",
+    alignment: "center",
+    borderWidth: 0,
+    borderColor: "#ffffff",
+    borderOpacity: 0,
+    borderRadius: 0,
+    maskShape: "rectangle",
+    shadow: false,
+    opacity: 1,
+    locked: false,
+    hidden: false,
+    keepAspectRatio: false,
+    crop: { offsetX: 0, offsetY: 0, zoom: 1 },
+    effects: createDefaultEffects(),
+    sourceState: createDefaultSourceState(),
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    fontSize: Math.max(28, Math.round(canvas.width * 0.038)),
+    fontWeight: 800,
+    textColor: "#26313a",
+    textAlign: "center",
+    lineHeight: 1.12,
+    letterSpacing: 0
   };
 }
 
@@ -189,7 +231,7 @@ export function createDefaultPaper(): PaperTextureEffect {
     scale: 1,
     rotation: 0,
     opacity: 0,
-    blendMode: "normal",
+    blendMode: "multiply",
     seed: 1,
     noise: 18,
     roughness: 20,
@@ -297,8 +339,18 @@ function normalizeLayer(layer: PlaceholderLayer): PlaceholderLayer {
   normalizedPolaroid.enabled = paperType === "polaroid";
   const normalizedTornPaper = normalizeTornPaperEffect(layer.effects?.tornPaper, normalizedPaperFrame, Boolean(layer.effects?.innerShadow));
   normalizedTornPaper.enabled = paperType === "torn";
+  const objectKind = layer.objectKind === "text" ? "text" : "frame";
   return {
     ...layer,
+    objectKind,
+    text: objectKind === "text" ? (layer.text ?? "Text") : layer.text,
+    fontFamily: objectKind === "text" ? (layer.fontFamily ?? "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif") : layer.fontFamily,
+    fontSize: objectKind === "text" ? (layer.fontSize ?? 72) : layer.fontSize,
+    fontWeight: objectKind === "text" ? (layer.fontWeight ?? 800) : layer.fontWeight,
+    textColor: objectKind === "text" ? (layer.textColor ?? "#26313a") : layer.textColor,
+    textAlign: objectKind === "text" ? (layer.textAlign ?? "center") : layer.textAlign,
+    lineHeight: objectKind === "text" ? (layer.lineHeight ?? 1.12) : layer.lineHeight,
+    letterSpacing: objectKind === "text" ? (layer.letterSpacing ?? 0) : layer.letterSpacing,
     frameMode: layer.frameMode === "adaptive" ? "adaptive" : "fixed",
     borderOpacity: layer.borderOpacity ?? 1,
     maskShape: layer.maskShape ?? (layer.borderRadius >= Math.min(layer.width, layer.height) / 2 ? "circle" : layer.borderRadius > 0 ? "rounded" : "rectangle"),
@@ -342,7 +394,7 @@ function mergeSources(existing: ImageSource[], incoming: ImageSource[]) {
 }
 
 function sourceIdsFromLayers(layers: PlaceholderLayer[]) {
-  return [...new Set(layers.flatMap((layer) => layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : []))];
+  return [...new Set(layers.flatMap((layer) => layer.objectKind === "text" ? [] : layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : []))];
 }
 
 export function createTemplateSnapshot(project: WallpaperProject): WallpaperProjectSnapshot {

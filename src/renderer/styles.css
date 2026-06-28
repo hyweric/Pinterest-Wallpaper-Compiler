@@ -2875,12 +2875,6 @@ summary {
   font-weight: 650;
 }
 
-.export-options input[type="checkbox"] {
-  width: 15px;
-  min-height: 15px;
-  margin: 0;
-  padding: 0;
-}
 
 .export-summary {
   display: flex;
@@ -5313,7 +5307,7 @@ input[type="range"]::-moz-range-thumb {
   color: #4f7480;
 }
 
-/* Phase 22.1.1 hotfix: keep Add Placeholder left aligned while canvas scrolls independently. */
+/* Phase 22.1.1 hotfix: keep Add Object left aligned while canvas scrolls independently. */
 .minimal-toolbar {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
@@ -5469,7 +5463,7 @@ input[type="range"]::-moz-range-thumb {
   min-width: 44px;
 }
 
-/* Phase 22.3.2: remove the extra backing rectangle behind Add Placeholder. */
+/* Phase 22.3.2: remove the extra backing rectangle behind Add Object. */
 .minimal-toolbar .toolbar-create-actions {
   border-color: transparent !important;
   background: transparent !important;
@@ -5835,27 +5829,6 @@ select,
 .wallpaper-set-note.simple {
   margin-bottom: 10px;
 }
-.wallpaper-count-presets {
-  display: flex;
-  gap: 7px;
-  margin: -2px 0 12px;
-}
-.wallpaper-count-presets button {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid rgba(43, 48, 58, 0.09);
-  border-radius: 999px;
-  color: #6f6878;
-  background: rgba(255,255,255,.78);
-  box-shadow: none;
-  font-size: 12px;
-  font-weight: 760;
-}
-.wallpaper-count-presets button.active {
-  color: #4e3d68;
-  border-color: rgba(156, 117, 204, 0.30);
-  background: rgba(239, 232, 248, 0.88);
-}
 .advanced-wallpaper-set-options {
   margin-top: 4px;
   border: 0;
@@ -6003,4 +5976,747 @@ select,
 .wallpaper-setup-step strong {
   display: block;
   line-height: 1.2 !important;
+}
+
+/* Phase 28.1 follow-up: remaining UI cleanup and wallpaper handoff layout. */
+.assign-source-button {
+  display: none !important;
+}
+.source-detail-actions {
+  grid-template-columns: auto !important;
+  justify-content: start !important;
+}
+.source-detail-actions .pill-button,
+.source-row-actions .source-mini-action {
+  width: auto !important;
+  min-width: 58px !important;
+  max-width: 88px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  flex: 0 0 auto !important;
+}
+.source-row-actions {
+  flex: 0 0 auto !important;
+}
+.texture-choice.custom {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+.texture-choice.custom .texture-actions {
+  grid-template-columns: minmax(0, 1fr) !important;
+  width: 100% !important;
+  padding: 0 8px 8px !important;
+}
+.texture-choice.custom .texture-actions button {
+  width: 100% !important;
+  min-height: 34px !important;
+  font-size: 11px !important;
+}
+.simple-export-options {
+  margin-top: 8px;
+}
+.plain-toggle {
+  min-height: 34px;
+  width: auto;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #6f6878;
+  box-shadow: none;
+  padding: 0 2px;
+  justify-content: flex-start;
+}
+.plain-toggle.active {
+  color: #5f4d78;
+}
+.wallpaper-ready-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 18px;
+  align-items: start;
+}
+.wallpaper-ready-main {
+  display: grid;
+  gap: 14px;
+}
+.wallpaper-ready-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.wallpaper-ready-preview-frame {
+  position: relative;
+  aspect-ratio: 1;
+  border: 1px dashed rgba(80, 88, 101, 0.18);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(248, 248, 247, 0.95), rgba(238, 240, 244, 0.68));
+}
+.wallpaper-ready-preview-frame span {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #5e6470;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  font-weight: 850;
+  box-shadow: 0 4px 12px rgba(54, 60, 72, 0.08);
+}
+.wallpaper-ready-actions {
+  grid-column: 1 / -1;
+  justify-content: end;
+}
+.wallpaper-setup-steps {
+  width: 100% !important;
+  display: grid;
+  gap: 8px;
+}
+.wallpaper-setup-step {
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr) !important;
+  align-items: center !important;
+  text-align: left !important;
+  min-height: 42px;
+}
+.wallpaper-setup-step strong {
+  display: block;
+  text-align: left;
+}
+.advanced-wallpaper-set-options > summary {
+  justify-content: flex-start;
+}
+.toolbar-overflow button:has(svg + span) {
+  justify-content: flex-start;
+}
+@media (max-width: 760px) {
+  .wallpaper-ready-layout {
+    grid-template-columns: 1fr;
+  }
+  .wallpaper-ready-preview-grid {
+    max-width: 280px;
+  }
+}
+
+/* Phase 28.2: missed cleanup pass, source card sizing, layer color, snap visibility, and set layout. */
+.source-help {
+  display: none !important;
+}
+.source-detail-card {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-height: 44px !important;
+  padding: 7px 8px !important;
+  border-radius: 12px !important;
+  background: rgba(255, 255, 255, 0.58) !important;
+  box-shadow: none !important;
+}
+.source-detail-heading {
+  grid-template-columns: 24px minmax(0, 1fr) !important;
+  gap: 7px !important;
+  min-width: 0 !important;
+}
+.source-detail-heading .source-icon {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 8px !important;
+}
+.source-detail-heading strong {
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+.source-detail-heading span {
+  font-size: 9px !important;
+  line-height: 1.1 !important;
+}
+.source-summary-line {
+  display: none !important;
+}
+.source-detail-actions {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 0 !important;
+}
+.source-detail-actions .pill-button {
+  width: 68px !important;
+  min-width: 68px !important;
+  max-width: 68px !important;
+  min-height: 27px !important;
+  height: 27px !important;
+  padding: 0 8px !important;
+  font-size: 10px !important;
+  justify-content: center !important;
+}
+.source-row-actions .source-mini-action,
+.source-menu button,
+.source-detail-actions button {
+  flex: 0 0 auto !important;
+}
+
+.layer-row,
+.layer-row.active,
+.layer-row:hover {
+  box-shadow: none !important;
+}
+.layer-row.active {
+  background: rgba(229, 241, 246, 0.88) !important;
+  border-color: rgba(95, 151, 173, 0.32) !important;
+  color: #253640 !important;
+}
+.layer-row.active .layer-drag-handle,
+.layer-row.active .layer-type-icon {
+  color: #4f879a !important;
+}
+.layer-row:hover {
+  background: rgba(247, 249, 250, 0.72) !important;
+  border-color: rgba(61, 88, 100, 0.10) !important;
+}
+.layer-main:hover,
+.layer-icon-button:hover,
+.layer-row.active .layer-main,
+.layer-row.active .layer-icon-button,
+.layer-row.active .layer-main:hover,
+.layer-row.active .layer-icon-button:hover {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.layer-row:active,
+.layer-row[draggable="true"]:active {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+.layer-row * {
+  -webkit-user-drag: none;
+}
+
+.guide.vertical,
+.guide.horizontal {
+  z-index: 5000 !important;
+  background: rgba(132, 181, 195, 0.98) !important;
+  box-shadow: 0 0 0 1px rgba(132, 181, 195, 0.24), 0 0 18px rgba(132, 181, 195, 0.34) !important;
+}
+.guide.vertical { width: 2px !important; }
+.guide.horizontal { height: 2px !important; }
+
+.canvas-zoom-controls,
+.minimal-toolbar .canvas-zoom-controls,
+.zoom-readout {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+select,
+.sidebar select,
+.sidebar.right .settings-section select,
+.sidebar.right .properties select,
+.sidebar.right .two-col select {
+  display: flex !important;
+  align-items: center !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  line-height: 34px !important;
+  background-position: right 0 top 0, calc(100% - 11px) center !important;
+}
+
+.export-set-grid.simplified {
+  grid-template-columns: minmax(0, 1fr) minmax(150px, .82fr) !important;
+}
+.advanced-wallpaper-set-options > summary svg {
+  transform: rotate(0deg) !important;
+  transition: transform 160ms ease !important;
+}
+.advanced-wallpaper-set-options[open] > summary svg {
+  transform: rotate(90deg) !important;
+}
+.wallpaper-ready-layout {
+  grid-template-columns: minmax(280px, .9fr) minmax(360px, 1.25fr) !important;
+  gap: 18px !important;
+  align-items: stretch !important;
+  min-height: min(560px, 70vh) !important;
+}
+.wallpaper-ready-main {
+  align-content: start !important;
+}
+.wallpaper-ready-preview-grid {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 460px !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+  align-self: stretch !important;
+}
+.wallpaper-ready-preview-frame {
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: auto !important;
+  min-height: 0 !important;
+}
+@media (max-width: 900px) {
+  .wallpaper-ready-layout {
+    grid-template-columns: 1fr !important;
+  }
+  .wallpaper-ready-preview-grid {
+    min-height: 360px !important;
+  }
+}
+
+/* Phase 28.3: precise follow-up fixes for import copy, layer reordering, inline rename, zoom, and set layout. */
+.import-title-row {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+.import-title-row .modal-title-copy p {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 100% !important;
+}
+.import-dialog-close-button {
+  min-height: 38px !important;
+  height: 38px !important;
+  padding: 0 16px !important;
+  font-size: 12px !important;
+  flex: 0 0 auto !important;
+}
+
+.source-detail-card {
+  min-height: 38px !important;
+  height: auto !important;
+  padding: 6px 7px !important;
+  gap: 6px !important;
+}
+.source-detail-heading {
+  grid-template-columns: 22px minmax(0, 1fr) !important;
+  gap: 6px !important;
+}
+.source-detail-heading .source-icon {
+  width: 22px !important;
+  height: 22px !important;
+}
+.source-detail-heading strong {
+  font-size: 10.5px !important;
+}
+.source-detail-heading span {
+  font-size: 9px !important;
+}
+.source-detail-actions .pill-button {
+  height: 25px !important;
+  min-height: 25px !important;
+  width: 62px !important;
+  min-width: 62px !important;
+  max-width: 62px !important;
+}
+
+.layer-row {
+  position: relative !important;
+  overflow: visible !important;
+}
+.layer-row.drop-before::before,
+.layer-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #55a9d8;
+  box-shadow: 0 0 0 1px rgba(85, 169, 216, 0.18), 0 0 14px rgba(85, 169, 216, 0.42);
+  z-index: 20;
+  pointer-events: none;
+}
+.layer-row.drop-before::before { top: -5px; }
+.layer-row.drop-after::after { bottom: -5px; }
+.layer-name-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  padding: 2px 5px;
+  outline: 1px solid rgba(85, 169, 216, 0.28);
+}
+.layer-name-input:focus {
+  outline: 2px solid rgba(85, 169, 216, 0.42);
+}
+
+.context-toolbar.compact-context-toolbar .mini-slider,
+.mini-slider {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.canvas-zoom-controls,
+.minimal-toolbar .canvas-zoom-controls,
+.zoom-readout,
+.canvas-zoom-controls .zoom-readout,
+.canvas-zoom-controls .fit-zoom-button {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.wallpaper-ready-modal {
+  width: min(940px, calc(100vw - 56px)) !important;
+  max-width: 940px !important;
+}
+.wallpaper-ready-layout {
+  grid-template-columns: minmax(360px, 1fr) minmax(300px, 390px) !important;
+  align-items: stretch !important;
+  gap: 22px !important;
+}
+.wallpaper-ready-preview-grid {
+  height: 100% !important;
+  min-height: 360px !important;
+  align-self: stretch !important;
+}
+.wallpaper-ready-preview-frame {
+  min-height: 0 !important;
+  height: 100% !important;
+}
+.advanced-wallpaper-set-options > summary svg {
+  transform: rotate(0deg) !important;
+}
+.advanced-wallpaper-set-options[open] > summary svg {
+  transform: rotate(90deg) !important;
+}
+@media (max-width: 860px) {
+  .wallpaper-ready-layout {
+    grid-template-columns: 1fr !important;
+  }
+  .wallpaper-ready-preview-grid {
+    min-height: 260px !important;
+    max-width: none !important;
+  }
+}
+
+/* Phase 28.3 final layout override: keep the ready preview grid tall after all follow-up rules. */
+.wallpaper-ready-modal {
+  width: min(1040px, calc(100vw - 48px)) !important;
+  max-width: 1040px !important;
+}
+.wallpaper-ready-layout {
+  grid-template-columns: minmax(420px, 1.05fr) minmax(420px, 1fr) !important;
+  min-height: min(590px, 74vh) !important;
+}
+.wallpaper-ready-preview-grid {
+  min-height: 460px !important;
+}
+@media (max-width: 920px) {
+  .wallpaper-ready-layout { grid-template-columns: 1fr !important; }
+  .wallpaper-ready-preview-grid { min-height: 360px !important; }
+}
+
+
+/* Phase 28.4: remaining UI/interaction cleanup. */
+.page-transition {
+  animation: pin-paper-page-in 180ms ease both;
+}
+@keyframes pin-paper-page-in {
+  from { opacity: 0; transform: translateY(8px) scale(.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.canvas-stage.panning,
+.canvas-stage.panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.canvas-stage {
+  overscroll-behavior: contain;
+}
+.brand-copy p,
+.home-template-copy p {
+  display: grid !important;
+  gap: 2px !important;
+  line-height: 1.2 !important;
+}
+.source-detail-heading div,
+.source-row-main div {
+  min-width: 0 !important;
+  display: grid !important;
+  gap: 2px !important;
+}
+.source-detail-heading span,
+.source-row-main span,
+.home-template-copy p span {
+  min-width: 0 !important;
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.source-row {
+  min-height: 56px !important;
+  height: auto !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.source-row-main {
+  min-height: 50px !important;
+}
+.source-library,
+.collection-list,
+.source-list,
+.source-tabs {
+  box-shadow: none !important;
+}
+.source-library {
+  border: 0 !important;
+}
+.panel-tabs button,
+.source-tabs button,
+.template-filter-bar button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  line-height: 1 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.panel-tabs button.active,
+.source-tabs button.active,
+.template-filter-bar button.active {
+  transform: none !important;
+}
+.context-toolbar.compact-context-toolbar .mini-slider,
+.context-toolbar.compact-context-toolbar label.mini-slider,
+.mini-slider,
+.zoom-readout,
+.canvas-zoom-controls,
+.canvas-zoom-controls .zoom-readout,
+.canvas-zoom-controls .fit-zoom-button {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+  backdrop-filter: none !important;
+}
+.context-toolbar.compact-context-toolbar .mini-slider input {
+  background-color: transparent !important;
+}
+.guide.vertical,
+.guide.horizontal {
+  background: rgba(55, 151, 218, 0.98) !important;
+  box-shadow: 0 0 0 1px rgba(55, 151, 218, 0.18), 0 0 18px rgba(55, 151, 218, 0.34) !important;
+  z-index: 999 !important;
+}
+.assign-source-label {
+  line-height: 1.08 !important;
+  gap: .45em !important;
+  text-align: center !important;
+}
+.assign-source-label svg {
+  width: 1.55em !important;
+  height: 1.55em !important;
+}
+.surface-import-button,
+.texture-actions button {
+  color: #4c5360 !important;
+  font-size: 12px !important;
+  font-weight: 780 !important;
+}
+.wallpaper-ready-modal {
+  width: min(980px, calc(100vw - 44px)) !important;
+  max-width: 980px !important;
+}
+.wallpaper-ready-layout {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  min-height: 0 !important;
+  gap: 16px !important;
+}
+.wallpaper-ready-main {
+  display: grid !important;
+  gap: 14px !important;
+}
+.wallpaper-setup-steps {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+.wallpaper-setup-step {
+  justify-content: start !important;
+  text-align: left !important;
+  min-height: 42px !important;
+}
+@media (max-width: 760px) {
+  .wallpaper-setup-steps { grid-template-columns: 1fr !important; }
+}
+
+/* Phase 28.5: source cleanup, add object/text, inline layer text, and toolbar layering. */
+.minimal-toolbar,
+.toolbar-cluster,
+.overflow-wrap,
+.toolbar-create-actions,
+.add-object-wrap {
+  overflow: visible !important;
+}
+.overflow-wrap,
+.add-object-wrap {
+  position: relative !important;
+  z-index: 1500 !important;
+}
+.toolbar-overflow,
+.add-object-menu {
+  z-index: 10000 !important;
+}
+.add-object-menu {
+  position: absolute !important;
+  top: calc(100% + 8px) !important;
+  left: 0 !important;
+  min-width: 150px !important;
+}
+.add-object-menu button {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+}
+.source-detail-card {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  min-height: 54px !important;
+  padding: 8px 10px !important;
+  border-radius: 18px !important;
+}
+.source-detail-heading {
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+.source-detail-heading .source-icon {
+  width: 30px !important;
+  height: 30px !important;
+}
+.source-detail-heading div {
+  display: grid !important;
+  gap: 0 !important;
+  line-height: 1.1 !important;
+}
+.source-detail-heading strong {
+  font-size: 13px !important;
+  line-height: 1.1 !important;
+}
+.source-detail-heading span {
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+.source-detail-actions .pill-button {
+  height: 34px !important;
+  min-height: 34px !important;
+  width: auto !important;
+  min-width: 82px !important;
+  max-width: none !important;
+  padding: 0 14px !important;
+}
+.source-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  min-height: 50px !important;
+  padding: 8px 10px !important;
+}
+.source-row-main {
+  min-height: 40px !important;
+  padding: 0 !important;
+  display: grid !important;
+  grid-template-columns: 30px minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+.source-row-main .source-icon {
+  width: 30px !important;
+  height: 30px !important;
+}
+.source-copy {
+  gap: 0 !important;
+  line-height: 1.1 !important;
+}
+.source-copy strong {
+  font-size: 13px !important;
+  line-height: 1.1 !important;
+}
+.source-copy span {
+  font-size: 11px !important;
+  line-height: 1.1 !important;
+}
+.source-row-actions .source-mini-action {
+  width: auto !important;
+  min-width: 66px !important;
+  max-width: 78px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 10px !important;
+  font-size: 11px !important;
+}
+.text-layer {
+  border: 1px dashed transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: move;
+}
+.text-layer.selected {
+  border-color: rgba(84, 169, 215, .6) !important;
+}
+.text-layer-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: pre-wrap;
+  overflow: hidden;
+  outline: 0;
+  user-select: none;
+}
+.text-layer-content[contenteditable="true"] {
+  cursor: text;
+  user-select: text;
+  background: rgba(255,255,255,.42);
+  border-radius: 12px;
+}
+.text-properties textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid rgba(128, 139, 150, .24);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  color: #29313a;
+  background: #fff;
+}
+.context-toolbar.compact-context-toolbar .mini-slider,
+.context-toolbar.compact-context-toolbar label.mini-slider,
+.workspace-fixed-controls .mini-slider,
+.mini-slider:has(input[type="range"]) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.wallpaper-ready-modal {
+  width: min(1080px, calc(100vw - 40px)) !important;
+  max-width: 1080px !important;
+}
+.wallpaper-ready-main {
+  grid-template-columns: minmax(0, 1fr) !important;
 }

@@ -58,5 +58,5 @@ test("Phase 20 removes noisy UI items and keeps PNG-only export controls", async
   assert.doesNotMatch(renderer, /Wallpaper Assignment/);
   assert.match(renderer, /Preview applied to current desktop/);
   assert.match(renderer, /Clean Up Folder/);
-  assert.match(renderer, /Add Placeholder/);
+  assert.match(renderer, /Add Object/);
 });

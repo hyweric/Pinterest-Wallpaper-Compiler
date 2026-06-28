@@ -6,9 +6,9 @@ import test from "node:test";
 const root = process.cwd();
 const source = (relativePath: string) => readFile(path.join(root, relativePath), "utf8");
 
-test("Phase 22.3.2 Add Placeholder no longer has a second backing rectangle", async () => {
+test("Phase 22.3.2 Add Object no longer has a second backing rectangle", async () => {
   const css = await source("src/renderer/styles.css");
-  assert.match(css, /Phase 22\.3\.2: remove the extra backing rectangle behind Add Placeholder/);
+  assert.match(css, /Phase 22\.3\.2: remove the extra backing rectangle behind Add Object/);
   assert.match(css, /\.minimal-toolbar \.toolbar-create-actions \{[\s\S]*background: transparent !important/);
   assert.match(css, /\.minimal-toolbar \.toolbar-create-actions \.compact-top-action \{[\s\S]*background: rgba\(255, 255, 255, 0\.86\)/);
 });

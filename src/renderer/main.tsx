@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import {
   BringToFront,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Copy,
   Download,
@@ -34,7 +35,8 @@ import {
   Sparkles,
   Trash2,
   Upload,
-  Wallpaper
+  Wallpaper,
+  Type
 } from "lucide-react";
 import type {
   CanvasResizeMode,
@@ -71,6 +73,7 @@ import {
   createDefaultPaperFrame,
   createDefaultSourceState,
   createPlaceholder,
+  createTextLayer,
   collectLayerImages,
   createProject,
   createWallpaperTemplate,
@@ -243,6 +246,14 @@ type DragState = {
   groupBounds?: LayerFrameBounds;
   historyProject: WallpaperProject;
   moved?: boolean;
+};
+
+type CanvasPanState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
+  scrollTop: number;
 };
 
 type PolaroidImageDragMode = "move" | "scale" | "rotate";
@@ -458,7 +469,7 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   const types = Array.from(dataTransfer.types);
   if (types.includes("application/x-pwc-source-id")) {
     return target === "placeholder"
-      ? { label: "Assign source to this placeholder", valid: true, placementCount: 1 }
+      ? { label: "Assign source to this frame", valid: true, placementCount: 1 }
       : target === "canvas"
         ? { label: "Release to place source here", valid: true, placementCount: 1 }
         : { label: "Source already belongs to the library", valid: false };
@@ -491,7 +502,7 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   const valid = folders > 0 || supportedImages > 0;
   if (!valid && hasWebImageTransfer(dataTransfer)) {
     return target === "placeholder"
-      ? { label: "Assign web image to this placeholder", valid: true, placementCount: 1 }
+      ? { label: "Assign web image to this frame", valid: true, placementCount: 1 }
       : target === "canvas"
         ? { label: "Release to place web image here", valid: true, placementCount: 1 }
         : { label: "Add web image as source", valid: true, placementCount: 1 };
@@ -503,11 +514,11 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   // its own source, so mixed and multi-folder drops can place several frames.
   const placementCount = folders + (supportedImages > 0 ? 1 : 0);
   if (target === "placeholder") {
-    if (folders > 0 && supportedImages > 0) return { label: "Assign folders and images to this placeholder", valid: true, placementCount };
-    if (folders > 1) return { label: `Assign ${folders} folders to this placeholder`, valid: true, placementCount };
-    if (folders === 1) return { label: "Assign folder to this placeholder", valid: true, placementCount: 1 };
-    if (supportedImages === 1) return { label: "Assign image to this placeholder", valid: true, placementCount: 1 };
-    return { label: `Assign ${supportedImages} images to this placeholder`, valid: true, placementCount: 1 };
+    if (folders > 0 && supportedImages > 0) return { label: "Assign folders and images to this frame", valid: true, placementCount };
+    if (folders > 1) return { label: `Assign ${folders} folders to this frame`, valid: true, placementCount };
+    if (folders === 1) return { label: "Assign folder to this frame", valid: true, placementCount: 1 };
+    if (supportedImages === 1) return { label: "Assign image to this frame", valid: true, placementCount: 1 };
+    return { label: `Assign ${supportedImages} images to this frame`, valid: true, placementCount: 1 };
   }
   if (target === "canvas") {
     if (folders > 0 && supportedImages > 0) return { label: "Release to place imported sources here", valid: true, placementCount };
@@ -1104,14 +1115,17 @@ function App() {
   const [dropFeedback, setDropFeedback] = useState<DropFeedback | undefined>();
   const [wallpaperHistoryIndex, setWallpaperHistoryIndex] = useState(0);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [addObjectMenuOpen, setAddObjectMenuOpen] = useState(false);
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | undefined>();
   const [layerMenu, setLayerMenu] = useState<LayerMenuState | undefined>();
+  const [layerDropIndicator, setLayerDropIndicator] = useState<{ targetId: string; before: boolean } | undefined>();
   const [sourceLibraryView, setSourceLibraryView] = useState<SourceLibraryView>("linked");
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("sources");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("settings");
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
+  const [editingTextLayerId, setEditingTextLayerId] = useState<string | undefined>();
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
@@ -1143,6 +1157,7 @@ function App() {
   const dragRef = useRef<DragState | undefined>(undefined);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
   const polaroidImageDragRef = useRef<PolaroidImageDragState | undefined>(undefined);
+  const canvasPanRef = useRef<CanvasPanState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasZoomShellRef = useRef<HTMLDivElement>(null);
@@ -1436,7 +1451,7 @@ function App() {
   function resizeCanvas(width: number, height: number, mode: CanvasResizeMode) {
     commitProject((current) => {
       const resized = resizeCanvasAndLayers(current.canvas, current.layers, width, height, mode);
-      return { ...current, ...resized };
+      return { ...current, ...resized, canvas: { ...resized.canvas, presetId: "custom", orientation: "custom" } };
     });
   }
 
@@ -1459,8 +1474,20 @@ function App() {
   }
 
   function addPlaceholder() {
+    setAddObjectMenuOpen(false);
     commitProject((current) => {
-      const layer = createPlaceholder(current.canvas, current.layers.length + 1);
+      const frameCount = current.layers.filter((layer) => (layer.objectKind ?? "frame") !== "text").length;
+      const layer = createPlaceholder(current.canvas, frameCount + 1);
+      selectOnlyLayer(layer.id);
+      return { ...current, layers: [...current.layers, layer] };
+    });
+  }
+
+  function addTextLayer() {
+    setAddObjectMenuOpen(false);
+    commitProject((current) => {
+      const textCount = current.layers.filter((layer) => layer.objectKind === "text").length;
+      const layer = createTextLayer(current.canvas, textCount + 1);
       selectOnlyLayer(layer.id);
       return { ...current, layers: [...current.layers, layer] };
     });
@@ -1890,6 +1917,10 @@ function App() {
       setMessage("Unlock the selected layer before assigning a source.");
       return;
     }
+    if (selectedLayer.objectKind === "text") {
+      setMessage("Select a frame before assigning a source.");
+      return;
+    }
     const before = cloneProject(projectRef.current);
     const candidate = projectWithSourceAssignment(before, source, selectedLayer.id);
     if (!candidate) {
@@ -2054,7 +2085,7 @@ function App() {
       const overlayLike = sourceIsManagedOverlay(source);
       const dropAspectRatio = await decodedImageAspectRatio(chosenDropImage) ?? sourcePreferredAspectRatio(source);
       next = projectWithMeasuredImage(next, chosenDropImage, dropAspectRatio);
-      // Dropped sources behave like “Add Placeholder” first, then source assignment,
+      // Dropped sources behave like “Add Frame” first, then source assignment,
       // but start with the actual current image ratio instead of a desktop-HD rectangle.
       const placement = placementForCanvasDrop(next.canvas, point, createdLayerIds.length, dropAspectRatio);
       const layer = createPlaceholder(next.canvas, next.layers.length + 1);
@@ -2418,7 +2449,7 @@ function App() {
           ...item.combination,
           filePath: targetResult?.filePath,
           appliedAt,
-          templateName: `${item.templateName} · ${item.target.label}`,
+          templateName: `${item.templateName}\n${item.target.label}`,
           templateId: item.combination.templateId,
           monitorMode: working.wallpaper.monitorMode
         } satisfies GeneratedCombination;
@@ -2528,6 +2559,13 @@ function App() {
       label: "Previewed on current desktop"
     });
     if (ok) setMessage(`Preview applied to current desktop at ${new Date().toLocaleTimeString()}.`);
+  }
+
+  function showNextVariation() {
+    const advanced = normalizeProject(advancePreviewProjectImages(projectRef.current));
+    projectRef.current = advanced;
+    setProject(advanced);
+    setMessage("Showing next variation.");
   }
 
   async function applyHistoryAt(index: number) {
@@ -2849,6 +2887,7 @@ function App() {
   }
 
   function beginDrag(event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) {
+    if (event.button !== 0) return;
     event.stopPropagation();
     if (layer.locked) return;
 
@@ -2989,26 +3028,66 @@ function App() {
     let nextY = y;
     let guideX: number | undefined;
     let guideY: number | undefined;
+    const adaptiveSnapDistance = clamp(Math.min(project.canvas.width, project.canvas.height) * 0.0065, snapDistance, 24);
+    const guideDistance = adaptiveSnapDistance * 3;
     for (const target of targetsX) {
       const points = [left, centerX, right];
-      const hit = points.find((point) => Math.abs(point - target) <= snapDistance);
-      if (hit !== undefined) {
-        nextX += target - hit;
+      const visualHit = points.find((point) => Math.abs(point - target) <= guideDistance);
+      if (visualHit !== undefined && guideX === undefined) guideX = target;
+      const snapHit = points.find((point) => Math.abs(point - target) <= adaptiveSnapDistance);
+      if (snapHit !== undefined) {
+        nextX += target - snapHit;
         guideX = target;
         break;
       }
     }
     for (const target of targetsY) {
       const points = [top, centerY, bottom];
-      const hit = points.find((point) => Math.abs(point - target) <= snapDistance);
-      if (hit !== undefined) {
-        nextY += target - hit;
+      const visualHit = points.find((point) => Math.abs(point - target) <= guideDistance);
+      if (visualHit !== undefined && guideY === undefined) guideY = target;
+      const snapHit = points.find((point) => Math.abs(point - target) <= adaptiveSnapDistance);
+      if (snapHit !== undefined) {
+        nextY += target - snapHit;
         guideY = target;
         break;
       }
     }
     setGuides({ x: guideX, y: guideY });
     return { x: nextX, y: nextY, width, height };
+  }
+
+  function beginCanvasPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 1 && event.button !== 2) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    event.preventDefault();
+    canvasPanRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: stage.scrollLeft,
+      scrollTop: stage.scrollTop
+    };
+    stage.classList.add("panning");
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onStagePointerMove(event: PointerEvent<HTMLDivElement>) {
+    const pan = canvasPanRef.current;
+    if (!pan) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    event.preventDefault();
+    stage.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
+    stage.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
+  }
+
+  function endCanvasPan(event?: PointerEvent<HTMLDivElement>) {
+    const pan = canvasPanRef.current;
+    if (!pan) return;
+    if (event && event.pointerId !== pan.pointerId) return;
+    canvasPanRef.current = undefined;
+    stageRef.current?.classList.remove("panning");
   }
 
   function onCanvasPointerMove(event: PointerEvent) {
@@ -3147,25 +3226,31 @@ function App() {
   function resizeLayer(drag: DragState, dx: number, dy: number, preserveAspect: boolean) {
     if (drag.groupLayers.length > 1 && drag.groupBounds && drag.mode.startsWith("resize-")) {
       const handle = drag.mode as ResizeHandle;
-      const nextGroup = resizeBoundsFromOppositeCorner(
+      const rawGroup = resizeBoundsFromOppositeCorner(
         drag.groupBounds,
         handle,
         dx,
         dy,
         { width: project.canvas.width, height: project.canvas.height, minSize: 48 }
       );
-      if (preserveAspect) {
-        const aspect = drag.groupBounds.width / Math.max(1, drag.groupBounds.height);
-        const centered = resizeRectAroundCenter(
-          drag.groupBounds,
-          handle,
-          dx,
-          dy,
-          true,
-          { width: project.canvas.width, height: project.canvas.height, minSize: 48 }
-        );
-        nextGroup.width = centered.width;
-        nextGroup.height = Math.max(48, Math.round(centered.width / Math.max(0.01, aspect)));
+      let nextGroup = rawGroup;
+      if (handle.includes("e") || handle.includes("w") || handle.includes("n") || handle.includes("s")) {
+        const pivot = oppositeCornerForResize(drag.groupBounds, handle);
+        const widthRatio = rawGroup.width / Math.max(1, drag.groupBounds.width);
+        const heightRatio = rawGroup.height / Math.max(1, drag.groupBounds.height);
+        const horizontalWeight = Math.abs(widthRatio - 1);
+        const verticalWeight = Math.abs(heightRatio - 1);
+        const scale = Math.max(48 / Math.max(1, drag.groupBounds.width), 48 / Math.max(1, drag.groupBounds.height), horizontalWeight >= verticalWeight ? widthRatio : heightRatio);
+        const scaledWidth = Math.round(drag.groupBounds.width * scale);
+        const scaledHeight = Math.round(drag.groupBounds.height * scale);
+        const left = handle.includes("w") ? pivot.x - scaledWidth : handle.includes("e") ? pivot.x : pivot.x - scaledWidth / 2;
+        const top = handle.includes("n") ? pivot.y - scaledHeight : handle.includes("s") ? pivot.y : pivot.y - scaledHeight / 2;
+        nextGroup = {
+          x: Math.round(clamp(left, 0, project.canvas.width - scaledWidth)),
+          y: Math.round(clamp(top, 0, project.canvas.height - scaledHeight)),
+          width: Math.min(project.canvas.width, scaledWidth),
+          height: Math.min(project.canvas.height, scaledHeight)
+        };
       }
       const originals = new Map(drag.groupLayers.map((layer) => [layer.id, layer]));
       commitProject(
@@ -3216,6 +3301,10 @@ function App() {
   }
 
   function setPreset(id: string, mode: CanvasResizeMode = "keep") {
+    if (id === "custom") {
+      commitProject((current) => ({ ...current, canvas: { ...current.canvas, presetId: "custom", orientation: "custom" } }));
+      return;
+    }
     const preset = presets.find((item) => item.id === id);
     if (!preset) return;
     commitProject((current) => {
@@ -3566,18 +3655,18 @@ function App() {
     }, template));
     projectRef.current = workspace;
     setProject(workspace);
-    await previewOnCurrentDesktop();
+    setMessage("Template opened.");
   }
 
   function sourceAssignmentCount(sourceId: string) {
-    return project.layers.filter((layer) => layer.sourceId === sourceId || layer.sourceState.sourceIds.includes(sourceId)).length;
+    return project.layers.filter((layer) => layer.objectKind !== "text" && (layer.sourceId === sourceId || layer.sourceState.sourceIds.includes(sourceId))).length;
   }
 
   function sourceTemplateUsageCount(sourceId: string) {
     return project.templates.templates.filter(
       (template) =>
         template.project.sourceIds.includes(sourceId) ||
-        template.project.layers.some((layer) => layer.sourceId === sourceId || layer.sourceState.sourceIds.includes(sourceId))
+        template.project.layers.some((layer) => layer.objectKind !== "text" && (layer.sourceId === sourceId || layer.sourceState.sourceIds.includes(sourceId)))
     ).length;
   }
 
@@ -3590,7 +3679,7 @@ function App() {
 
   function unlinkSourceFromTemplate(source: ImageSource) {
     const assigned = sourceAssignmentCount(source.id);
-    if (assigned > 0 && !window.confirm(`Unlink ${source.name} from this template? It is assigned to ${assigned} placeholder${assigned === 1 ? "" : "s"}, which will be cleared.`)) return;
+    if (assigned > 0 && !window.confirm(`Unlink ${source.name} from this template? It is assigned to ${assigned} frame${assigned === 1 ? "" : "s"}, which will be cleared.`)) return;
     commitProject((current) => unlinkSourceFromActiveTemplate(current, source.id));
     if (selectedSourceId === source.id) setSelectedSourceId(undefined);
     setMessage(`Unlinked ${source.name}. The global source was kept.`);
@@ -3697,7 +3786,7 @@ function App() {
   function removeSource(source: ImageSource) {
     const templateUsage = sourceTemplateUsageCount(source.id);
     const warning = templateUsage > 0
-      ? `Delete ${source.name} from the global source library? It is linked to ${templateUsage} template${templateUsage === 1 ? "" : "s"}. Those links and placeholder assignments will be cleared. Original local files will not be deleted.`
+      ? `Delete ${source.name} from the global source library? It is linked to ${templateUsage} template${templateUsage === 1 ? "" : "s"}. Those links and frame assignments will be cleared. Original local files will not be deleted.`
       : `Delete ${source.name} from the global source library? Original local files will not be deleted.`;
     if (!window.confirm(warning)) return;
 
@@ -3740,7 +3829,6 @@ function App() {
     if (!stage) return;
 
     function onWheel(event: WheelEvent) {
-      if (!event.metaKey && !event.ctrlKey) return;
       event.preventDefault();
       wheelDeltaRef.current += normalizeWheelDelta(event.deltaY, event.deltaMode, stage!.clientHeight);
       wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
@@ -3899,7 +3987,7 @@ function App() {
           onOpenProject={() => void openProject()}
           onSaveProject={() => void saveProject()}
         />
-        <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
+        <RenameDialog state={renameState?.kind === "layer" ? undefined : renameState} onChange={setRenameState} onFinish={finishRename} />
         <ExportSetDialog
           state={exportSet}
           onChange={setExportSet}
@@ -3917,15 +4005,15 @@ function App() {
   }
 
   return (
-    <main className={`app-shell ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
+    <main className={`app-shell page-transition ${leftPanelOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
       <aside className={`sidebar left ${leftPanelOpen ? "" : "collapsed"}`}>
         <div className="brand compact-brand">
-          <button className="brand-home-button tooltip-anchor" data-tooltip="Back to templates" aria-label="Back to templates" onClick={() => void goHome()}>
+          <button className="brand-home-button tooltip-anchor" data-tooltip="Return home" aria-label="Return home" onClick={() => void goHome()}>
             <img className="brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
           </button>
           <div className="brand-copy">
             <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
-            <p>{project.sources.length} pools · {project.templates.templates.length} templates</p>
+            <p><span>{project.sources.length} pools</span><span>{project.templates.templates.length} templates</span></p>
           </div>
           <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide source panel" aria-label="Hide source panel" onClick={() => setLeftPanelOpen(false)}><PanelLeft size={16} /></button>
         </div>
@@ -3959,26 +4047,8 @@ function App() {
 
           <div className="source-tabs" role="tablist" aria-label="Source library">
             <button className={sourceLibraryView === "linked" ? "active" : ""} onClick={() => setSourceLibraryView("linked")}>Linked <span>{linkedSources.length}</span></button>
-            <button className={sourceLibraryView === "global" ? "active" : ""} onClick={() => setSourceLibraryView("global")}>Library <span>{project.sources.length}</span></button>
+            <button className={sourceLibraryView === "global" ? "active" : ""} onClick={() => setSourceLibraryView("global")}>Global <span>{project.sources.length}</span></button>
           </div>
-
-          <p className="source-help">
-            {selectedLayer
-              ? selectedLayer.locked
-                ? "Unlock the selected frame to change its source."
-                : "Choose a source to assign its whole pool to this frame."
-              : selectedSource
-                ? "Source selected."
-                : sourceLibraryView === "linked"
-                  ? "Select a source to view it."
-                  : "Reusable folders, boards, and image collections shared across templates."}
-          </p>
-
-          {sourceLibraryView === "linked" && linkedSources.length === 0 && (
-            <button className="assign-source-button" onClick={() => setSourceLibraryView("global")}>
-              <Plus size={16} /> Add from global sources
-            </button>
-          )}
 
           {selectedSource && !selectedLayer && (
             <div className="source-detail-card">
@@ -3986,16 +4056,11 @@ function App() {
                 <span className="source-icon">{selectedSource.type === "local-folder" ? <FolderOpen size={17} /> : selectedSource.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                 <div>
                   <strong>{selectedSource.name}</strong>
-                  <span>{sourceKindLabel(selectedSource)}</span>
+                  <span>{sourceKindLabel(selectedSource)}</span><span>{sourceImagesForPolicy(selectedSource).length} available</span>
                 </div>
-              </div>
-              <div className="source-summary-line">
-                <span>{sourceImagesForPolicy(selectedSource).length} available</span>
-                <span className={`status-dot ${selectedSource.importStatus ?? (selectedSource.missing ? "missing" : "ready")}`} />
               </div>
               <div className="source-detail-actions">
                 <button className="pill-button" onClick={() => void rescanSource(selectedSource)}>Refresh</button>
-                <button className="pill-button" onClick={() => void showSourceInFolder(selectedSource)}>Show</button>
               </div>
             </div>
           )}
@@ -4010,11 +4075,11 @@ function App() {
               </button>
             ) : visibleSources.map((source) => {
               const linked = linkedSourceIds.includes(source.id);
-              const assigned = Boolean(selectedLayer && (selectedLayer.sourceId === source.id || selectedLayer.sourceState.sourceIds.includes(source.id)));
+              const assigned = Boolean(selectedLayer && selectedLayer.objectKind !== "text" && (selectedLayer.sourceId === source.id || selectedLayer.sourceState.sourceIds.includes(source.id)));
               const eligibleCount = sourceImagesForPolicy(source).length;
               const countLabel = source.expectedItemCount && source.expectedItemCount > source.images.length
-                ? `${eligibleCount} usable · ${source.images.length} cached / ${source.expectedItemCount}`
-                : `${eligibleCount} usable`;
+                ? `${source.images.length} / ${source.expectedItemCount} cached`
+                : `${eligibleCount} items`;
               return (
                 <div
                   className={`source-row ${selectedLayer && assigned ? "assigned" : ""}`}
@@ -4037,7 +4102,7 @@ function App() {
                     <span className="source-icon">{source.type === "local-folder" ? <FolderOpen size={17} /> : source.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                     <span className="source-copy">
                       <strong>{source.name}</strong>
-                      <span>{sourceKindLabel(source)} · {countLabel} items{source.importStatus === "partial" ? " · partial" : ""}</span>
+                      <span>{countLabel}{source.importStatus === "partial" ? " partial" : ""}</span>
                     </span>
                     {selectedLayer && assigned && <span className="assigned-dot" title="Assigned to selected frame" />}
                   </button>
@@ -4095,21 +4160,31 @@ function App() {
               const selected = selectedLayerIds.includes(layer.id);
               return (
                 <div
-                  className={`layer-row ${selected ? "active" : ""}`}
+                  className={`layer-row ${selected ? "active" : ""} ${layerDropIndicator?.targetId === layer.id ? (layerDropIndicator.before ? "drop-before" : "drop-after") : ""}`}
                   key={layer.id}
-                  draggable={!layer.locked}
+                  draggable={!layer.locked && renameState?.id !== layer.id}
                   onDragStart={(event) => {
                     const ids = (selected ? selectedLayerIds : [layer.id]).filter((id) => !project.layers.find((item) => item.id === id)?.locked);
                     if (!selected) selectOnlyLayer(layer.id);
                     event.dataTransfer.setData("application/x-pwc-layer-ids", JSON.stringify(ids));
                     event.dataTransfer.effectAllowed = "move";
                   }}
-                  onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }}
+                  onDragEnd={() => setLayerDropIndicator(undefined)}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setLayerDropIndicator({ targetId: layer.id, before: event.clientY < rect.top + rect.height / 2 });
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setLayerDropIndicator((current) => current?.targetId === layer.id ? undefined : current);
+                  }}
                   onDrop={(event) => {
                     event.preventDefault();
                     const raw = event.dataTransfer.getData("application/x-pwc-layer-ids");
                     let ids: string[] = [];
                     try { ids = JSON.parse(raw) as string[]; } catch { ids = []; }
+                    setLayerDropIndicator(undefined);
                     if (!ids.length || ids.includes(layer.id)) return;
                     const rect = event.currentTarget.getBoundingClientRect();
                     const beforeInPanel = event.clientY < rect.top + rect.height / 2;
@@ -4119,9 +4194,29 @@ function App() {
                   }}
                 >
                   <span className="layer-drag-handle tooltip-anchor" data-tooltip="Drag to reorder"><GripVertical size={15} /></span>
-                  <button className="layer-main" onClick={(event) => selectLayerFromPanel(layer.id, event)}>
-                    <span className="layer-type-icon"><ImagePlus size={14} /></span>
-                    <span className="layer-name">{layer.name}</span>
+                  <button
+                    className="layer-main"
+                    onClick={(event) => selectLayerFromPanel(layer.id, event)}
+                    onDoubleClick={(event) => { event.stopPropagation(); renameLayer(layer.id); }}
+                  >
+                    <span className="layer-type-icon">{layer.objectKind === "text" ? <Type size={14} /> : <ImagePlus size={14} />}</span>
+                    {renameState?.kind === "layer" && renameState.id === layer.id ? (
+                      <input
+                        className="layer-name-input"
+                        value={renameState.value}
+                        autoFocus
+                        onClick={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onChange={(event) => setRenameState({ ...renameState, value: event.target.value })}
+                        onBlur={() => finishRename(true)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") finishRename(true);
+                          if (event.key === "Escape") finishRename(false);
+                        }}
+                      />
+                    ) : (
+                      <span className="layer-name" title="Double-click to rename">{layer.name}</span>
+                    )}
                     {layer.locked && <Lock size={12} className="layer-lock-indicator" />}
                   </button>
                   <button
@@ -4155,7 +4250,7 @@ function App() {
         )}
 
         <section className="sidebar-bottom-actions">
-          <button onClick={() => void goHome()}>← Back To Templates</button>
+          <button onClick={() => void goHome()}>← Return Home</button>
         </section>
       </aside>
 
@@ -4164,17 +4259,23 @@ function App() {
         {!rightPanelOpen && <button className="panel-reopen right tooltip-anchor" data-tooltip="Show inspector" aria-label="Show inspector" onClick={() => setRightPanelOpen(true)}><PanelRight size={16} /></button>}
         <header className="toolbar minimal-toolbar">
           <div className="toolbar-cluster">
-            <button className="icon-button tooltip-anchor" data-tooltip="Back to templates" aria-label="Back to templates" onClick={() => void goHome()}><Home size={17} /></button>
+            <button className="icon-button tooltip-anchor" data-tooltip="Return home" aria-label="Return home" onClick={() => void goHome()}><Home size={17} /></button>
             <button className="icon-button tooltip-anchor" data-tooltip="Undo" aria-label="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
             <button className="icon-button tooltip-anchor" data-tooltip="Redo" aria-label="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
           </div>
-          <div className="toolbar-create-actions">
-            <button className="secondary-action compact-top-action" onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
+          <div className="toolbar-create-actions add-object-wrap">
+            <button className="secondary-action compact-top-action" onClick={() => setAddObjectMenuOpen((value) => !value)}><Plus size={16} /> Add Object <ChevronDown size={14} /></button>
+            {addObjectMenuOpen && (
+              <div className="popover-menu add-object-menu">
+                <button onClick={addPlaceholder}><ImagePlus size={16} /> Frame</button>
+                <button onClick={addTextLayer}><Type size={16} /> Text</button>
+              </div>
+            )}
           </div>
           <div className="toolbar-cluster">
-            <button className="secondary-action" disabled={wallpaperBusy} onClick={() => void previewOnCurrentDesktop()}>
-              <Wallpaper size={17} />
-              {wallpaperBusy ? "Working…" : "Preview on Current Desktop"}
+            <button className="secondary-action" disabled={wallpaperBusy} onClick={() => showNextVariation()}>
+              <Shuffle size={17} />
+              {wallpaperBusy ? "Working…" : "Next Variation"}
             </button>
             {isMacOS && (
               <button className="primary-action" disabled={wallpaperBusy} onClick={() => openExportSet()}>
@@ -4188,9 +4289,9 @@ function App() {
                   <button onClick={openProject}><FolderOpen size={16} /> Open</button>
                   <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
-                  <button onClick={addPlaceholder}><Plus size={16} /> Add Placeholder</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   <button onClick={() => openExportSet()}><Images size={16} /> Create macOS Wallpaper Set</button>
+                  <button onClick={() => void previewOnCurrentDesktop()}><Wallpaper size={16} /> Preview on Current Desktop</button>
                   <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
                 </div>
               )}
@@ -4225,6 +4326,11 @@ function App() {
         <div
           ref={stageRef}
           className="canvas-stage"
+          onPointerDown={beginCanvasPan}
+          onPointerMove={onStagePointerMove}
+          onPointerUp={endCanvasPan}
+          onPointerLeave={endCanvasPan}
+          onContextMenu={(event) => { if (canvasPanRef.current) event.preventDefault(); }}
         >
           <div
             ref={canvasZoomShellRef}
@@ -4256,6 +4362,7 @@ function App() {
             onPointerUp={endDrag}
             onPointerLeave={endDrag}
             onPointerDown={(event) => {
+              if (event.button !== 0) return;
               if (event.target !== event.currentTarget) return;
               const additive = event.shiftKey || event.metaKey || event.ctrlKey;
               const rect = event.currentTarget.getBoundingClientRect();
@@ -4295,19 +4402,75 @@ function App() {
                       <div className="canvas-drop-placement-copy">
                         <Upload size={18} />
                         <strong>{dropFeedback.label}</strong>
-                        <span>Release to create and select the placeholder here.</span>
-                        {(dropFeedback.placementCount ?? 1) > 1 && <b>{dropFeedback.placementCount} placeholders</b>}
+                        <span>Release to create and select the frame here.</span>
+                        {(dropFeedback.placementCount ?? 1) > 1 && <b>{dropFeedback.placementCount} frames</b>}
                       </div>
                     )}
                   </div>
                 );
               })}
-            {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x }} />}
-            {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y }} />}
             {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x, top: selectionMarquee.y, width: selectionMarquee.width, height: selectionMarquee.height }} />}
             {project.layers.map((layer) => {
               const image = getImageForLayer(project, layer);
               if (layer.hidden) return null;
+              if (layer.objectKind === "text") {
+                const selected = selectedLayerIds.includes(layer.id);
+                const editing = editingTextLayerId === layer.id;
+                return (
+                  <React.Fragment key={layer.id}>
+                    <div
+                      className={`placeholder text-layer ${selected ? "selected" : ""} ${layer.locked ? "locked" : ""}`}
+                      style={{
+                        left: layer.x,
+                        top: layer.y,
+                        width: layer.width,
+                        height: layer.height,
+                        transform: `rotate(${layer.rotation}deg)`,
+                        opacity: layer.opacity,
+                        zIndex: project.layers.findIndex((item) => item.id === layer.id) + 2
+                      }}
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        if (!layer.locked) setEditingTextLayerId(layer.id);
+                      }}
+                      onPointerDown={(event) => {
+                        if (editing) return;
+                        beginDrag(event, layer, "move");
+                      }}
+                    >
+                      <div
+                        className="text-layer-content"
+                        contentEditable={editing && !layer.locked}
+                        suppressContentEditableWarning
+                        style={{
+                          color: layer.textColor ?? "#26313a",
+                          fontFamily: layer.fontFamily,
+                          fontSize: layer.fontSize,
+                          fontWeight: layer.fontWeight,
+                          textAlign: layer.textAlign,
+                          lineHeight: layer.lineHeight,
+                          letterSpacing: layer.letterSpacing
+                        }}
+                        onBlur={(event) => {
+                          setEditingTextLayerId(undefined);
+                          patchLayer(layer.id, { text: event.currentTarget.innerText || "Text" });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setEditingTextLayerId(undefined);
+                          }
+                        }}
+                      >{layer.text ?? "Text"}</div>
+                    </div>
+                    {selected && !layer.locked && (
+                      <div className="selection-handles-overlay" style={{ left: layer.x, top: layer.y, width: layer.width, height: layer.height, transform: `rotate(${layer.rotation}deg)` }}>
+                        <SelectionHandles layer={layer} onBeginDrag={beginDrag} />
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              }
               const natural = imageNaturalRef.current[layer.id];
               const frame = measuredLayerFrame(layer, image, natural);
               const selected = selectedLayerIds.includes(layer.id);
@@ -4356,6 +4519,7 @@ function App() {
                     opacity: layer.opacity,
                     backgroundColor: paperActive ? hexWithOpacity(expandedFrameColor, expandedFrameOpacity) : layer.effects.backgroundColor,
                     mixBlendMode: layer.effects.blendMode,
+                    filter: rough && Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) > 0 ? `drop-shadow(0 ${Math.max(4, paperFrame.shadowStrength * 0.16)}px ${Math.max(10, paperFrame.shadowStrength * 0.58)}px rgba(15,23,42,${Math.min(0.35, Math.max(layer.shadow ? 35 : 0, paperFrame.shadowStrength) / 210)}))` : undefined,
                     boxShadow: [
                       layer.effects.glow ? "0 0 0 2px rgba(255,255,255,.8), 0 0 32px rgba(207,42,69,.38)" : "",
                       expandedOuterShadow,
@@ -4420,7 +4584,7 @@ function App() {
                         }}
                       />
                     ) : (
-                      <span><ImagePlus size={22} /> Assign source</span>
+                      <span className="assign-source-label" style={{ fontSize: `${clamp(Math.min(innerWidth * 0.11, innerHeight * 0.22), 10, 22)}px` }}><ImagePlus size={22} /> Assign source</span>
                     )}
                     <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
                     {selected && polaroidActive && inspectorTab === "effects" && image && !cropping && (
@@ -4470,6 +4634,8 @@ function App() {
                 </React.Fragment>
               );
             })}
+            {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x }} />}
+            {guides.y !== undefined && <div className="guide horizontal" style={{ top: guides.y }} />}
           </div>
           </div>
         </div>
@@ -4478,7 +4644,7 @@ function App() {
       <aside className={`sidebar right ${rightPanelOpen ? "" : "collapsed"}`}>
         <div className={`panel-tabs inspector-tabs ${selectedLayer ? "layer-inspector-tabs" : "settings-inspector-tabs"}`} role="tablist" aria-label="Inspector">
           {(selectedLayer
-            ? ([ ["image", "Image"], ["effects", "Effects"] ] as Array<[InspectorTab, string]>)
+            ? (selectedLayer.objectKind === "text" ? ([ ["image", "Text"] ] as Array<[InspectorTab, string]>) : ([ ["image", "Image"], ["effects", "Effects"] ] as Array<[InspectorTab, string]>))
             : ([ ["settings", "Settings"] ] as Array<[InspectorTab, string]>))
             .map(([id, label]) => (
               <button key={id} className={inspectorTab === id ? "active" : ""} onClick={() => setInspectorTab(id)}>{label}</button>
@@ -4530,7 +4696,7 @@ function App() {
           onClose={() => setPinterestDialog((current) => ({ ...current, open: false }))}
         />
       )}
-      <RenameDialog state={renameState} onChange={setRenameState} onFinish={finishRename} />
+      <RenameDialog state={renameState?.kind === "layer" ? undefined : renameState} onChange={setRenameState} onFinish={finishRename} />
       <ExportSetDialog
         state={exportSet}
         onChange={setExportSet}
@@ -4587,7 +4753,7 @@ function TemplateHome({
   ];
 
   return (
-    <main className="template-home">
+    <main className="template-home page-transition">
       <header className="home-header">
         <div className="home-brand">
           <img className="home-brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
@@ -4643,7 +4809,7 @@ function TemplateHome({
             <div className="home-template-copy">
               <div>
                 <h3>{template.name}</h3>
-                <p>{template.project.canvas.width} × {template.project.canvas.height} · {template.project.layers.length} layers</p>
+                <p><span>{template.project.canvas.width} × {template.project.canvas.height}</span><span>{template.project.layers.length} layers</span></p>
               </div>
               <time>{new Date(template.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
             </div>
@@ -4664,9 +4830,7 @@ function TemplateHome({
 }
 
 function TemplatePreview({ template, sources }: { template: WallpaperTemplate; sources: ImageSource[] }) {
-  if (template.thumbnailDataUrl) {
-    return <img className="home-template-image" src={template.thumbnailDataUrl} alt="" />;
-  }
+  // Render template previews live so borders, filters, shadows, and paper effects stay visible.
   const canvas = template.project.canvas;
   return (
     <div
@@ -4678,6 +4842,28 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
       }}
     >
       {template.project.layers.filter((layer) => !layer.hidden).map((layer) => {
+        if (layer.objectKind === "text") {
+          return (
+            <span
+              key={layer.id}
+              className="generated-template-layer generated-template-text-layer"
+              style={{
+                left: `${(layer.x / canvas.width) * 100}%`,
+                top: `${(layer.y / canvas.height) * 100}%`,
+                width: `${(layer.width / canvas.width) * 100}%`,
+                height: `${(layer.height / canvas.height) * 100}%`,
+                transform: `rotate(${layer.rotation}deg)`,
+                opacity: layer.opacity,
+                color: layer.textColor ?? "#26313a",
+                fontFamily: layer.fontFamily,
+                fontSize: `${Math.max(8, ((layer.fontSize ?? 72) / canvas.width) * 100)}vw`,
+                fontWeight: layer.fontWeight,
+                textAlign: layer.textAlign,
+                lineHeight: layer.lineHeight
+              }}
+            >{layer.text ?? "Text"}</span>
+          );
+        }
         const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
         const previewSource = sourceIds
           .map((sourceId) => sources.find((source) => source.id === sourceId))
@@ -4693,9 +4879,15 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
               width: `${(layer.width / canvas.width) * 100}%`,
               height: `${(layer.height / canvas.height) * 100}%`,
               transform: `rotate(${layer.rotation}deg)`,
-              borderRadius: `${Math.min(18, layer.borderRadius / 2)}px`,
+              borderRadius: layer.maskShape === "circle" ? "50%" : `${Math.min(18, layer.borderRadius / 2)}px`,
+              border: layer.borderWidth ? `${Math.max(1, layer.borderWidth / 8)}px solid ${hexWithOpacity(layer.borderColor, layer.borderOpacity)}` : undefined,
+              boxShadow: layer.shadow || layer.effects.paperFrame.shadowStrength > 0 ? `0 ${Math.max(3, layer.effects.paperFrame.shadowStrength * .08)}px ${Math.max(8, layer.effects.paperFrame.shadowStrength * .32)}px rgba(15,23,42,.22)` : undefined,
+              opacity: layer.opacity,
+              mixBlendMode: layer.effects.blendMode,
+              filter: cssFilter(layer.effects.filters),
               backgroundImage: cssImageUrl(image?.url),
-              backgroundColor: image ? undefined : "rgba(255,255,255,.6)"
+              backgroundColor: image ? undefined : "rgba(255,255,255,.6)",
+              overflow: "hidden"
             }}
           />
         );
@@ -5198,7 +5390,7 @@ function RenameDialog({
     window.setTimeout(() => inputRef.current?.select(), 0);
   }, [state?.kind, state?.id]);
   if (!state) return null;
-  const label = state.kind === "template" ? "Rename template" : state.kind === "source" ? "Rename source" : "Rename layer";
+  const label = state.kind === "template" ? "Rename template" : state.kind === "source" ? "Rename source" : "Rename item";
   return (
     <div className="modal-backdrop rename-backdrop" onMouseDown={() => onFinish(true)}>
       <section className="modal rename-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -5248,7 +5440,7 @@ function ExportSetDialog({
   const ready = Boolean(state.finalPath);
   return (
     <div className="modal-backdrop" onMouseDown={() => !state.busy && onClose()}>
-      <section className={`modal export-set-modal ${ready ? "setup-mode" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
+      <section className={`modal export-set-modal ${ready ? "setup-mode wallpaper-ready-modal" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
           <div>
             <h2>{ready ? "Wallpaper Set Ready" : "Create Wallpaper Set"}</h2>
@@ -5257,38 +5449,27 @@ function ExportSetDialog({
         </div>
 
         {ready && state.finalPath ? (
-          <div className="wallpaper-setup-guide">
-            <div className="wallpaper-set-path-card">
-              <span>Folder to select</span>
-              <code>{state.finalPath}</code>
-              <button className="button ghost" onClick={() => state.finalPath && void window.wallpaperApi.copyText(state.finalPath)}>Copy Folder Path</button>
-            </div>
+          <div className="wallpaper-ready-layout">
+            <section className="wallpaper-ready-main">
+              <div className="wallpaper-set-path-card">
+                <span>Folder to select</span>
+                <code>{state.finalPath}</code>
+                <button className="button ghost" onClick={() => state.finalPath && void window.wallpaperApi.copyText(state.finalPath)}>Copy Folder Path</button>
+              </div>
 
-            <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
-              <div className="wallpaper-setup-step">
-                <span className="setup-step-number">1</span>
-                <div><strong>Open Wallpaper Settings</strong></div>
+              <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
+                <div className="wallpaper-setup-step"><span className="setup-step-number">1</span><strong>Open Wallpaper Settings</strong></div>
+                <div className="wallpaper-setup-step"><span className="setup-step-number">2</span><strong>Click Add Folder or Album, then Choose Folder</strong></div>
+                <div className="wallpaper-setup-step"><span className="setup-step-number">3</span><strong>Select the Pin Paper Sets folder on your Desktop</strong></div>
+                <div className="wallpaper-setup-step"><span className="setup-step-number">4</span><strong>Turn on Shuffle and Show on all Spaces</strong></div>
               </div>
-              <div className="wallpaper-setup-step">
-                <span className="setup-step-number">2</span>
-                <div><strong>Click Add Folder or Album, then Choose Folder</strong></div>
-              </div>
-              <div className="wallpaper-setup-step">
-                <span className="setup-step-number">3</span>
-                <div><strong>Select the Pin Paper Sets folder on your Desktop</strong></div>
-              </div>
-              <div className="wallpaper-setup-step">
-                <span className="setup-step-number">4</span>
-                <div><strong>Turn on Shuffle and Show on all Spaces</strong></div>
-              </div>
-            </div>
 
-            <div className="wallpaper-setup-actions">
-              <button className="button secondary" onClick={() => onReveal(state.finalPath)}>Show Set in Finder</button>
-              <button className="button primary" onClick={onOpenSettings}>Open Wallpaper Settings</button>
-            </div>
-
-            <div className="dialog-actions">
+              <div className="wallpaper-setup-actions">
+                <button className="button secondary" onClick={() => onReveal(state.finalPath)}>Show Set in Finder</button>
+                <button className="button primary" onClick={onOpenSettings}>Open Wallpaper Settings</button>
+              </div>
+            </section>
+            <div className="dialog-actions wallpaper-ready-actions">
               <button className="button secondary" onClick={() => onChange((current) => ({
                 ...current,
                 finalPath: undefined,
@@ -5303,11 +5484,11 @@ function ExportSetDialog({
           <>
             <div className="export-set-grid simplified">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
-              <label>How many<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /><span className="field-note">PNG wallpapers</span></label>
+              <label>Image variation count<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /></label>
             </div>
 
             <details className="advanced-wallpaper-set-options">
-              <summary>More options <ChevronDown size={14} /></summary>
+              <summary><ChevronRight size={14} /> More options</summary>
               <div className="destination-row wallpaper-set-destination">
                 <div>
                   <strong>Save location</strong>
@@ -5319,8 +5500,8 @@ function ExportSetDialog({
                   <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
                 </div>
               </div>
-              <div className="export-options">
-                <div className="toggle-row compact-toggle-row"><button className={state.avoidRepeats ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button><button className={state.advanceLiveState ? "toggle active" : "toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, advanceLiveState: !current.advanceLiveState }))}>Advance shuffle state</button></div>
+              <div className="export-options simple-export-options">
+                <button className={state.avoidRepeats ? "plain-toggle active" : "plain-toggle"} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, avoidRepeats: !current.avoidRepeats }))}>Avoid repeats</button>
               </div>
             </details>
 
@@ -5362,7 +5543,7 @@ function PinterestDialog({
         <div className="modal-title-row import-title-row">
           <div className="modal-title-copy">
             <h2>Import Pinterest Board</h2>
-            <p>Paste a public board URL. Cached locally for offline wallpaper rotation.</p>
+            <p>Paste a public board URL. Cached locally for offline rotation.</p>
           </div>
           <button className="button secondary import-dialog-close-button" onClick={state.busy ? onCancel : onClose}>{state.busy ? "Stop Import" : "Close"}</button>
         </div>
@@ -5444,7 +5625,7 @@ function CanvasDesignPanel({
 }) {
   const [draftWidth, setDraftWidth] = useState(canvas.width);
   const [draftHeight, setDraftHeight] = useState(canvas.height);
-  const [resizeMode, setResizeMode] = useState<CanvasResizeMode>("keep");
+  const [resizeMode, setResizeMode] = useState<CanvasResizeMode>("scale");
   const [lockAspect, setLockAspect] = useState(true);
   const aspect = canvas.width / Math.max(1, canvas.height);
 
@@ -5515,7 +5696,7 @@ function CanvasDesignPanel({
         <summary>Canvas <ChevronDown size={15} /></summary>
         <label>Preset<select value={canvas.presetId} onChange={(event) => onPreset(event.target.value, resizeMode)}>{presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
         <div className="two-col"><label>Width<SoftNumberInput value={draftWidth} min={64} onCommit={changeWidth} /></label><label>Height<SoftNumberInput value={draftHeight} min={64} onCommit={changeHeight} /></label></div>
-        <label>Resize content<select value={resizeMode} onChange={(event) => { const mode = event.target.value as CanvasResizeMode; setResizeMode(mode); onResize(draftWidth, draftHeight, mode); }}><option value="keep">Keep positions</option><option value="scale">Scale proportionally</option><option value="center">Center content</option></select></label>
+        <label>Resize content<select value={resizeMode} onChange={(event) => { const mode = event.target.value as CanvasResizeMode; setResizeMode(mode); onResize(draftWidth, draftHeight, mode); }}><option value="scale">Scale proportionally</option><option value="center">Center content</option><option value="keep">Keep position</option></select></label>
         <div className="compact-action-row three-up">
           <button className={lockAspect ? "button selected" : "button secondary"} onClick={() => setLockAspect((value) => !value)}>Lock Ratio</button>
           <button className="button secondary" onClick={() => applyCanvasSize(canvas.height, canvas.width)}>Swap</button>
@@ -5554,7 +5735,7 @@ function CanvasDesignPanel({
               <button onClick={() => selectSurface("custom", texture.id)}>
                 <span>{texture.name}</span>
               </button>
-              <div className="texture-actions"><button onClick={() => onRevealTexture(texture.id)}>Show</button><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div>
+              <div className="texture-actions"><button onClick={() => onRemoveTexture(texture.id)}>Remove</button></div>
             </div>
           ))}
         </div>
@@ -5567,7 +5748,7 @@ function CanvasDesignPanel({
             <FilterSlider label="Roughness" value={surface.roughness} min={0} max={100} onChange={(value) => patchPaper({ roughness: value })} />
             <FilterSlider label="Light / dark" value={surface.tone} min={-100} max={100} onChange={(value) => patchPaper({ tone: value })} />
             <FilterSlider label="Rotation" value={surface.rotation} min={-180} max={180} step={1} onChange={(value) => patchPaper({ rotation: value })} />
-            <label>Blend mode<select value={surface.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
+            <label>Blend mode<select value={surface.blendMode} onChange={(event) => patchPaper({ blendMode: event.target.value as PaperTextureEffect["blendMode"] })}><option value="normal">No blend</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
             <div className="surface-action-row">
               <button className="button ghost compact" onClick={resetSurface}>Reset Surface</button>
               <button className="button secondary compact" onClick={() => patchPaper({ seed: nextSurfaceSeed(surface.seed) })}><RefreshCcw size={14} /> Regenerate Texture</button>
@@ -5621,6 +5802,30 @@ function Properties({
 
   function numeric<K extends keyof PlaceholderLayer>(key: K) {
     return (event: React.ChangeEvent<HTMLInputElement>) => onPatch({ [key]: Number(event.target.value) } as Partial<PlaceholderLayer>);
+  }
+
+  if (layer.objectKind === "text") {
+    return (
+      <section className="panel properties text-properties">
+        <details open>
+          <summary>Text <ChevronDown size={15} /></summary>
+          <label>Content<textarea value={layer.text ?? "Text"} rows={4} onChange={(event) => onPatch({ text: event.target.value })} /></label>
+          <label>Font<input value={layer.fontFamily ?? "Inter, system-ui"} onChange={(event) => onPatch({ fontFamily: event.target.value })} /></label>
+          <div className="two-col">
+            <label>Size<SoftNumberInput value={layer.fontSize ?? 72} min={8} max={400} onCommit={(value) => onPatch({ fontSize: Math.round(value) })} /></label>
+            <label>Weight<SoftNumberInput value={layer.fontWeight ?? 800} min={100} max={900} step={100} onCommit={(value) => onPatch({ fontWeight: Math.round(value) })} /></label>
+            <label>Color<input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
+            <label>Align<select value={layer.textAlign ?? "center"} onChange={(event) => onPatch({ textAlign: event.target.value as PlaceholderLayer["textAlign"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+          </div>
+          <FilterSlider label="Opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
+        </details>
+        <details open>
+          <summary>Frame Position <ChevronDown size={15} /></summary>
+          <div className="two-col"><label>X<input type="number" value={Math.round(layer.x)} onChange={numeric("x")} /></label><label>Y<input type="number" value={Math.round(layer.y)} onChange={numeric("y")} /></label><label>Width<SoftNumberInput value={Math.round(layer.width)} min={16} onCommit={(value) => onPatch({ width: Math.round(value) })} /></label><label>Height<SoftNumberInput value={Math.round(layer.height)} min={16} onCommit={(value) => onPatch({ height: Math.round(value) })} /></label></div>
+          <FilterSlider label="Rotation" value={layer.rotation} min={-180} max={180} onChange={(value) => onPatch({ rotation: value })} />
+        </details>
+      </section>
+    );
   }
   function patchFilters(patch: Partial<ImageFilters>) { onPatch({ effects: { ...activeLayer.effects, filters: { ...activeLayer.effects.filters, ...patch } } }); }
   function patchPaperFrame(patch: Partial<PlaceholderLayer["effects"]["paperFrame"]>) {
@@ -5778,7 +5983,7 @@ function Properties({
         </details>
 
         <details>
-          <summary>Adjustments <ChevronDown size={15} /></summary>
+          <summary>Filters <ChevronDown size={15} /></summary>
           <PresetButtons currentId={layer.effects.filters.presetId ?? "none"} onPick={patchFilters} />
           <FilterSlider label="Brightness" value={layer.effects.filters.brightness} min={0} max={200} onChange={(value) => patchFilters({ brightness: value, presetId: "custom" })} />
           <FilterSlider label="Contrast" value={layer.effects.filters.contrast} min={0} max={200} onChange={(value) => patchFilters({ contrast: value, presetId: "custom" })} />
@@ -5821,7 +6026,7 @@ function Properties({
         <details open>
           <summary>Shadow and Blend <ChevronDown size={15} /></summary>
           <FilterSlider label="Drop Shadow" value={layer.effects.paperFrame.shadowStrength} min={0} max={100} onChange={patchSimpleDropShadow} />
-          <label>Blend<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">Normal</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
+          <label>Blend<select value={layer.effects.blendMode} onChange={(event) => onPatch({ effects: { ...layer.effects, blendMode: event.target.value as PlaceholderLayer["effects"]["blendMode"] } })}><option value="normal">No blend</option><option value="multiply">Multiply</option><option value="screen">Screen</option><option value="overlay">Overlay</option><option value="soft-light">Soft Light</option></select></label>
         </details>
       </>}
     </section>

@@ -84,7 +84,7 @@ export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperTy
     scale: 0.24,
     rotation: 0,
     opacity: 0.72,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 88,
     roughness: 82,
     tone: 12
@@ -94,7 +94,7 @@ export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperTy
     scale: 0.24,
     rotation: 24,
     opacity: 0.58,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 82,
     roughness: 94,
     tone: 8
@@ -104,7 +104,7 @@ export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperTy
     scale: 0.95,
     rotation: 0,
     opacity: 0.78,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 58,
     roughness: 6,
     tone: 40
@@ -114,7 +114,7 @@ export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperTy
     scale: 0.9,
     rotation: 0,
     opacity: 1,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 64,
     roughness: 10,
     tone: 68

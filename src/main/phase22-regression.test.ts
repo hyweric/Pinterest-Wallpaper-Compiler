@@ -64,7 +64,7 @@ test("Phase 22 compacts the image inspector, simplifies torn controls, and clean
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
   const styles = await readFile(path.join(process.cwd(), "src/renderer/styles.css"), "utf8");
 
-  assert.match(renderer, /summary>Frame Position[\s\S]*summary>Border and Shape[\s\S]*summary>Adjustments/s);
+  assert.match(renderer, /summary>Frame Position[\s\S]*summary>Border and Shape[\s\S]*summary>Filters/s);
   assert.doesNotMatch(renderer, /summary>Fit and Crop/);
   assert.doesNotMatch(renderer, /Lock frame ratio/);
   assert.doesNotMatch(renderer, /summary>Source <ChevronDown/);
@@ -105,7 +105,7 @@ test("Phase 22 surface defaults are tuned for paper and crumpled paper", () => {
     scale: 0.24,
     rotation: 0,
     opacity: 0.72,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 88,
     roughness: 82,
     tone: 12
@@ -115,7 +115,7 @@ test("Phase 22 surface defaults are tuned for paper and crumpled paper", () => {
     scale: 0.24,
     rotation: 24,
     opacity: 0.58,
-    blendMode: "normal",
+    blendMode: "multiply",
     noise: 82,
     roughness: 94,
     tone: 8

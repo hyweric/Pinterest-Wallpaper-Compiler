@@ -495,6 +495,7 @@ export interface PlaceholderSourceState {
 export interface PlaceholderLayer {
   id: string;
   type: "placeholder";
+  objectKind?: "frame" | "text";
   name: string;
   x: number;
   y: number;
@@ -520,6 +521,14 @@ export interface PlaceholderLayer {
   sourceId?: string;
   selectedImageId?: string;
   generatedImageId?: string;
+  text?: string;
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: number;
+  textColor?: string;
+  textAlign?: "left" | "center" | "right";
+  lineHeight?: number;
+  letterSpacing?: number;
 }
 
 export type ProjectLayer = PlaceholderLayer;

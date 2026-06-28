@@ -41,6 +41,6 @@ test("bundled surfaces expose the requested default controls for each sourced te
 });
 
 
-test("bundled surface presets default to normal blending", () => {
-  assert.ok(Object.values(bundledSurfaceDefaults).every((defaults) => defaults.blendMode === "normal"));
+test("bundled surface presets default to multiply blending", () => {
+  assert.ok(Object.values(bundledSurfaceDefaults).every((defaults) => defaults.blendMode === "multiply"));
 });

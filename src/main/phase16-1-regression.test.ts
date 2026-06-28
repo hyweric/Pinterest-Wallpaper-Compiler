@@ -46,9 +46,9 @@ test("drag feedback distinguishes sources, empty canvas, placeholders, and inval
   const renderer = await source("src/renderer/main.tsx");
   const styles = await source("src/renderer/styles.css");
   assert.match(renderer, /Add folder as source/);
-  assert.match(renderer, /Assign folder to this placeholder/);
+  assert.match(renderer, /Assign folder to this frame/);
   assert.match(renderer, /Release to place source here/);
-  assert.match(renderer, /Release to create and select the placeholder here/);
+  assert.match(renderer, /Release to create and select the frame here/);
   assert.doesNotMatch(renderer, /No placeholder will be created/);
   assert.match(renderer, /Unsupported files cannot be imported/);
   assert.match(styles, /\.drop-feedback-overlay/);

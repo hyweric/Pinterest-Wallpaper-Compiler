@@ -217,6 +217,26 @@ function drawInsetShadow(
 
 async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperProject, layer: PlaceholderLayer) {
   if (layer.hidden) return;
+  if (layer.objectKind === "text") {
+    context.save();
+    context.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+    context.rotate((layer.rotation * Math.PI) / 180);
+    context.globalAlpha = layer.opacity;
+    context.translate(-layer.width / 2, -layer.height / 2);
+    context.fillStyle = layer.textColor ?? "#26313a";
+    context.font = `${layer.fontWeight ?? 800} ${layer.fontSize ?? 72}px ${layer.fontFamily ?? "Inter, system-ui, sans-serif"}`;
+    context.textAlign = layer.textAlign ?? "center";
+    context.textBaseline = "middle";
+    const lines = (layer.text ?? "Text").split(/\r?\n/);
+    const lineHeight = (layer.fontSize ?? 72) * (layer.lineHeight ?? 1.12);
+    const startY = layer.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+    const x = (layer.textAlign ?? "center") === "left" ? 0 : (layer.textAlign ?? "center") === "right" ? layer.width : layer.width / 2;
+    for (let index = 0; index < lines.length; index += 1) {
+      context.fillText(lines[index], x, startY + index * lineHeight, layer.width);
+    }
+    context.restore();
+    return;
+  }
   const imageRef = getImageForLayer(project, layer);
   const image = imageRef ? await loadImage(imageRef.url) : undefined;
   const frame = resolveLayerFrameBounds(layer, image ?? imageRef);

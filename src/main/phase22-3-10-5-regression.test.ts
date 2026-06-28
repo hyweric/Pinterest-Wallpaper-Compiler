@@ -20,7 +20,7 @@ test("Phase 22.3.10.5 tightens import modal copy and gives close buttons wider s
   const styles = await source("src/renderer/styles.css");
   assert.match(renderer, /className="modal import-modal"/);
   assert.match(renderer, /className="button secondary import-dialog-close-button"/);
-  assert.match(renderer, /Cached locally for offline wallpaper rotation/);
+  assert.match(renderer, /Cached locally for offline rotation/);
   assert.doesNotMatch(renderer, /The app will cache imported images locally/);
   assert.match(styles, /modal-title-row[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/);
   assert.match(styles, /import-dialog-close-button[\s\S]*min-width: 132px/);

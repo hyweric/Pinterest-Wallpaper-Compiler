@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-test("Phase 22.2 source drops choose one random starting image but keep Add Placeholder frame geometry", async () => {
+test("Phase 22.2 source drops choose one random starting image but keep Add Object frame geometry", async () => {
   const renderer = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
 
   assert.match(renderer, /function randomImageFromSource\(source: ImageSource\)/);
