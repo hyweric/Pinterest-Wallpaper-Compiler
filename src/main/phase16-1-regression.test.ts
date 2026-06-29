@@ -51,6 +51,7 @@ test("drag feedback distinguishes sources, empty canvas, placeholders, and inval
   assert.match(renderer, /Release to create and select the frame here/);
   assert.doesNotMatch(renderer, /No placeholder will be created/);
   assert.match(renderer, /Unsupported files cannot be imported/);
+  assert.doesNotMatch(renderer, /Folders become reusable pools/);
   assert.match(styles, /\.drop-feedback-overlay/);
   assert.match(styles, /\.placeholder\.drop-target/);
 });

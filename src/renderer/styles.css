@@ -139,7 +139,7 @@ h2,
 .brand-mark {
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: var(--drop-copy-radius, 12px);
   display: grid;
   place-items: center;
   color: #fff;
@@ -2459,7 +2459,7 @@ summary {
 .source-help {
   max-width: none;
   min-height: 16px;
-  font-size: 10px;
+  font-size: var(--drop-copy-body, 10px);
   line-height: 1.35;
 }
 
@@ -3041,10 +3041,10 @@ summary {
 .on-canvas-layer-controls {
   position: absolute;
   z-index: 30;
-  top: -35px;
+  top: calc(var(--layer-control-offset, 35px) * -1);
   right: 0;
   display: flex;
-  gap: 4px;
+  gap: max(2px, calc(var(--layer-control-size, 29px) * 0.14));
   opacity: 0;
   transform: translateY(3px);
   pointer-events: none;
@@ -3057,8 +3057,8 @@ summary {
   pointer-events: auto;
 }
 .on-canvas-layer-controls button {
-  width: 29px;
-  height: 29px;
+  width: var(--layer-control-size, 29px);
+  height: var(--layer-control-size, 29px);
   display: grid;
   place-items: center;
   padding: 0;
@@ -3716,8 +3716,8 @@ textarea:focus-visible {
   position: absolute;
   display: grid;
   place-items: center;
-  border: 3px dashed rgba(76, 145, 174, 0.92);
-  border-radius: 18px;
+  border: var(--drop-preview-border, 3px) dashed rgba(76, 145, 174, 0.92);
+  border-radius: var(--drop-preview-radius, 18px);
   background: rgba(225, 242, 248, 0.42);
   box-shadow: 0 0 0 7px rgba(76, 145, 174, 0.12), 0 22px 60px rgba(38, 78, 94, 0.18);
   pointer-events: none;
@@ -3731,9 +3731,9 @@ textarea:focus-visible {
 .canvas-drop-placement-copy {
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: var(--drop-copy-gap, 6px);
   max-width: min(280px, 86%);
-  padding: 12px 16px;
+  padding: var(--drop-copy-pad-y, 12px) var(--drop-copy-pad-x, 16px);
   border: 1px solid rgba(73, 128, 151, 0.28);
   border-radius: 12px;
   background: rgba(250, 253, 254, 0.94);
@@ -3744,7 +3744,7 @@ textarea:focus-visible {
 }
 
 .canvas-drop-placement-copy strong {
-  font-size: 13px;
+  font-size: var(--drop-copy-title, 13px);
   font-weight: 850;
   line-height: 1.25;
 }
@@ -4075,9 +4075,9 @@ select option {
 }
 
 .selection-handles-overlay .resize-handle {
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: var(--handle-hit, 28px);
+  height: var(--handle-hit, 28px);
+  min-height: var(--handle-hit, 28px);
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -4090,9 +4090,9 @@ select option {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 12px;
-  height: 12px;
-  border: 2px solid #7eb5c5;
+  width: var(--handle-dot, 12px);
+  height: var(--handle-dot, 12px);
+  border: var(--handle-border, 2px) solid #7eb5c5;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 2px 7px rgba(26, 39, 48, 0.24);
@@ -4112,22 +4112,22 @@ select option {
   box-shadow: 0 0 0 4px rgba(126, 181, 197, 0.18), 0 2px 7px rgba(26, 39, 48, 0.24);
 }
 
-.selection-handles-overlay .resize-nw { top: -14px; left: -14px; }
-.selection-handles-overlay .resize-n { top: -14px; left: calc(50% - 14px); }
-.selection-handles-overlay .resize-ne { top: -14px; right: -14px; }
-.selection-handles-overlay .resize-e { top: calc(50% - 14px); right: -14px; }
-.selection-handles-overlay .resize-se { right: -14px; bottom: -14px; }
-.selection-handles-overlay .resize-s { bottom: -14px; left: calc(50% - 14px); }
-.selection-handles-overlay .resize-sw { left: -14px; bottom: -14px; }
-.selection-handles-overlay .resize-w { top: calc(50% - 14px); left: -14px; }
+.selection-handles-overlay .resize-nw { top: calc(var(--handle-offset, 14px) * -1); left: calc(var(--handle-offset, 14px) * -1); }
+.selection-handles-overlay .resize-n { top: calc(var(--handle-offset, 14px) * -1); left: calc(50% - var(--handle-offset, 14px)); }
+.selection-handles-overlay .resize-ne { top: calc(var(--handle-offset, 14px) * -1); right: calc(var(--handle-offset, 14px) * -1); }
+.selection-handles-overlay .resize-e { top: calc(50% - var(--handle-offset, 14px)); right: calc(var(--handle-offset, 14px) * -1); }
+.selection-handles-overlay .resize-se { right: calc(var(--handle-offset, 14px) * -1); bottom: calc(var(--handle-offset, 14px) * -1); }
+.selection-handles-overlay .resize-s { bottom: calc(var(--handle-offset, 14px) * -1); left: calc(50% - var(--handle-offset, 14px)); }
+.selection-handles-overlay .resize-sw { left: calc(var(--handle-offset, 14px) * -1); bottom: calc(var(--handle-offset, 14px) * -1); }
+.selection-handles-overlay .resize-w { top: calc(50% - var(--handle-offset, 14px)); left: calc(var(--handle-offset, 14px) * -1); }
 
 .selection-handles-overlay .rotate-handle {
   z-index: 2;
-  top: -48px;
-  left: calc(50% - 15px);
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
+  top: calc(var(--rotate-top, 48px) * -1);
+  left: calc(50% - var(--rotate-offset, 15px));
+  width: var(--rotate-size, 30px);
+  height: var(--rotate-size, 30px);
+  min-height: var(--rotate-size, 30px);
   padding: 0;
   border: 2px solid #7eb5c5;
   background: rgba(255, 255, 255, 0.98);
@@ -7895,4 +7895,91 @@ select,
 .workspace-fixed-controls .context-toolbar[aria-label="Selected image quick controls"] button {
   min-height: 40px !important;
   height: 40px !important;
+}
+
+
+/* Phase 29.4: publishing polish, stronger modal dimming, no source re-drop warning, and delete-only layer controls. */
+.modal-backdrop {
+  z-index: 200000 !important;
+}
+.source-library .drop-feedback-overlay.invalid {
+  display: none !important;
+}
+.source-library.drag-active.drop-invalid,
+.source-library.drag-active.drop-invalid::before,
+.source-library.drag-active.drop-invalid::after {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+.on-canvas-layer-controls .destructive {
+  color: #8b3e4e !important;
+  border-color: rgba(181, 80, 101, 0.2) !important;
+  background: rgba(252, 237, 241, 0.95) !important;
+}
+.on-canvas-layer-controls .destructive:hover {
+  background: rgba(248, 221, 228, 0.98) !important;
+}
+
+
+/* Phase 29.5: remove source-panel drag copy/outline and adapt canvas controls to frame size. */
+.source-library.drag-active,
+.source-library.drag-active.drop-valid,
+.source-library.drag-active.drop-invalid,
+.source-library.drag-active::before,
+.source-library.drag-active::after {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+.source-library .drop-feedback-overlay {
+  display: none !important;
+}
+.placeholder-drop-label {
+  inset: max(5px, calc(var(--handle-dot, 12px) * 0.66));
+  gap: max(4px, calc(var(--handle-dot, 12px) * 0.45));
+  padding: max(6px, calc(var(--handle-dot, 12px) * 0.7));
+  border-width: max(1px, var(--handle-border, 2px));
+  border-radius: max(8px, calc(var(--handle-dot, 12px) * 0.8));
+  font-size: clamp(9px, calc(var(--handle-dot, 12px) * 0.92), 13px);
+}
+.on-canvas-layer-controls button svg {
+  width: var(--layer-control-icon, 14px);
+  height: var(--layer-control-icon, 14px);
+}
+
+/* Phase 29.6: restore one clean external-source drop target, not the old double outline. */
+.source-library.drag-active,
+.source-library.drag-active.drop-valid,
+.source-library.drag-active.drop-invalid,
+.source-library.drag-active::before,
+.source-library.drag-active::after {
+  outline: none !important;
+  border-color: rgba(226, 239, 244, 0.96) !important;
+  box-shadow: none !important;
+}
+.source-library.drag-active.drop-valid {
+  background: rgba(247, 252, 253, 0.54) !important;
+}
+.source-library.drag-active.drop-invalid {
+  background: transparent !important;
+}
+.source-library .drop-feedback-overlay {
+  display: none !important;
+}
+.source-library .source-drop-feedback.valid {
+  display: grid !important;
+  inset: 10px;
+  border: 2px dashed rgba(94, 157, 184, 0.72);
+  border-radius: 18px;
+  background: rgba(246, 252, 253, 0.88);
+  box-shadow: none;
+}
+.source-library .source-drop-feedback.valid span {
+  display: none !important;
+}
+.source-library .drop-feedback-overlay.invalid {
+  display: none !important;
 }

@@ -470,6 +470,72 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+type AdaptiveControlMetrics = {
+  handleHit: number;
+  handleDot: number;
+  handleBorder: number;
+  handleOffset: number;
+  rotateSize: number;
+  rotateOffset: number;
+  rotateTop: number;
+  layerButtonSize: number;
+  layerButtonOffset: number;
+  iconSize: number;
+};
+
+function adaptiveControlMetrics(width: number, height: number, canvas: CanvasSettings): AdaptiveControlMetrics {
+  const canvasMin = Math.max(1, Math.min(canvas.width, canvas.height));
+  const frameMin = Math.max(1, Math.min(width, height));
+  const maxDot = Math.max(13, Math.min(17, canvasMin * 0.017));
+  const handleDot = Math.round(clamp(Math.min(width * 0.045, height * 0.075), 7, maxDot));
+  const handleHit = Math.round(handleDot * 2.34);
+  const rotateSize = Math.round(clamp(handleDot * 3.08, 28, Math.max(38, maxDot * 3.15)));
+  const layerButtonSize = Math.round(clamp(frameMin * 0.18, 26, Math.max(38, maxDot * 3.05)));
+  return {
+    handleHit,
+    handleDot,
+    handleBorder: Math.max(1, Math.round(handleDot * 0.16)),
+    handleOffset: Math.round(handleHit / 2),
+    rotateSize,
+    rotateOffset: Math.round(rotateSize / 2),
+    rotateTop: Math.round(Math.max(handleDot * 4.3, rotateSize + handleDot * 1.25)),
+    layerButtonSize,
+    layerButtonOffset: Math.round(clamp(frameMin * 0.2, layerButtonSize + 4, Math.max(46, maxDot * 3.45))),
+    iconSize: Math.round(clamp(handleDot * 1.35, 12, 22))
+  };
+}
+
+function adaptiveControlStyle(metrics: AdaptiveControlMetrics): React.CSSProperties {
+  return {
+    ["--handle-hit" as string]: `${metrics.handleHit}px`,
+    ["--handle-dot" as string]: `${metrics.handleDot}px`,
+    ["--handle-border" as string]: `${metrics.handleBorder}px`,
+    ["--handle-offset" as string]: `${metrics.handleOffset}px`,
+    ["--rotate-size" as string]: `${metrics.rotateSize}px`,
+    ["--rotate-offset" as string]: `${metrics.rotateOffset}px`,
+    ["--rotate-top" as string]: `${metrics.rotateTop}px`,
+    ["--layer-control-size" as string]: `${metrics.layerButtonSize}px`,
+    ["--layer-control-offset" as string]: `${metrics.layerButtonOffset}px`,
+    ["--layer-control-icon" as string]: `${metrics.iconSize}px`,
+  } as React.CSSProperties;
+}
+
+function adaptiveDropPreviewStyle(width: number, height: number, canvas: CanvasSettings): React.CSSProperties {
+  const canvasMin = Math.max(1, Math.min(canvas.width, canvas.height));
+  const base = clamp(Math.min(width * 0.048, height * 0.075), 8, Math.max(13, Math.min(18, canvasMin * 0.018)));
+  return {
+    ["--drop-preview-border" as string]: `${Math.max(1, Math.round(base * 0.2))}px`,
+    ["--drop-preview-radius" as string]: `${Math.round(base * 1.35)}px`,
+    ["--drop-copy-gap" as string]: `${Math.round(clamp(base * 0.46, 4, 8))}px`,
+    ["--drop-copy-pad-y" as string]: `${Math.round(clamp(base * 0.72, 7, 13))}px`,
+    ["--drop-copy-pad-x" as string]: `${Math.round(clamp(base * 0.95, 10, 17))}px`,
+    ["--drop-copy-radius" as string]: `${Math.round(clamp(base * 0.9, 8, 14))}px`,
+    ["--drop-copy-title" as string]: `${Math.round(clamp(base * 1.03, 10, 14))}px`,
+    ["--drop-copy-body" as string]: `${Math.round(clamp(base * 0.82, 8, 11))}px`,
+    ["--drop-copy-icon" as string]: `${Math.round(clamp(base * 1.28, 12, 20))}px`,
+  } as React.CSSProperties;
+}
+
 function hexWithOpacity(hex: string, opacity: number) {
   const normalized = hex.replace("#", "");
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return hex;
@@ -591,7 +657,7 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
       ? { label: "Assign source to this frame", valid: true, placementCount: 1 }
       : target === "canvas"
         ? { label: "Release to place source here", valid: true, placementCount: 1 }
-        : { label: "Source already belongs to the library", valid: false };
+        : { label: "", valid: true, placementCount: 0 };
   }
 
   let folders = 0;
@@ -1254,6 +1320,12 @@ function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [editingTextLayerId, setEditingTextLayerId] = useState<string | undefined>();
+  const selectedLayerIdsRef = useRef(selectedLayerIds);
+  const selectedLayerIdRef = useRef(selectedLayerId);
+  const clipboardLayersRef = useRef<PlaceholderLayer[]>([]);
+  const viewRef = useRef(view);
+  const pasteEventVersionRef = useRef(0);
+  const pasteFallbackTimerRef = useRef<number | undefined>(undefined);
   const [projectNameEditing, setProjectNameEditing] = useState(false);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
@@ -1374,6 +1446,22 @@ function App() {
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+
+  useEffect(() => {
+    selectedLayerIdsRef.current = selectedLayerIds;
+  }, [selectedLayerIds]);
+
+  useEffect(() => {
+    selectedLayerIdRef.current = selectedLayerId;
+  }, [selectedLayerId]);
+
+  useEffect(() => {
+    clipboardLayersRef.current = clipboardLayers;
+  }, [clipboardLayers]);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
 
   useEffect(() => {
     setInspectorTab((current) => {
@@ -1724,6 +1812,69 @@ function App() {
 
   function duplicateSelectedLayer() {
     duplicateLayers(selectedLayerIds);
+  }
+
+  function selectedLayersFromCurrentProject() {
+    const ids = selectedLayerIdsRef.current.length
+      ? selectedLayerIdsRef.current
+      : selectedLayerIdRef.current
+        ? [selectedLayerIdRef.current]
+        : [];
+    const idSet = new Set(ids);
+    return projectRef.current.layers.filter((layer) => idSet.has(layer.id) && !layer.locked);
+  }
+
+  function storeCopiedLayers(layers: PlaceholderLayer[]) {
+    const cloned = structuredClone(layers);
+    clipboardLayersRef.current = cloned;
+    setClipboardLayers(cloned);
+    if (cloned.length) setMessage(`Copied ${cloned.length} layer${cloned.length === 1 ? "" : "s"}.`);
+    return cloned.length > 0;
+  }
+
+  function copySelectedLayersForClipboard() {
+    const layers = selectedLayersFromCurrentProject();
+    if (layers.length === 0) {
+      if (selectedLayerIdsRef.current.length || selectedLayerIdRef.current) setMessage("Unlock the selected layer before copying it.");
+      return false;
+    }
+    return storeCopiedLayers(layers);
+  }
+
+  function parseClipboardLayers(raw: string | undefined) {
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as { app?: string; version?: number; layers?: PlaceholderLayer[] };
+      if (parsed?.app !== "pin-paper" || !Array.isArray(parsed.layers)) return undefined;
+      return parsed.layers;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function clipboardLayerPayload(layers: PlaceholderLayer[]) {
+    return JSON.stringify({ app: "pin-paper", version: 1, layers });
+  }
+
+  function pasteCopiedLayers(layers = clipboardLayersRef.current) {
+    if (viewRef.current !== "editor" || layers.length === 0) return false;
+    const existingNames = new Set(projectRef.current.layers.map((layer) => layer.name));
+    const pasted = layers.map((layer) => {
+      const name = numberedCopyName(layer.name, existingNames);
+      existingNames.add(name);
+      return {
+        ...structuredClone(layer),
+        id: uid("placeholder"),
+        name,
+        x: layer.x + 28,
+        y: layer.y + 28
+      };
+    });
+    commitProject((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
+    setSelectedLayerIds(pasted.map((layer) => layer.id));
+    setSelectedLayerId(pasted.at(-1)?.id);
+    setSelectionAnchorId(pasted.at(-1)?.id);
+    return true;
   }
 
   function reorderLayers(ids: string[], action: LayerOrderAction) {
@@ -3634,6 +3785,11 @@ function App() {
   function updateDropFeedback(event: React.DragEvent, target: ExternalDropTarget, layerId?: string) {
     event.preventDefault();
     if (target === "placeholder") event.stopPropagation();
+    if (target === "sources" && getDroppedSourceId(event)) {
+      event.dataTransfer.dropEffect = "none";
+      setDropFeedback(undefined);
+      return;
+    }
     const described = describeDrop(event.dataTransfer, target);
     const canvasPoint = target === "canvas" && described.valid
       ? canvasPointFromClient(event.clientX, event.clientY)
@@ -3667,10 +3823,7 @@ function App() {
     const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
     const paths = getDroppedPaths(event);
     setDropFeedback(undefined);
-    if (getDroppedSourceId(event)) {
-      setMessage("This source is already in the library.");
-      return;
-    }
+    if (getDroppedSourceId(event)) return;
     const pinterestUrl = getDroppedPinterestUrl(event);
     if (pinterestUrl) {
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
@@ -4097,7 +4250,8 @@ function App() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const command = event.metaKey || event.ctrlKey;
-      if (isTypingTarget(event.target) && !(command && event.key.toLowerCase() === "s")) return;
+      const key = event.key.toLowerCase();
+      if (isTypingTarget(event.target) && !(command && key === "s")) return;
       if (view === "editor" && command && (event.key === "=" || event.key === "+")) {
         event.preventDefault();
         zoomCanvasByStep(1);
@@ -4113,26 +4267,28 @@ function App() {
       } else if (view === "editor" && command && event.key === "1") {
         event.preventDefault();
         fitCanvas();
-      } else if (command && event.key.toLowerCase() === "z" && event.shiftKey) {
+      } else if (command && key === "z" && event.shiftKey) {
         event.preventDefault();
         redo();
-      } else if (command && event.key.toLowerCase() === "z") {
+      } else if (command && key === "z") {
         event.preventDefault();
         undo();
-      } else if (event.ctrlKey && event.key.toLowerCase() === "y") {
+      } else if (event.ctrlKey && key === "y") {
         event.preventDefault();
         redo();
-      } else if (command && event.key.toLowerCase() === "c" && selectedLayers.length) {
-        event.preventDefault();
-        setClipboardLayers(structuredClone(selectedLayers));
-      } else if (command && event.key.toLowerCase() === "v") {
-        // Let the real paste event inspect the system clipboard first. If no
-        // image or URL is present there, the paste handler falls back to copied
-        // Pin Paper layers. This keeps browser/screenshot image paste reliable.
-      } else if (command && event.key.toLowerCase() === "d") {
+      } else if (command && key === "c") {
+        if (copySelectedLayersForClipboard()) event.preventDefault();
+      } else if (command && key === "v") {
+        const pasteVersion = pasteEventVersionRef.current;
+        if (pasteFallbackTimerRef.current !== undefined) window.clearTimeout(pasteFallbackTimerRef.current);
+        pasteFallbackTimerRef.current = window.setTimeout(() => {
+          pasteFallbackTimerRef.current = undefined;
+          if (pasteEventVersionRef.current === pasteVersion) pasteCopiedLayers();
+        }, 90);
+      } else if (command && key === "d") {
         event.preventDefault();
         duplicateSelectedLayer();
-      } else if (command && event.key.toLowerCase() === "s") {
+      } else if (command && key === "s") {
         event.preventDefault();
         void saveProject();
       } else if (event.key === "Delete" || event.key === "Backspace") {
@@ -4158,36 +4314,41 @@ function App() {
         }));
       }
     }
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+      if (pasteFallbackTimerRef.current !== undefined) window.clearTimeout(pasteFallbackTimerRef.current);
     };
-  }, [selectedLayer, selectedLayers, clipboardLayers, cropModeLayerId, project, projectPath, selectedLayerIds, view]);
+  }, [selectedLayer, selectedLayers, cropModeLayerId, projectPath, selectedLayerIds, view]);
 
   useEffect(() => {
+    function onCopy(event: ClipboardEvent) {
+      if (isTypingTarget(event.target)) return;
+      const copied = selectedLayersFromCurrentProject();
+      if (copied.length === 0) return;
+      storeCopiedLayers(copied);
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData?.setData("application/x-pin-paper-layers", clipboardLayerPayload(copied));
+      event.clipboardData?.setData("text/plain", `${copied.length} Pin Paper layer${copied.length === 1 ? "" : "s"}`);
+    }
+
     function onPaste(event: ClipboardEvent) {
       if (isTypingTarget(event.target)) return;
+      pasteEventVersionRef.current += 1;
+      if (pasteFallbackTimerRef.current !== undefined) {
+        window.clearTimeout(pasteFallbackTimerRef.current);
+        pasteFallbackTimerRef.current = undefined;
+      }
       const candidates = webImageCandidatesFromTransfer(event.clipboardData);
       if (candidates.length === 0) {
-        if (view !== "editor" || clipboardLayers.length === 0) return;
+        const appLayers = parseClipboardLayers(event.clipboardData?.getData("application/x-pin-paper-layers"));
+        const layersToPaste = appLayers ?? clipboardLayersRef.current;
+        if (viewRef.current !== "editor" || layersToPaste.length === 0) return;
         event.preventDefault();
         event.stopPropagation();
-        const existingNames = new Set(projectRef.current.layers.map((layer) => layer.name));
-        const pasted = clipboardLayers.map((layer) => {
-          const name = numberedCopyName(layer.name, existingNames);
-          existingNames.add(name);
-          return {
-            ...structuredClone(layer),
-            id: uid("placeholder"),
-            name,
-            x: layer.x + 28,
-            y: layer.y + 28
-          };
-        });
-        commitProject((current) => ({ ...current, layers: [...current.layers, ...pasted] }));
-        setSelectedLayerIds(pasted.map((layer) => layer.id));
-        setSelectedLayerId(pasted.at(-1)?.id);
-        setSelectionAnchorId(pasted.at(-1)?.id);
+        if (appLayers) storeCopiedLayers(appLayers);
+        pasteCopiedLayers(layersToPaste);
         return;
       }
       const fingerprint = webImagePasteFingerprint(candidates);
@@ -4197,11 +4358,14 @@ function App() {
       event.preventDefault();
       event.stopPropagation();
       void (async () => {
-        if (view === "editor" && selectedLayer && !selectedLayer.locked) {
-          await assignWebImagesToLayer(candidates, selectedLayer);
-          return;
-        }
-        if (view === "editor") {
+        if (viewRef.current === "editor") {
+          const activeLayer = selectedLayerIdRef.current
+            ? projectRef.current.layers.find((layer) => layer.id === selectedLayerIdRef.current)
+            : undefined;
+          if (activeLayer && !activeLayer.locked) {
+            await assignWebImagesToLayer(candidates, activeLayer);
+            return;
+          }
           const canvas = projectRef.current.canvas;
           await placeWebImagesAtCanvasPoint(candidates, { x: canvas.width / 2, y: canvas.height / 2 });
           return;
@@ -4210,9 +4374,13 @@ function App() {
       })();
     }
 
+    window.addEventListener("copy", onCopy, true);
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [selectedLayer, view, clipboardLayers]);
+    return () => {
+      window.removeEventListener("copy", onCopy, true);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, []);
 
   if (view === "home") {
     return (
@@ -4289,11 +4457,10 @@ function App() {
           onDragLeave={(event) => leaveDropTarget(event, "sources")}
           onDrop={(event) => void handleSourceDrop(event)}
         >
-          {dropFeedback?.target === "sources" && (
-            <div className={`drop-feedback-overlay ${dropFeedback.valid ? "valid" : "invalid"}`}>
+          {dropFeedback?.target === "sources" && dropFeedback.valid && (
+            <div className="drop-feedback-overlay source-drop-feedback valid">
               <Upload size={22} />
               <strong>{dropFeedback.label}</strong>
-              <span>Folders become reusable pools. Multiple images become one source.</span>
             </div>
           )}
           <div className="library-heading add-source-heading">
@@ -4358,7 +4525,7 @@ function App() {
                       <button className="icon-button source-row-icon-action" title="Link to this template" aria-label="Link to this template" onClick={() => linkSourceToTemplate(source)}><Link size={15} /></button>
                     )}
                     {sourceLibraryView === "global" && (
-                      <button className="icon-button source-delete" title="Delete global source" onClick={() => removeSource(source)}><Trash2 size={14} /></button>
+                      <button className="icon-button source-delete" title="Delete global source" onClick={() => removeSource(source)}><Trash2 size={15} /></button>
                     )}
                   </div>
                 </div>
@@ -4388,18 +4555,8 @@ function App() {
           <div className="panel-title-row">
             <h2><Layers size={17} /> Layers</h2>
           </div>
-          {project.layers.some((layer) => layer.hidden) && (
-            <details className="hidden-layers-menu">
-              <summary><EyeOff size={14} /> Hidden Layers <span>{project.layers.filter((layer) => layer.hidden).length}</span></summary>
-              <div>
-                {project.layers.filter((layer) => layer.hidden).map((layer) => (
-                  <button key={layer.id} onClick={() => toggleLayerVisibility(layer.id)}><Eye size={14} /> Restore {layer.name}</button>
-                ))}
-              </div>
-            </details>
-          )}
           <div className="layers-list" aria-label="Layers from front to back">
-            {[...project.layers].filter((layer) => !layer.hidden).reverse().map((layer) => {
+            {[...project.layers].reverse().map((layer) => {
               const selected = selectedLayerIds.includes(layer.id);
               return (
                 <div
@@ -4533,7 +4690,7 @@ function App() {
                   <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
-                  <button onClick={() => openExportSet()}><Images size={16} /> Create macOS Wallpaper Set</button>
+                  <button onClick={() => openExportSet()}><Images size={16} /> Create Wallpaper Set</button>
                   <button onClick={() => void previewOnCurrentDesktop()}><Wallpaper size={16} /> Preview on Current Desktop</button>
                   <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
                 </div>
@@ -4635,6 +4792,8 @@ function App() {
             {dropFeedback?.target === "canvas" && dropFeedback.valid && dropFeedback.canvasPoint &&
               Array.from({ length: Math.min(4, Math.max(1, dropFeedback.placementCount ?? 1)) }).map((_, index) => {
                 const placement = placementForCanvasDrop(project.canvas, dropFeedback.canvasPoint!, index);
+                const dropPreviewStyle = adaptiveDropPreviewStyle(placement.width, placement.height, project.canvas);
+                const dropIconSize = Number.parseInt(String((dropPreviewStyle as unknown as Record<string, string>)["--drop-copy-icon"] ?? "18"), 10) || 18;
                 return (
                   <div
                     className="canvas-drop-placement-preview"
@@ -4644,12 +4803,13 @@ function App() {
                       top: placement.y,
                       width: placement.width,
                       height: placement.height,
-                      zIndex: 50 + index
+                      zIndex: 50 + index,
+                      ...dropPreviewStyle
                     }}
                   >
                     {index === 0 && (
                       <div className="canvas-drop-placement-copy">
-                        <Upload size={18} />
+                        <Upload size={dropIconSize} />
                         <strong>{dropFeedback.label}</strong>
                         <span>Release to create and select the frame here.</span>
                         {(dropFeedback.placementCount ?? 1) > 1 && <b>{dropFeedback.placementCount} frames</b>}
@@ -4724,11 +4884,24 @@ function App() {
                         }}
                       >{layer.text ?? "Text"}</div>
                     </div>
-                    {selected && !layer.locked && (
-                      <div className="selection-handles-overlay" style={{ left: layer.x, top: layer.y, width: layer.width, height: layer.height, transform: `rotate(${layer.rotation}deg)` }}>
-                        <SelectionHandles layer={layer} onBeginDrag={beginDrag} variant="text" />
-                      </div>
-                    )}
+                    {selected && !layer.locked && (() => {
+                      const metrics = adaptiveControlMetrics(layer.width, layer.height, project.canvas);
+                      return (
+                        <div
+                          className="selection-handles-overlay"
+                          style={{
+                            left: layer.x,
+                            top: layer.y,
+                            width: layer.width,
+                            height: layer.height,
+                            transform: `rotate(${layer.rotation}deg)`,
+                            ...adaptiveControlStyle(metrics)
+                          }}
+                        >
+                          <SelectionHandles layer={layer} onBeginDrag={beginDrag} variant="text" iconSize={metrics.iconSize} />
+                        </div>
+                      );
+                    })()}
                   </React.Fragment>
                 );
               }
@@ -4763,6 +4936,8 @@ function App() {
                 : tornActive
                   ? { scale: tornPaper.imageScale, x: tornPaper.imageOffsetX, y: tornPaper.imageOffsetY, rotation: 0 }
                   : undefined;
+              const frameControlMetrics = adaptiveControlMetrics(frame.width, frame.height, project.canvas);
+              const frameControlStyle = adaptiveControlStyle(frameControlMetrics);
               return (
                 <React.Fragment key={layer.id}>
                 <div
@@ -4779,6 +4954,7 @@ function App() {
                     ["--layer-border-inset" as string]: paperActive ? "0px" : `${Math.max(0, layer.borderWidth) * -1}px`,
                     ["--layer-border-radius" as string]: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? "0px" : `${roundedRadius}px`,
                     ["--layer-border-color" as string]: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
+                    ...frameControlStyle,
                     borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : roundedRadius,
                     overflow: rough || !paperActive ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, frame.width, frame.height) : undefined,
@@ -4804,18 +4980,18 @@ function App() {
                 >
                   {dropFeedback?.target === "placeholder" && dropFeedback.layerId === layer.id && (
                     <div className={`placeholder-drop-label ${dropFeedback.valid ? "valid" : "invalid"}`}>
-                      <Upload size={16} />
+                      <Upload size={frameControlMetrics.iconSize} />
                       <span>{dropFeedback.label}</span>
                     </div>
                   )}
                   {!cropping && (
                     <div className={`on-canvas-layer-controls ${selected ? "visible" : ""}`} onPointerDown={(event) => event.stopPropagation()}>
                       <button
-                        className="tooltip-anchor"
-                        data-tooltip="Hide layer"
-                        aria-label="Hide layer"
-                        onClick={(event) => { event.stopPropagation(); toggleLayerVisibility(layer.id); }}
-                      ><EyeOff size={14} /></button>
+                        className="tooltip-anchor destructive"
+                        data-tooltip="Delete"
+                        aria-label="Delete"
+                        onClick={(event) => { event.stopPropagation(); deleteLayers([layer.id]); }}
+                      ><Trash2 size={frameControlMetrics.iconSize} /></button>
                     </div>
                   )}
                   {paperActive && <FrameSurfaceTextureOverlay layer={layer} width={frame.width} height={frame.height} textureIntensity={expandedFrameTexture} customTextures={project.customTextures} />}
@@ -4894,10 +5070,11 @@ function App() {
                       top: frame.y,
                       width: frame.width,
                       height: frame.height,
-                      transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`
+                      transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
+                      ...frameControlStyle
                     }}
                   >
-                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} />
+                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} iconSize={frameControlMetrics.iconSize} />
                   </div>
                 )}
                 </React.Fragment>
@@ -5453,7 +5630,7 @@ function PolaroidDirectImageEditor({
   );
 }
 
-function SelectionHandles({ layer, onBeginDrag, variant }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; variant?: "text" | "frame" }) {
+function SelectionHandles({ layer, onBeginDrag, variant, iconSize = 13 }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; variant?: "text" | "frame"; iconSize?: number }) {
   const textMode = variant === "text" || layer.objectKind === "text";
   const handles: DragMode[] = textMode
     ? ["resize-nw", "resize-ne", "resize-se", "resize-sw", "resize-e", "resize-w"]
@@ -5466,7 +5643,7 @@ function SelectionHandles({ layer, onBeginDrag, variant }: { layer: PlaceholderL
   }
   return (
     <>
-      {!textMode && <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={13} /></button>}
+      {!textMode && <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={iconSize} /></button>}
       {handles.map((handle) => (
         <button key={handle} className={`resize-handle ${textMode ? "text-resize-handle" : ""} ${handle}`} onPointerDown={(event) => startControlDrag(event, handle)} aria-label={handle} />
       ))}
