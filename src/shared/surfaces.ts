@@ -83,31 +83,31 @@ export const bundledSurfaceDefaults: Record<BundledSurfaceManifestEntry["paperTy
     intensity: 100,
     scale: 0.24,
     rotation: 0,
-    opacity: 0.72,
+    opacity: 0.82,
     blendMode: "multiply",
-    noise: 88,
-    roughness: 82,
-    tone: 12
+    noise: 92,
+    roughness: 88,
+    tone: 6
   },
   "crumpled-paper": {
     intensity: 100,
     scale: 0.24,
     rotation: 24,
-    opacity: 0.58,
+    opacity: 0.72,
     blendMode: "multiply",
-    noise: 82,
-    roughness: 94,
-    tone: 8
+    noise: 90,
+    roughness: 98,
+    tone: 2
   },
   "grid-paper": {
     intensity: 100,
     scale: 0.95,
     rotation: 0,
-    opacity: 0.78,
+    opacity: 0.9,
     blendMode: "multiply",
-    noise: 58,
-    roughness: 6,
-    tone: 40
+    noise: 46,
+    roughness: 8,
+    tone: 18
   },
   "dotted-paper": {
     intensity: 100,

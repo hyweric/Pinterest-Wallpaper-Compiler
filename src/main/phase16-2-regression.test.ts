@@ -24,9 +24,9 @@ test("the Sources header exposes one labeled Add Source control instead of three
 test("Add Source menu keeps every existing source workflow with visible labels and descriptions", async () => {
   const renderer = await source("src/renderer/main.tsx");
   assert.match(renderer, /<span>Add Source<\/span>/);
-  assert.match(renderer, /label: "Local Folder"/);
+  assert.match(renderer, /label: "Folder"/);
   assert.match(renderer, /description: "Use images from a folder"/);
-  assert.match(renderer, /label: "Local Images"/);
+  assert.match(renderer, /label: "Images"/);
   assert.match(renderer, /description: "Select one or more image files"/);
   assert.match(renderer, /label: "Pinterest Board"/);
   assert.match(renderer, /description: "Import images from a board"/);

@@ -76,6 +76,7 @@ import {
   createDefaultSourceState,
   createPlaceholder,
   createTextLayer,
+  defaultFrameCornerRadius,
   collectLayerImages,
   createProject,
   createWallpaperTemplate,
@@ -270,6 +271,12 @@ function cssImageUrl(src?: string) {
 function measuredLayerFrame(layer: PlaceholderLayer, image?: LocalImageRef, natural?: { width: number; height: number }): LayerFrameBounds {
   return resolveLayerFrameBounds(layer, natural ?? image);
 }
+function effectiveRoundedRadius(layer: PlaceholderLayer, canvas: CanvasSettings) {
+  if (layer.maskShape !== "rounded") return layer.maskShape === "circle" ? Math.min(layer.width, layer.height) / 2 : 0;
+  const adaptiveDefault = defaultFrameCornerRadius(canvas);
+  return layer.borderRadius <= 24 ? adaptiveDefault : layer.borderRadius;
+}
+
 
 function layerFrameWithImage(project: WallpaperProject, layer: PlaceholderLayer, natural?: { width: number; height: number }) {
   return measuredLayerFrame(layer, getImageForLayer(project, layer), natural);
@@ -487,8 +494,8 @@ function isTypingTarget(target: EventTarget | null) {
 
 function sourceKindLabel(source: ImageSource) {
   if (source.type === "pinterest-board") return "Pinterest board";
-  if (source.type === "local-file") return "Local images";
-  return "Local folder";
+  if (source.type === "local-file") return "Images";
+  return "Folder";
 }
 
 function sourceLocationLabel(source: ImageSource) {
@@ -949,14 +956,14 @@ function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourc
   const items = useMemo(() => [
     {
       id: "folder",
-      label: "Local Folder",
+      label: "Folder",
       description: "Use images from a folder",
       icon: <FolderOpen size={18} />,
       action: onAddFolder
     },
     {
       id: "images",
-      label: "Local Images",
+      label: "Images",
       description: "Select one or more image files",
       icon: <ImagePlus size={18} />,
       action: onAddImages
@@ -4056,6 +4063,13 @@ function App() {
     if (!stage) return;
 
     function onWheel(event: WheelEvent) {
+      const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+      if (horizontal && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        stage!.scrollLeft += normalizeWheelDelta(event.deltaX, event.deltaMode, stage!.clientWidth);
+        if (Math.abs(event.deltaY) > 0) stage!.scrollTop += normalizeWheelDelta(event.deltaY, event.deltaMode, stage!.clientHeight);
+        return;
+      }
       event.preventDefault();
       wheelDeltaRef.current += normalizeWheelDelta(event.deltaY, event.deltaMode, stage!.clientHeight);
       wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
@@ -4331,16 +4345,15 @@ function App() {
                     <span className="source-icon">{source.type === "local-folder" ? <FolderOpen size={17} /> : source.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                     <span className="source-copy">
                       <strong>{source.name}</strong>
-                      <span><span>{sourceKindLabel(source)}</span><span>{countLabel}{source.importStatus === "partial" ? " partial" : ""}</span></span>
+                      <span><span>{countLabel}{source.importStatus === "partial" ? " partial" : ""}</span></span>
                     </span>
-                    {selectedLayer && assigned && <span className="assigned-dot" title="Assigned to selected frame" />}
                   </button>
                   <div className="source-row-actions">
                     <button className="icon-button source-row-icon-action" title="Refresh source" aria-label="Refresh source" onClick={() => void rescanSource(source)}><RefreshCcw size={15} /></button>
                     {sourceLibraryView === "linked" ? (
                       <button className="icon-button source-row-icon-action" title="Unlink from this template" aria-label="Unlink from this template" onClick={() => unlinkSourceFromTemplate(source)}><Unlink size={15} /></button>
                     ) : linked ? (
-                      <span className="source-linked-badge">Linked</span>
+                      <span className="source-linked-badge icon-only" title="Linked to this template"><Link size={14} /></span>
                     ) : (
                       <button className="icon-button source-row-icon-action" title="Link to this template" aria-label="Link to this template" onClick={() => linkSourceToTemplate(source)}><Link size={15} /></button>
                     )}
@@ -4502,13 +4515,6 @@ function App() {
               </div>
             )}
           </div>
-          {selectedLayer?.objectKind === "text" && (
-            <TextTopBar
-              layer={selectedLayer}
-              canvas={project.canvas}
-              onPatch={(patch) => patchLayer(selectedLayer.id, patch)}
-            />
-          )}
           <div className="toolbar-cluster">
             <button className="secondary-action" disabled={wallpaperBusy} onClick={() => showNextVariation()}>
               <Shuffle size={17} />
@@ -4537,6 +4543,12 @@ function App() {
         </header>
 
         <div className="workspace-fixed-controls">
+          {selectedLayer && !selectedLayer.locked && selectedLayer.objectKind === "text" && (
+            <TextTopBar
+              layer={selectedLayer}
+              onPatch={(patch) => patchLayer(selectedLayer.id, patch)}
+            />
+          )}
           {cropModeLayerId && (
             <div className="floating-canvas-status cropping">
               <button onClick={() => setCropModeLayerId(undefined)}>Done cropping</button>
@@ -4704,6 +4716,12 @@ function App() {
                             setEditingTextLayerId(undefined);
                           }
                         }}
+                        onPaste={(event) => {
+                          const text = event.clipboardData.getData("text/plain");
+                          if (!text) return;
+                          event.preventDefault();
+                          document.execCommand("insertText", false, text);
+                        }}
                       >{layer.text ?? "Text"}</div>
                     </div>
                     {selected && !layer.locked && (
@@ -4717,6 +4735,7 @@ function App() {
               const natural = imageNaturalRef.current[layer.id];
               const frame = measuredLayerFrame(layer, image, natural);
               const selected = selectedLayerIds.includes(layer.id);
+              const roundedRadius = effectiveRoundedRadius(layer, project.canvas);
               const cropping = cropModeLayerId === layer.id;
               const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
               const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
@@ -4754,10 +4773,14 @@ function App() {
                     width: frame.width,
                     height: frame.height,
                     transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
-                    borderWidth: paperActive ? 0 : layer.borderWidth,
-                    borderColor: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
-                    borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : layer.borderRadius,
-                    overflow: rough ? "visible" : "hidden",
+                    borderWidth: 0,
+                    borderColor: "transparent",
+                    ["--layer-border-width" as string]: paperActive ? "0px" : `${Math.max(0, layer.borderWidth)}px`,
+                    ["--layer-border-inset" as string]: paperActive ? "0px" : `${Math.max(0, layer.borderWidth) * -1}px`,
+                    ["--layer-border-radius" as string]: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? "0px" : `${roundedRadius}px`,
+                    ["--layer-border-color" as string]: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
+                    borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : roundedRadius,
+                    overflow: rough || !paperActive ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, frame.width, frame.height) : undefined,
                     opacity: layer.opacity,
                     backgroundColor: paperActive ? hexWithOpacity(expandedFrameColor, expandedFrameOpacity) : layer.effects.backgroundColor,
@@ -4805,7 +4828,7 @@ function App() {
                       top: insets.top,
                       width: innerWidth,
                       height: innerHeight,
-                      borderRadius: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top)),
+                      borderRadius: paperActive ? (polaroidActive ? Math.max(0, polaroid.cornerRadius - Math.max(insets.left, insets.top)) : 0) : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : roundedRadius,
                       backgroundColor: imageBackgroundColor(layer.effects.backgroundColor, image),
                       boxShadow: expandedInnerShadow ? `inset ${expandedInnerShadow}` : layer.effects.innerShadow ? "inset 0 0 22px rgba(15,23,42,.32)" : "none"
                     }}
@@ -4832,7 +4855,7 @@ function App() {
                         return <span className="assign-source-label" style={{ fontSize: `${assignFont}px` }}><ImagePlus size={Math.round(assignFont * 1.05)} /> Assign source</span>;
                       })()
                     )}
-                    <span className="texture-overlay" style={textureStyle(layer, project.customTextures)} />
+                    <span className={`texture-overlay surface-type-${layer.effects.paper.type}`} style={textureStyle(layer, project.customTextures)} />
                     {selected && polaroidActive && inspectorTab === "effects" && image && !cropping && (
                       <PolaroidDirectImageEditor
                         layer={layer}
@@ -5078,11 +5101,10 @@ function TemplateHome({
 
 function TemplatePreview({ project, template }: { project: WallpaperProject; template: WallpaperTemplate }) {
   const canvas = template.project.canvas;
-  const [renderedPreview, setRenderedPreview] = useState<string | undefined>();
+  const [renderedPreview, setRenderedPreview] = useState<string | undefined>(template.thumbnailDataUrl);
 
   useEffect(() => {
     let canceled = false;
-    setRenderedPreview(undefined);
     const previewProject = normalizeProject(workspaceFromTemplate(project, template));
     renderProjectToDataUrl(previewProject, "png")
       .then((url) => {
@@ -5103,65 +5125,9 @@ function TemplatePreview({ project, template }: { project: WallpaperProject; tem
     />
   ) : (
     <div
-      className="generated-template-preview"
-      style={{
-        aspectRatio: `${canvas.width} / ${canvas.height}`,
-        backgroundColor: canvas.backgroundColor,
-        backgroundImage: cssImageUrl(canvas.backgroundImage?.url)
-      }}
-    >
-      {template.project.layers.filter((layer) => !layer.hidden).map((layer) => {
-        if (layer.objectKind === "text") {
-          return (
-            <span
-              key={layer.id}
-              className="generated-template-layer generated-template-text-layer"
-              style={{
-                left: `${(layer.x / canvas.width) * 100}%`,
-                top: `${(layer.y / canvas.height) * 100}%`,
-                width: `${(layer.width / canvas.width) * 100}%`,
-                height: `${(layer.height / canvas.height) * 100}%`,
-                transform: `rotate(${layer.rotation}deg)`,
-                opacity: layer.opacity,
-                color: layer.textColor ?? "#26313a",
-                fontFamily: layer.fontFamily,
-                fontSize: `${Math.max(2, ((layer.fontSize ?? 72) / canvas.width) * 100)}cqw`,
-                fontWeight: layer.fontWeight,
-                textAlign: layer.textAlign,
-                lineHeight: layer.lineHeight
-              }}
-            >{layer.text ?? "Text"}</span>
-          );
-        }
-        const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
-        const previewSource = sourceIds
-          .map((sourceId) => project.sources.find((source) => source.id === sourceId))
-          .find((source) => source && sourceImagesForPolicy(source).length);
-        const image = previewSource ? sourceImagesForPolicy(previewSource)[0] : undefined;
-        return (
-          <span
-            key={layer.id}
-            className="generated-template-layer"
-            style={{
-              left: `${(layer.x / canvas.width) * 100}%`,
-              top: `${(layer.y / canvas.height) * 100}%`,
-              width: `${(layer.width / canvas.width) * 100}%`,
-              height: `${(layer.height / canvas.height) * 100}%`,
-              transform: `rotate(${layer.rotation}deg)`,
-              borderRadius: layer.maskShape === "circle" ? "50%" : `${Math.min(18, layer.borderRadius / 2)}px`,
-              border: layer.borderWidth ? `${Math.max(1, layer.borderWidth / 8)}px solid ${hexWithOpacity(layer.borderColor, layer.borderOpacity)}` : undefined,
-              boxShadow: layer.shadow || layer.effects.paperFrame.shadowStrength > 0 ? `0 ${Math.max(3, layer.effects.paperFrame.shadowStrength * .08)}px ${Math.max(8, layer.effects.paperFrame.shadowStrength * .32)}px rgba(15,23,42,.22)` : undefined,
-              opacity: layer.opacity,
-              mixBlendMode: layer.effects.blendMode,
-              filter: cssFilter(layer.effects.filters),
-              backgroundImage: cssImageUrl(image?.url),
-              backgroundColor: image ? undefined : "rgba(255,255,255,.6)",
-              overflow: "hidden"
-            }}
-          />
-        );
-      })}
-    </div>
+      className="generated-template-preview preview-render-pending"
+      style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
+    />
   );
 }
 
@@ -5284,7 +5250,7 @@ function CanvasSurfaceOverlay({ canvas, customTextures }: { canvas: CanvasSettin
   return (
     <canvas
       ref={canvasRef}
-      className="canvas-surface-overlay"
+      className={`canvas-surface-overlay surface-type-${paper.type}`}
       aria-hidden="true"
       style={{ width: canvas.width, height: canvas.height, mixBlendMode: paper.blendMode }}
     />
@@ -5340,7 +5306,7 @@ function FrameSurfaceTextureOverlay({ layer, width, height, textureIntensity }: 
   ]);
 
   if (!textureVisible || !surfaceEffectIsVisible(paper)) return null;
-  return <canvas ref={canvasRef} className="paper-frame-texture" aria-hidden="true" style={{ width, height, mixBlendMode: "multiply" }} />;
+  return <canvas ref={canvasRef} className={`paper-frame-texture surface-type-${paper.type}`} aria-hidden="true" style={{ width, height, mixBlendMode: "multiply" }} />;
 }
 
 function BackgroundImageView({ canvas }: { canvas: CanvasSettings }) {
@@ -5508,18 +5474,16 @@ function SelectionHandles({ layer, onBeginDrag, variant }: { layer: PlaceholderL
   );
 }
 
-function TextTopBar({ layer, canvas, onPatch }: { layer: PlaceholderLayer; canvas: CanvasSettings; onPatch: (patch: Partial<PlaceholderLayer>) => void }) {
+function TextTopBar({ layer, onPatch }: { layer: PlaceholderLayer; onPatch: (patch: Partial<PlaceholderLayer>) => void }) {
   const fontSize = layer.fontSize ?? 72;
   const weight = layer.fontWeight ?? 800;
+  const selectedFont = textFontOptions.some((font) => font.value === layer.fontFamily) ? layer.fontFamily : textFontOptions[0].value;
   return (
-    <div className="text-topbar" aria-label="Text controls">
-      <select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>
-        {textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+    <div className="context-toolbar compact-context-toolbar text-topbar" aria-label="Selected text quick controls">
+      <select className="text-font-select" aria-label="Font" value={selectedFont} onChange={(event) => onPatch({ fontFamily: event.target.value })}>
+        {textFontOptions.map((font) => <option key={font.value} value={font.value}>{font.label}</option>)}
       </select>
-      <select className="text-font-select" value={layer.fontFamily ?? textFontOptions[0].value} onChange={(event) => onPatch({ fontFamily: event.target.value })}>
-        {textFontOptions.map((font) => <option key={font.label} value={font.value}>{font.label}</option>)}
-      </select>
-      <div className="text-size-stepper">
+      <div className="text-size-stepper" aria-label="Text size">
         <button aria-label="Decrease text size" onClick={() => { const next = Math.max(8, fontSize - 4); onPatch({ fontSize: next, height: estimateTextLayerHeight({ text: layer.text, fontSize: next, lineHeight: layer.lineHeight }) }); }}>−</button>
         <span>{Math.round(fontSize)}</span>
         <button aria-label="Increase text size" onClick={() => { const next = Math.min(420, fontSize + 4); onPatch({ fontSize: next, height: estimateTextLayerHeight({ text: layer.text, fontSize: next, lineHeight: layer.lineHeight }) }); }}>+</button>
@@ -6104,10 +6068,9 @@ function Properties({
       <section className="panel properties text-properties">
         <details open>
           <summary>Text <ChevronDown size={15} /></summary>
-          <label>Text style<select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>{textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
-          <label>Font<select value={layer.fontFamily ?? textFontOptions[0].value} onChange={(event) => onPatch({ fontFamily: event.target.value })}>{textFontOptions.map((font) => <option key={font.label} value={font.value}>{font.label}</option>)}</select></label>
           <label>Content<textarea value={layer.text ?? "Text"} rows={4} onChange={(event) => { const text = event.target.value; onPatch({ text, height: estimateTextLayerHeight({ text, fontSize: layer.fontSize, lineHeight: layer.lineHeight }) }); }} /></label>
           <div className="two-col">
+            <label>Font<select value={textFontOptions.some((font) => font.value === layer.fontFamily) ? layer.fontFamily : textFontOptions[0].value} onChange={(event) => onPatch({ fontFamily: event.target.value })}>{textFontOptions.map((font) => <option key={font.value} value={font.value}>{font.label}</option>)}</select></label>
             <label>Size<SoftNumberInput value={layer.fontSize ?? 72} min={8} max={400} onCommit={(value) => { const fontSize = Math.round(value); onPatch({ fontSize, height: estimateTextLayerHeight({ text: layer.text, fontSize, lineHeight: layer.lineHeight }) }); }} /></label>
             <label>Weight<SoftNumberInput value={layer.fontWeight ?? 800} min={100} max={900} step={100} onCommit={(value) => onPatch({ fontWeight: Math.round(value) })} /></label>
             <label>Color<input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
@@ -6162,6 +6125,7 @@ function Properties({
     onPatch({ effects: { ...activeLayer.effects, paperFrame, polaroid, tornPaper } });
   }
   const frameType = layer.effects.paperFrame.type;
+  const shapeControlsDisabled = frameType === "polaroid" || frameType === "torn" || frameType === "deckle";
   const polaroid = normalizePolaroidEffect(layer.effects.polaroid, layer.effects.paperFrame, layer.effects.innerShadow);
   function patchPolaroid(patch: Partial<PolaroidEffect>) {
     onPatch({ effects: { ...activeLayer.effects, polaroid: normalizePolaroidEffect({ ...polaroid, ...patch }, activeLayer.effects.paperFrame, activeLayer.effects.innerShadow) } });
@@ -6184,6 +6148,9 @@ function Properties({
   }
 
   const frameTextureType: "none" | "paper" | "crumpled-paper" = layer.effects.paper.enabled === false || layer.effects.paper.type === "none" ? "none" : layer.effects.paper.type === "crumpled-paper" ? "crumpled-paper" : "paper";
+  function patchLayerPaper(patch: Partial<PaperTextureEffect>) {
+    onPatch({ effects: { ...activeLayer.effects, paper: { ...activeLayer.effects.paper, ...patch } } });
+  }
   function patchFrameTexture(type: "none" | "paper" | "crumpled-paper") {
     if (type === "none") {
       const nextPaperFrame = { ...activeLayer.effects.paperFrame, textureIntensity: 0 };
@@ -6271,10 +6238,11 @@ function Properties({
           <div className="compact-action-row"><button className="button secondary" onClick={() => onMatchAspect(layer)}>Match Image</button><button className="button ghost" onClick={() => onResetFrame(layer)}>Reset Frame</button><button className="button ghost" disabled={!source} onClick={() => onRegenerate(layer)}><Shuffle size={15} /> Shuffle</button></div>
         </details>
 
-        <details open>
+        <details open className={shapeControlsDisabled ? "shape-controls-disabled" : undefined}>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
-          <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
-          <div className="two-col"><label>Border Thickness<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label className="rounded-color-label">Border Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
+          {shapeControlsDisabled && <p className="control-note">Border and shape are handled by the active paper style. Set Paper to None to edit them.</p>}
+          <label>Shape<select value={layer.maskShape} disabled={shapeControlsDisabled} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
+          <div className="two-col"><label>Border Thickness<SoftNumberInput value={layer.borderWidth} min={0} disabled={shapeControlsDisabled} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={shapeControlsDisabled || layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label className="rounded-color-label">Border Color<input type="color" value={layer.borderColor} disabled={shapeControlsDisabled} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} disabled={shapeControlsDisabled} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
           <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
         </details>
 

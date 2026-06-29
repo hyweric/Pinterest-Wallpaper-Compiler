@@ -412,8 +412,18 @@ export function polaroidInsets(effect: PolaroidEffect, width: number, height: nu
 }
 
 export function tornPaperInsets(effect: TornPaperEffect, width: number, height: number): FrameInsets {
-  const inset = Math.max(0, Math.min(Math.min(width, height) * 0.45, effect.imageInset));
-  return { top: inset, right: inset, bottom: inset, left: inset };
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  const baseInset = Math.max(0, Math.min(Math.min(safeWidth, safeHeight) * 0.45, effect.imageInset));
+  const aspect = safeWidth / safeHeight;
+  const horizontalEdgeBoost = aspect > 1 ? Math.min(baseInset * 0.28, baseInset * (aspect - 1) * 0.1) : 0;
+  const verticalEdgeBoost = aspect < 1 ? Math.min(baseInset * 0.28, baseInset * ((1 / aspect) - 1) * 0.1) : 0;
+  return {
+    top: Math.min(safeHeight * 0.45, baseInset + horizontalEdgeBoost),
+    right: Math.min(safeWidth * 0.45, baseInset + verticalEdgeBoost),
+    bottom: Math.min(safeHeight * 0.45, baseInset + horizontalEdgeBoost),
+    left: Math.min(safeWidth * 0.45, baseInset + verticalEdgeBoost)
+  };
 }
 
 export function shadowToCss(effect: ShadowEffect) {

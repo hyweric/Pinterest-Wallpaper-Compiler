@@ -60,6 +60,29 @@ function shapePath(context: CanvasRenderingContext2D, layer: Pick<PlaceholderLay
   roundedPath(context, layer.width, layer.height, geometry.radius, geometry.ellipse);
 }
 
+function innerShapePath(context: CanvasRenderingContext2D, layer: Pick<PlaceholderLayer, "width" | "height" | "borderRadius" | "maskShape">, inset: number) {
+  const safeInset = Math.max(0, Math.min(inset, layer.width / 2, layer.height / 2));
+  const width = Math.max(1, layer.width - safeInset * 2);
+  const height = Math.max(1, layer.height - safeInset * 2);
+  const geometry = resolveMaskGeometry(layer.maskShape, layer.width, layer.height, layer.borderRadius);
+  context.save();
+  context.translate(safeInset, safeInset);
+  roundedPath(context, width, height, geometry.radius, geometry.ellipse);
+  context.restore();
+}
+
+function outerStrokeShapePath(context: CanvasRenderingContext2D, layer: Pick<PlaceholderLayer, "width" | "height" | "borderRadius" | "maskShape">, outset: number) {
+  const safeOutset = Math.max(0, outset);
+  const width = Math.max(1, layer.width + safeOutset * 2);
+  const height = Math.max(1, layer.height + safeOutset * 2);
+  const geometry = resolveMaskGeometry(layer.maskShape, layer.width, layer.height, layer.borderRadius);
+  const radius = geometry.ellipse ? geometry.radius : geometry.radius + safeOutset;
+  context.save();
+  context.translate(-safeOutset, -safeOutset);
+  roundedPath(context, width, height, radius, geometry.ellipse);
+  context.restore();
+}
+
 function seeded(seed: number) {
   let state = Math.max(1, Math.floor(seed || 1));
   return () => {
@@ -323,7 +346,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
 
   context.save();
   context.translate(insets.left, insets.top);
-  const innerRadius = layer.maskShape === "circle" ? 0 : Math.max(0, layer.borderRadius - Math.max(insets.left, insets.top));
+  const innerRadius = polaroidActive ? Math.max(0, polaroid.cornerRadius - Math.max(insets.left, insets.top)) : tornActive ? 0 : layer.maskShape === "circle" ? 0 : layer.borderRadius;
   roundedPath(context, innerWidth, innerHeight, innerRadius, layer.maskShape === "circle");
   context.clip();
   context.shadowColor = "transparent";
@@ -395,15 +418,16 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
 
   context.restore();
 
-  if (layer.borderWidth > 0) {
+  if (!polaroidActive && !tornActive && layer.borderWidth > 0) {
     context.save();
     context.translate(frame.x + frame.width / 2, frame.y + frame.height / 2);
     context.rotate(((layer.rotation + frameRotation) * Math.PI) / 180);
     context.globalAlpha = layer.opacity * layer.borderOpacity;
     context.translate(-frame.width / 2, -frame.height / 2);
-    shapePath(context, visualLayer);
+    outerStrokeShapePath(context, visualLayer, layer.borderWidth / 2);
     context.strokeStyle = layer.borderColor;
     context.lineWidth = layer.borderWidth;
+    context.lineJoin = "round";
     context.stroke();
     context.restore();
   }

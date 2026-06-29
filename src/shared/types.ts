@@ -377,6 +377,8 @@ export interface PaperTextureEffect {
   noise?: number;
   roughness?: number;
   tone?: number;
+  tintColor?: string;
+  tintStrength?: number;
   customTextureId?: string;
 }
 

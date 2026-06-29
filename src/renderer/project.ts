@@ -129,6 +129,10 @@ export function createDefaultSourceState(sourceId?: string): PlaceholderSourceSt
   };
 }
 
+export function defaultFrameCornerRadius(canvas: Pick<CanvasSettings, "width" | "height">) {
+  return Math.round(Math.min(72, Math.max(24, Math.min(canvas.width, canvas.height) * 0.032)));
+}
+
 export function createPlaceholder(canvas: CanvasSettings, index: number): PlaceholderLayer {
   const width = Math.round(canvas.width * 0.28);
   const height = Math.round(canvas.height * 0.42);
@@ -146,9 +150,9 @@ export function createPlaceholder(canvas: CanvasSettings, index: number): Placeh
     cropMode: "cover",
     alignment: "center",
     borderWidth: 0,
-    borderColor: "#ffffff",
+    borderColor: "#000000",
     borderOpacity: 1,
-    borderRadius: 24,
+    borderRadius: defaultFrameCornerRadius(canvas),
     maskShape: "rounded",
     shadow: true,
     opacity: 1,
@@ -193,13 +197,13 @@ export function createTextLayer(canvas: CanvasSettings, index: number): Placehol
     crop: { offsetX: 0, offsetY: 0, zoom: 1 },
     effects: createDefaultEffects(),
     sourceState: createDefaultSourceState(),
-    fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif",
+    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
     fontSize,
-    fontWeight: 600,
-    textColor: "#6f675e",
+    fontWeight: 800,
+    textColor: "#26313a",
     textAlign: "center",
     lineHeight: 1.12,
-    letterSpacing: 0.2
+    letterSpacing: 0
   };
 }
 
@@ -236,7 +240,7 @@ export function createDefaultPaper(): PaperTextureEffect {
     seed: 1,
     noise: 18,
     roughness: 20,
-    tone: 0
+    tone: 0,
   };
 }
 

@@ -9,8 +9,10 @@ test("phase 22.3.10 removes the duplicate outer Polaroid border", async () => {
   const renderer = await source("src/renderer/main.tsx");
   const styles = await source("src/renderer/styles.css");
 
-  assert.match(renderer, /borderWidth:\s*paperActive \? 0 : layer\.borderWidth/);
-  assert.match(renderer, /borderColor:\s*paperActive \? "transparent" : hexWithOpacity/);
+  assert.match(renderer, /\["--layer-border-width" as string\]:\s*paperActive \? "0px" : `\$\{Math\.max\(0, layer\.borderWidth\)\}px`/);
+  assert.match(renderer, /\["--layer-border-color" as string\]:\s*paperActive \? "transparent" : hexWithOpacity/);
+  assert.match(styles, /\.placeholder::after \{[\s\S]*box-shadow:\s*inset 0 0 0 var\(--layer-border-width/);
+  assert.match(styles, /\.placeholder\.paper-frame::after \{[\s\S]*box-shadow:\s*none !important;/);
   assert.doesNotMatch(styles, /\.placeholder\.polaroid \{[\s\S]*border:\s*16px solid #fffdf8 !important;/);
   assert.match(styles, /\.placeholder\.paper-frame\.polaroid \{[\s\S]*border-width:\s*0 !important;[\s\S]*border-color:\s*transparent !important;/);
 });

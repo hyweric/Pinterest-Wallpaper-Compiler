@@ -185,6 +185,8 @@ export function resizeCanvasAndLayers(
         y: Math.round(layer.y * scaleY),
         width: Math.max(40, Math.round(layer.width * scaleX)),
         height: Math.max(40, Math.round(layer.height * scaleY)),
+        borderRadius: Math.round(layer.borderRadius * uniformScale),
+        borderWidth: Math.round(layer.borderWidth * uniformScale),
         crop: {
           ...layer.crop,
           offsetX: layer.crop.offsetX * scaleX,

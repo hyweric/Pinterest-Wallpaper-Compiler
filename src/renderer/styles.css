@@ -7432,3 +7432,467 @@ select,
 .pinterest-error.partial {
   display: none !important;
 }
+
+/* Phase 29: border geometry, source spacing, texture tint controls, and preview stability. */
+.placeholder::after {
+  z-index: 8 !important;
+  border-radius: inherit !important;
+  clip-path: inherit !important;
+  box-shadow: inset 0 0 0 var(--layer-border-width, 0px) var(--layer-border-color, transparent) !important;
+}
+.placeholder.paper-frame::after {
+  box-shadow: none !important;
+}
+.shape-controls-disabled {
+  opacity: 0.92;
+}
+.shape-controls-disabled label:has(select:disabled),
+.shape-controls-disabled label:has(input:disabled) {
+  opacity: 0.55;
+}
+.control-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(126, 181, 197, 0.10);
+  border: 1px solid rgba(126, 181, 197, 0.16);
+  color: #667482;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.preview-render-pending {
+  background: linear-gradient(135deg, rgba(244,242,238,.94), rgba(235,239,240,.88)) !important;
+}
+
+.source-row {
+  grid-template-columns: minmax(0, 1fr) auto !important;
+}
+.source-row-main,
+.source-row-main:hover,
+.source-row.active .source-row-main,
+.source-row.assigned .source-row-main {
+  grid-template-columns: 38px minmax(0, 1fr) !important;
+  gap: 12px !important;
+}
+.source-row-main .source-icon {
+  width: 38px !important;
+  height: 38px !important;
+}
+.assigned-dot {
+  display: none !important;
+}
+.source-copy > span {
+  gap: 0 !important;
+}
+.source-row-actions {
+  gap: 5px !important;
+}
+.source-row-icon-action,
+.source-linked-badge.icon-only {
+  width: 32px !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border-radius: 12px !important;
+}
+.source-linked-badge.icon-only {
+  color: #547383 !important;
+  background: rgba(238, 248, 251, 0.92) !important;
+  border: 1px solid rgba(126,181,197,0.18) !important;
+}
+
+.text-topbar {
+  min-height: 48px !important;
+  height: 48px !important;
+  min-width: min(640px, 58vw) !important;
+  max-width: min(900px, 66vw) !important;
+  padding: 6px !important;
+  gap: 6px !important;
+  border-radius: 16px !important;
+  border: 1px solid rgba(126, 181, 197, 0.18) !important;
+  background: rgba(255,255,255,0.90) !important;
+  box-shadow: 0 12px 32px rgba(56,65,76,.09) !important;
+}
+.text-topbar select,
+.text-size-stepper,
+.text-topbar > button,
+.text-color-control.full-color-control {
+  height: 36px !important;
+  min-height: 36px !important;
+  border-radius: 13px !important;
+}
+.text-topbar select {
+  min-width: 132px !important;
+  max-width: 190px !important;
+  padding-left: 11px !important;
+}
+.text-topbar .text-font-select {
+  min-width: 138px !important;
+  max-width: 210px !important;
+}
+.text-size-stepper {
+  min-width: 112px !important;
+  grid-template-columns: 32px minmax(40px, 1fr) 32px !important;
+}
+.text-size-stepper span {
+  font-size: 15px !important;
+}
+.text-topbar > button,
+.text-color-control.full-color-control {
+  min-width: 40px !important;
+  width: 40px !important;
+  padding: 0 !important;
+}
+
+.texture-color-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.paper-frame-texture,
+.texture-overlay,
+.canvas-surface-overlay {
+  filter: none !important;
+}
+.surface-type-dotted-paper {
+  filter: contrast(1.22) saturate(1.08) brightness(0.98) !important;
+}
+.surface-type-paper,
+.surface-type-crumpled-paper,
+.surface-type-grid-paper {
+  filter: contrast(1.08) saturate(1.02) !important;
+}
+
+
+/* Phase 29.1: tighter text/source UI, same-radius inset borders, and upward overflow menu. */
+.toolbar-overflow {
+  top: auto !important;
+  bottom: calc(100% + 9px) !important;
+  right: 0 !important;
+  z-index: 20000 !important;
+}
+
+.placeholder::after {
+  content: "";
+  position: absolute;
+  inset: var(--layer-border-inset, 0px) !important;
+  pointer-events: none;
+  z-index: 8 !important;
+  border: var(--layer-border-width, 0px) solid var(--layer-border-color, transparent) !important;
+  border-radius: inherit !important;
+  box-shadow: none !important;
+  clip-path: none !important;
+  box-sizing: border-box !important;
+}
+.placeholder.paper-frame::after {
+  border-width: 0 !important;
+  border-color: transparent !important;
+}
+
+.workspace-fixed-controls .text-topbar.context-toolbar.compact-context-toolbar {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  position: relative !important;
+  left: auto !important;
+  top: auto !important;
+  transform: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: min(420px, calc(100vw - 56px)) !important;
+  min-height: 48px !important;
+  height: 48px !important;
+  padding: 6px !important;
+  gap: 6px !important;
+  border-radius: 16px !important;
+  border: 1px solid rgba(58, 49, 42, 0.12) !important;
+  background: rgba(255,255,255,0.90) !important;
+  box-shadow: 0 18px 50px rgba(80,82,86,0.10) !important;
+  backdrop-filter: blur(18px) !important;
+  z-index: 80 !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper,
+.workspace-fixed-controls .text-topbar > button,
+.workspace-fixed-controls .text-topbar .text-color-control.full-color-control {
+  height: 36px !important;
+  min-height: 36px !important;
+  border-radius: 13px !important;
+  background: rgba(255,255,255,0.84) !important;
+  border: 1px solid rgba(43,48,58,0.08) !important;
+  box-shadow: none !important;
+  color: #252b35 !important;
+  font-size: 14px !important;
+  font-weight: 820 !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper {
+  min-width: 112px !important;
+  grid-template-columns: 32px minmax(40px, 1fr) 32px !important;
+  padding: 0 4px !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper button {
+  height: 30px !important;
+  min-height: 30px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper span {
+  font-size: 15px !important;
+  font-weight: 850 !important;
+  text-align: center !important;
+}
+.workspace-fixed-controls .text-topbar > button,
+.workspace-fixed-controls .text-topbar .text-color-control.full-color-control {
+  width: 40px !important;
+  min-width: 40px !important;
+  padding: 0 !important;
+}
+
+.source-list.collection-list {
+  gap: 6px !important;
+  padding-right: 4px !important;
+}
+.source-row {
+  min-height: 54px !important;
+  padding: 7px 8px !important;
+  margin: 0 4px 6px !important;
+  border-radius: 16px !important;
+}
+.source-row-main,
+.source-row-main:hover,
+.source-row.active .source-row-main,
+.source-row.assigned .source-row-main {
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  gap: 10px !important;
+  min-height: 36px !important;
+  padding: 0 !important;
+}
+.source-row-main .source-icon {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 11px !important;
+}
+.source-row-actions {
+  gap: 4px !important;
+}
+.source-row-icon-action,
+.source-linked-badge.icon-only {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  border-radius: 11px !important;
+}
+.source-copy {
+  gap: 2px !important;
+}
+.source-copy strong {
+  font-size: 12px !important;
+  line-height: 1.08 !important;
+}
+.source-copy span {
+  font-size: 10px !important;
+  line-height: 1.08 !important;
+}
+.texture-color-row {
+  display: none !important;
+}
+
+/* Phase 29.2: restore font controls, outside-aligned rounded borders, downward overflow layering, and tighter source cards. */
+.minimal-toolbar {
+  z-index: 1200 !important;
+}
+.toolbar-overflow {
+  top: calc(100% + 9px) !important;
+  bottom: auto !important;
+  right: 0 !important;
+  z-index: 100000 !important;
+}
+.workspace-fixed-controls {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: flex-start !important;
+  z-index: 60 !important;
+  pointer-events: none !important;
+}
+.workspace-fixed-controls .context-toolbar {
+  pointer-events: auto !important;
+}
+.placeholder:not(.paper-frame) {
+  overflow: visible !important;
+}
+.placeholder::after {
+  content: "";
+  position: absolute;
+  inset: var(--layer-border-inset, 0px) !important;
+  pointer-events: none;
+  z-index: 8 !important;
+  border: var(--layer-border-width, 0px) solid var(--layer-border-color, transparent) !important;
+  border-radius: calc(var(--layer-border-radius, 0px) + var(--layer-border-width, 0px)) !important;
+  box-shadow: none !important;
+  clip-path: none !important;
+  box-sizing: border-box !important;
+}
+.placeholder.paper-frame::after {
+  inset: 0 !important;
+  border-width: 0 !important;
+  border-color: transparent !important;
+}
+.workspace-fixed-controls .text-topbar.context-toolbar.compact-context-toolbar {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  position: relative !important;
+  left: auto !important;
+  top: auto !important;
+  transform: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: min(560px, calc(100vw - 56px)) !important;
+  min-height: 44px !important;
+  height: 44px !important;
+  padding: 6px !important;
+  gap: 5px !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(58, 49, 42, 0.12) !important;
+  background: rgba(255,255,255,0.90) !important;
+  box-shadow: 0 18px 50px rgba(80,82,86,0.10) !important;
+  backdrop-filter: blur(18px) !important;
+  z-index: 80 !important;
+  font-size: 12px !important;
+}
+.workspace-fixed-controls .text-topbar select.text-font-select,
+.workspace-fixed-controls .text-topbar .text-size-stepper,
+.workspace-fixed-controls .text-topbar > button,
+.workspace-fixed-controls .text-topbar .text-color-control.full-color-control {
+  height: 32px !important;
+  min-height: 32px !important;
+  border-radius: 10px !important;
+  background: rgba(255,255,255,0.84) !important;
+  border: 1px solid rgba(43,48,58,0.08) !important;
+  box-shadow: none !important;
+  color: #252b35 !important;
+  font-size: 12px !important;
+  font-weight: 790 !important;
+}
+.workspace-fixed-controls .text-topbar select.text-font-select {
+  width: 132px !important;
+  min-width: 132px !important;
+  max-width: 132px !important;
+  padding: 0 26px 0 9px !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper {
+  min-width: 92px !important;
+  width: 92px !important;
+  grid-template-columns: 26px minmax(28px, 1fr) 26px !important;
+  padding: 0 2px !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper button {
+  height: 26px !important;
+  min-height: 26px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 820 !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper span {
+  text-align: center !important;
+  font-size: 12.5px !important;
+  font-weight: 820 !important;
+  line-height: 1 !important;
+}
+.workspace-fixed-controls .text-topbar > button,
+.workspace-fixed-controls .text-topbar .text-color-control.full-color-control {
+  width: 34px !important;
+  min-width: 34px !important;
+  padding: 0 !important;
+}
+.source-list.collection-list {
+  gap: 3px !important;
+  padding-right: 2px !important;
+}
+.source-row {
+  min-height: 46px !important;
+  padding: 4px 5px !important;
+  margin: 0 2px 4px !important;
+  border-radius: 14px !important;
+}
+.source-row-main,
+.source-row-main:hover,
+.source-row.active .source-row-main,
+.source-row.assigned .source-row-main {
+  grid-template-columns: 28px minmax(0, 1fr) !important;
+  gap: 8px !important;
+  min-height: 32px !important;
+  padding: 0 !important;
+}
+.source-row-main .source-icon {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 9px !important;
+}
+.source-row-actions {
+  gap: 3px !important;
+}
+.source-row-icon-action,
+.source-linked-badge.icon-only,
+.source-delete {
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  border-radius: 9px !important;
+}
+.source-copy {
+  gap: 1px !important;
+}
+.source-copy strong {
+  font-size: 11.5px !important;
+  line-height: 1.04 !important;
+}
+.source-copy span {
+  font-size: 9.5px !important;
+  line-height: 1.04 !important;
+  margin-top: 0 !important;
+}
+
+/* Phase 29.3: meet text and frame/image quick toolbar heights in the middle. */
+.workspace-fixed-controls .text-topbar.context-toolbar.compact-context-toolbar {
+  min-height: 50px !important;
+  height: 50px !important;
+  padding: 7px 6px !important;
+  border-radius: 14px !important;
+}
+.workspace-fixed-controls .text-topbar select.text-font-select,
+.workspace-fixed-controls .text-topbar .text-size-stepper,
+.workspace-fixed-controls .text-topbar > button,
+.workspace-fixed-controls .text-topbar .text-color-control.full-color-control {
+  height: 34px !important;
+  min-height: 34px !important;
+  border-radius: 11px !important;
+}
+.workspace-fixed-controls .text-topbar .text-size-stepper button {
+  height: 28px !important;
+  min-height: 28px !important;
+}
+.workspace-fixed-controls .context-toolbar[aria-label="Selected image quick controls"] {
+  min-height: 56px !important;
+  height: 56px !important;
+  padding: 7px 9px !important;
+  gap: 8px !important;
+  border-radius: 19px !important;
+}
+.workspace-fixed-controls .context-toolbar[aria-label="Selected image quick controls"] .context-toolbar-button-group,
+.workspace-fixed-controls .context-toolbar[aria-label="Selected image quick controls"] .mini-slider {
+  min-height: 40px !important;
+  height: 40px !important;
+}
+.workspace-fixed-controls .context-toolbar[aria-label="Selected image quick controls"] button {
+  min-height: 40px !important;
+  height: 40px !important;
+}
