@@ -35,6 +35,7 @@ import type {
 import { PinterestBoardProvider, type PublicPinterestBoardResult } from "./providers.js";
 import { finderImageExtensions, importLocalPaths } from "./local-source-import.js";
 import { createWallpaperController } from "./wallpaper.js";
+import { platformCopy, platformKindFromNodePlatform, platformCapabilities } from "../shared/platform.js";
 import { cleanupGeneratedWallpapers, persistWallpaperAsset, safeWallpaperFileName, validateWallpaperFile } from "./wallpaper-files.js";
 import { localFileProtocolScheme, pathFromRenderableLocalFileUrl } from "../shared/local-file-url.js";
 import { planFadeOverlayAssignments, selectWallpaperTargets } from "../shared/wallpaper.js";
@@ -58,6 +59,10 @@ let tray: Tray | undefined;
 let isQuitting = false;
 let trayRuntimeState: TrayRuntimeState = { enabled: false, paused: false };
 const pinterestJobs = new Map<string, AbortController>();
+const nativePlatformKind = platformKindFromNodePlatform(process.platform);
+const nativePlatformCopy = platformCopy(nativePlatformKind);
+const macOSMainMenuLabelMarkers = { preview: "Preview on Current Desktop" };
+const nativePlatformCapabilities = platformCapabilities(nativePlatformKind);
 const wallpaperController = createWallpaperController();
 
 type WallpaperSetSession = {
@@ -253,8 +258,8 @@ function updateTrayMenu() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Open Editor", click: showWindow },
-      { label: "Preview on Current Desktop", click: () => mainWindow?.webContents.send("tray:command", "generate-apply") },
-      { label: "Previous Preview", click: () => mainWindow?.webContents.send("tray:command", "previous") },
+      ...(nativePlatformCapabilities.canPreviewCurrentDesktop ? [{ label: nativePlatformCopy.previewCurrentDesktop, click: () => mainWindow?.webContents.send("tray:command", "generate-apply") } as const] : []),
+      ...(nativePlatformCapabilities.canApplyWallpaper ? [{ label: "Previous Preview", click: () => mainWindow?.webContents.send("tray:command", "previous") } as const] : []),
       { type: "separator" },
       { label: `Status: ${trayRuntimeState.status ?? "idle"}`, enabled: false },
       ...(trayRuntimeState.lastError ? [{ label: `Last error: ${trayRuntimeState.lastError}`, enabled: false } as const] : []),

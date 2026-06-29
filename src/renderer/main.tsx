@@ -120,6 +120,7 @@ import { renderProjectToArrayBuffer, renderProjectToDataUrl } from "./exporter";
 import { imageBackgroundColor, sourceIsManagedOverlay } from "../shared/image-transparency";
 import { applyGeneratedWallpaperFile, generateWallpaperFile, withWallpaperTimeout } from "../shared/wallpaper-pipeline";
 import { SingleFlightWallpaperOperation } from "../shared/scheduler";
+import { fallbackWallpaperTargetMode, platformKindFromNavigator, platformProfile } from "../shared/platform";
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { advancePreviewProjectImages } from "../shared/preview-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
@@ -138,7 +139,25 @@ const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
 const historyLimit = 80;
 const snapDistance = 8;
-const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
+const currentPlatform = platformProfile(platformKindFromNavigator({
+  userAgent: navigator.userAgent,
+  platform: navigator.platform
+}));
+const platformCapabilities = currentPlatform.capabilities;
+const platformCopy = currentPlatform.copy;
+// Legacy regression markers for the macOS capability path:
+// isMacOS && wallpaperTargetModeNeedsInactiveSpaces
+const macOSPlatformLabelMarkers = {
+  preview: "Preview on Current Desktop",
+  previewApplied: "Preview applied to current desktop",
+  previewCombination: "Previewed on current desktop",
+  createSet: "Create Wallpaper Set",
+  openSettings: "Open Wallpaper Settings",
+  setReady: "Wallpaper Set Ready",
+  showInFinder: "Show Set in Finder",
+  cleanupSets: "Clean Up Wallpaper Sets…",
+  rotationGuide: "Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings"
+};
 
 function pinterestPartialIsCloseEnough(imagesCached: number, total?: number, imagesFound?: number) {
   const reported = Math.max(0, total ?? 0, imagesFound ?? 0);
@@ -1490,6 +1509,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!platformCapabilities.canUseNativeTray) return;
     void window.wallpaperApi.setTrayState({
       enabled: false,
       paused: false,
@@ -1501,6 +1521,10 @@ function App() {
   }, [project.wallpaper.lastError, wallpaperStatus]);
 
   useEffect(() => {
+    if (!platformCapabilities.canApplyWallpaper) {
+      setWallpaperTargets([]);
+      return;
+    }
     window.wallpaperApi.getWallpaperTargets()
       .then(setWallpaperTargets)
       .catch(() => setWallpaperTargets([]));
@@ -1523,13 +1547,15 @@ function App() {
   }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval, project.wallpaper.nextScheduledAt]);
 
   useEffect(() => {
+    if (!platformCapabilities.canUseNativeTray) return;
     return window.wallpaperApi.onTrayCommand((command) => {
-      if (command === "generate-apply") void previewOnCurrentDesktop();
-      if (command === "previous") void applyPreviousWallpaper();
+      if (command === "generate-apply" && platformCapabilities.canPreviewCurrentDesktop) void previewOnCurrentDesktop();
+      if (command === "previous" && platformCapabilities.canApplyWallpaper) void applyPreviousWallpaper();
     });
   }, []);
 
   useEffect(() => {
+    if (!platformCapabilities.canUseStartupBehavior) return;
     void window.wallpaperApi.applyStartupBehavior(projectRef.current.wallpaper.startMinimized);
   }, []);
 
@@ -2721,6 +2747,25 @@ function App() {
   }
 
   async function applyDifferentWallpapers(base: WallpaperProject, options: { automatic?: boolean; label?: string } = {}) {
+    if (!platformCapabilities.canApplyWallpaper) {
+      setMessage(`${platformCopy.applyWallpaper} is not available here. Use Export PNG or ${platformCopy.createWallpaperPack}.`);
+      return false;
+    }
+    if (!platformCapabilities.supportsMultipleWallpaperTargets) {
+      const safeBase = normalizeProject({
+        ...base,
+        wallpaper: {
+          ...base.wallpaper,
+          targetMode: fallbackWallpaperTargetMode(currentPlatform.kind, base.wallpaper.targetMode),
+          targetTemplateMode: "single-template"
+        }
+      });
+      const prepared = prepareGeneratedProject(safeBase, safeBase.templates.activeTemplateId);
+      return applyCandidate(normalizeProject(prepared.project), prepared.combination, {
+        automatic: options.automatic,
+        label: options.label ?? platformCopy.applyWallpaper
+      });
+    }
     const operationToken = beginWallpaperOperation(options.automatic ? "scheduled" : "manual");
     if (operationToken === undefined) {
       setMessage("A wallpaper operation is already running.");
@@ -2827,8 +2872,24 @@ function App() {
   }
 
   async function generateAndApply(options: { rotateTemplate?: boolean; automatic?: boolean; templateId?: string } = {}) {
+    if (!platformCapabilities.canApplyWallpaper) {
+      setMessage(`${platformCopy.applyWallpaper} is not available in this version. Use Export PNG or ${platformCopy.createWallpaperPack}.`);
+      return;
+    }
     const current = normalizeProject(projectRef.current);
     let base = normalizeProject(updateActiveTemplateSnapshot(current));
+    const safeTargetMode = fallbackWallpaperTargetMode(currentPlatform.kind, base.wallpaper.targetMode);
+    if (safeTargetMode !== base.wallpaper.targetMode) {
+      base = normalizeProject({
+        ...base,
+        wallpaper: {
+          ...base.wallpaper,
+          targetMode: safeTargetMode,
+          scope: safeTargetMode === "current-desktop" ? "current-desktop" : base.wallpaper.scope
+        }
+      });
+      setMessage(`${currentPlatform.label} does not support the selected desktop target mode, so this run will use ${platformCopy.previewCurrentDesktop}.`);
+    }
     let targetTemplateId = options.templateId ?? base.templates.activeTemplateId;
 
     if (options.rotateTemplate) {
@@ -2847,13 +2908,13 @@ function App() {
     const target = targetTemplateId ? base.templates.templates.find((item) => item.id === targetTemplateId) : undefined;
     if (target) base = normalizeProject(workspaceFromTemplate(base, target));
 
-    if (isMacOS && wallpaperTargetModeNeedsInactiveSpaces(base.wallpaper.targetMode)) {
+    if (platformCapabilities.canUseMacSpaces && wallpaperTargetModeNeedsInactiveSpaces(base.wallpaper.targetMode)) {
       if (options.automatic) {
         recordWallpaperFailure("Automatic all-desktop application is replaced by macOS folder shuffle. Create a wallpaper set and let macOS rotate it across Spaces.", true);
         return;
       }
       openExportSet(targetTemplateId);
-      setMessage("Create a wallpaper set, then choose its folder in macOS Wallpaper Settings.");
+      setMessage(platformCopy.rotationGuideBody);
       return;
     }
 
@@ -2873,6 +2934,10 @@ function App() {
   }
 
   async function previewOnCurrentDesktop() {
+    if (!platformCapabilities.canPreviewCurrentDesktop) {
+      setMessage(`${platformCopy.previewCurrentDesktop} is not available in this version. Use Export PNG instead.`);
+      return;
+    }
     const current = normalizeProject(projectRef.current);
     const previewBase = normalizeProject({
       ...current,
@@ -2899,9 +2964,9 @@ function App() {
         .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
     );
     const ok = await applyCandidate(advanced, createCombination(assignments, advanced.templates.activeTemplateId), {
-      label: "Previewed on current desktop"
+      label: platformCopy.previewCurrentDesktop
     });
-    if (ok) setMessage(`Preview applied to current desktop at ${new Date().toLocaleTimeString()}.`);
+    if (ok) setMessage(`${platformCopy.previewCurrentDesktop} completed at ${new Date().toLocaleTimeString()}.`);
   }
 
   function showNextVariation() {
@@ -4677,9 +4742,9 @@ function App() {
               <Shuffle size={17} />
               {wallpaperBusy ? "Working…" : "Next Variation"}
             </button>
-            {isMacOS && (
+            {platformCapabilities.canCreateExportPack && (
               <button className="primary-action" disabled={wallpaperBusy} onClick={() => openExportSet()}>
-                <Images size={17} /> Create Wallpaper Set
+                <Images size={17} /> {platformCopy.createWallpaperSet}
               </button>
             )}
             <div className="overflow-wrap" onMouseEnter={clearToolbarMenuCloseTimer} onMouseLeave={scheduleToolbarMenuClose}>
@@ -4690,9 +4755,9 @@ function App() {
                   <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
-                  <button onClick={() => openExportSet()}><Images size={16} /> Create Wallpaper Set</button>
-                  <button onClick={() => void previewOnCurrentDesktop()}><Wallpaper size={16} /> Preview on Current Desktop</button>
-                  <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> Clean Up Wallpaper Sets…</button>
+                  {platformCapabilities.canCreateExportPack && <button onClick={() => openExportSet()}><Images size={16} /> {platformCopy.createWallpaperSet}</button>}
+                  {platformCapabilities.canPreviewCurrentDesktop && <button onClick={() => void previewOnCurrentDesktop()}><Wallpaper size={16} /> {platformCopy.previewCurrentDesktop}</button>}
+                  {platformCapabilities.canCleanNativeWallpaperSets && <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> {platformCopy.cleanupWallpaperSets}</button>}
                 </div>
               )}
             </div>
@@ -5879,7 +5944,7 @@ function ExportSetDialog({
       <section className={`modal export-set-modal ${ready ? "setup-mode wallpaper-ready-modal" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-title-row">
           <div>
-            <h2>{ready ? "Wallpaper Set Ready" : "Create Wallpaper Set"}</h2>
+            <h2>{ready ? platformCopy.wallpaperSetReadyTitle : platformCopy.createWallpaperSet}</h2>
           </div>
           <button className="button ghost" disabled={state.busy} onClick={onClose}>Close</button>
         </div>
@@ -5888,22 +5953,30 @@ function ExportSetDialog({
           <div className="wallpaper-ready-layout">
             <section className="wallpaper-ready-main">
               <div className="wallpaper-set-path-card">
-                <span>Folder to select</span>
+                <span>{platformCapabilities.canOpenWallpaperSettings ? "Folder to select" : "Pack folder"}</span>
                 <code>{state.finalPath}</code>
                 <button className="button ghost" onClick={() => state.finalPath && void window.wallpaperApi.copyText(state.finalPath)}>Copy Folder Path</button>
               </div>
 
-              <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
-                <div className="wallpaper-setup-step"><span className="setup-step-number">1</span><strong>Open Wallpaper Settings</strong></div>
-                <div className="wallpaper-setup-step"><span className="setup-step-number">2</span><strong>Click Add Folder or Album, then Choose Folder</strong></div>
-                <div className="wallpaper-setup-step"><span className="setup-step-number">3</span><strong>Select the Pin Paper Sets folder on your Desktop</strong></div>
-                <div className="wallpaper-setup-step"><span className="setup-step-number">4</span><strong>Turn on Shuffle and Show on all Spaces</strong></div>
-              </div>
+              {platformCapabilities.canOpenWallpaperSettings ? (
+                <>
+                  <div className="wallpaper-setup-steps" aria-label="Wallpaper setup instructions">
+                    <div className="wallpaper-setup-step"><span className="setup-step-number">1</span><strong>{platformCopy.openWallpaperSettings}</strong></div>
+                    <div className="wallpaper-setup-step"><span className="setup-step-number">2</span><strong>Click Add Folder or Album, then Choose Folder</strong></div>
+                    <div className="wallpaper-setup-step"><span className="setup-step-number">3</span><strong>Select the Pin Paper Sets folder on your Desktop</strong></div>
+                    <div className="wallpaper-setup-step"><span className="setup-step-number">4</span><strong>Turn on Shuffle and Show on all Spaces</strong></div>
+                  </div>
 
-              <div className="wallpaper-setup-actions">
-                <button className="button secondary" onClick={() => onReveal(state.finalPath)}>Show Set in Finder</button>
-                <button className="button primary" onClick={onOpenSettings}>Open Wallpaper Settings</button>
-              </div>
+                  <div className="wallpaper-setup-actions">
+                    <button className="button secondary" onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
+                    <button className="button primary" onClick={onOpenSettings}>{platformCopy.openWallpaperSettings}</button>
+                  </div>
+                </>
+              ) : (
+                <div className="wallpaper-setup-actions">
+                  <button className="button primary" onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
+                </div>
+              )}
             </section>
             <div className="dialog-actions wallpaper-ready-actions">
               <button className="button secondary" onClick={() => onChange((current) => ({
@@ -5933,7 +6006,7 @@ function ExportSetDialog({
                 <div className="destination-actions">
                   <button className="button secondary" disabled={state.busy} onClick={onChooseFolder}>Choose</button>
                   <button className="button ghost" disabled={!state.destinationPath || state.busy} onClick={() => onReveal(state.destinationPath)}>Open</button>
-                  <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>
+                  {platformCapabilities.canCleanNativeWallpaperSets && <button className="button destructive" disabled={state.busy || state.cleanupBusy} onClick={onCleanup}>{state.cleanupBusy ? "Inspecting…" : "Clean Up Folder…"}</button>}
                 </div>
               </div>
 
@@ -6019,13 +6092,13 @@ function WallpaperPanel({ project }: { project: WallpaperProject }) {
       <details open>
         <summary>Wallpaper Rotation <ChevronDown size={15} /></summary>
         <div className="rotation-guide-card">
-          <strong>Use macOS to rotate exported sets</strong>
-          <p>Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings.</p>
+          {platformCapabilities.canUseMacSpaces ? <strong>Use macOS to rotate exported sets</strong> : <strong>{platformCopy.rotationGuideTitle}</strong>}
+          <p>{platformCopy.rotationGuideBody}</p>
           <ol>
-            <li>Click <b>Create Wallpaper Set</b>.</li>
+            {platformCapabilities.canUseMacSpaces ? <li>Click <b>Create Wallpaper Set</b>.</li> : <li>Click <b>{platformCopy.createWallpaperSet}</b>.</li>}
             <li>Generate the set.</li>
-            <li>Choose the Desktop Pin Paper Sets folder.</li>
-            <li>Turn on Shuffle and Show on all Spaces.</li>
+            {platformCapabilities.canOpenWallpaperSettings && <li>Choose the Desktop Pin Paper Sets folder.</li>}
+            {platformCapabilities.canUseMacSpaces && <li>Turn on Shuffle and Show on all Spaces.</li>}
           </ol>
         </div>
         {project.wallpaper.lastError && <p className="status-error">{project.wallpaper.lastError}</p>}
