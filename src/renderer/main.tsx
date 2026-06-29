@@ -806,20 +806,152 @@ function readImageFileAsDataUrl(file: File) {
   });
 }
 
+
+function browserFileInput(directory: boolean): Promise<File[] | undefined> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = ".jpg,.jpeg,.png,.webp,.gif,.heic,.heif,image/*";
+    if (directory) {
+      input.setAttribute("webkitdirectory", "");
+      input.setAttribute("directory", "");
+    }
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    const cleanup = () => window.setTimeout(() => input.remove(), 0);
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files ?? []);
+      cleanup();
+      resolve(files.length > 0 ? files : undefined);
+    }, { once: true });
+    input.click();
+  });
+}
+
+function browserSourceNameFromFiles(files: File[], fallback: string) {
+  const firstPath = files.find((file) => file.webkitRelativePath)?.webkitRelativePath;
+  const root = firstPath?.split(/[\\/]/).filter(Boolean)[0];
+  if (root) return root;
+  if (files.length === 1) return files[0]?.name?.replace(/\.[^.]+$/, "") || fallback;
+  return fallback;
+}
+
+async function browserImageSourceFromFiles(files: File[], fallbackName: string): Promise<{ source?: ImageSource; summary: LocalImportSummary; warnings: string[] }> {
+  const supported = files.filter((file) => {
+    const extension = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
+    return file.type.startsWith("image/") || finderDropImageExtensions.has(extension);
+  });
+  const warnings: string[] = [];
+  const images: LocalImageRef[] = [];
+  for (const file of supported) {
+    try {
+      const dataUrl = await readImageFileAsDataUrl(file);
+      const relativePath = file.webkitRelativePath || file.name;
+      const id = uid("web-image");
+      images.push({
+        id,
+        name: file.name || "browser image",
+        path: `web-file:${relativePath}:${file.size}:${file.lastModified}`,
+        url: dataUrl,
+        modifiedAt: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+        size: file.size,
+        mediaType: "image"
+      });
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : `Unable to read ${file.name}.`);
+    }
+  }
+  const summary: LocalImportSummary = {
+    requestedPathCount: files.length,
+    importedFolderCount: files.some((file) => file.webkitRelativePath) ? 1 : 0,
+    importedLooseImageCount: images.length,
+    discoveredImageCount: supported.length,
+    skippedUnsupportedCount: Math.max(0, files.length - supported.length),
+    skippedUnreadableCount: Math.max(0, supported.length - images.length),
+    skippedMissingCount: 0,
+    duplicatePathCount: 0,
+    emptyFolders: []
+  };
+  if (images.length === 0) return { summary, warnings: warnings.length ? warnings : ["No supported images were selected." ] };
+  const sourceName = browserSourceNameFromFiles(supported, fallbackName);
+  const source: ImageSource = {
+    id: uid("source"),
+    identityKey: `browser-files:${images.map((image) => image.path).sort().join("|")}`,
+    providerId: "local-file",
+    type: "local-file",
+    name: sourceName,
+    images,
+    mediaPolicy: "images-and-video-thumbnails",
+    mediaCounts: { total: images.length, images: images.length, videos: 0 },
+    importStatus: "ready",
+    importLog: [`Imported ${images.length} browser file${images.length === 1 ? "" : "s"}.`],
+    updatedAt: new Date().toISOString()
+  };
+  return { source, summary, warnings };
+}
+
+function downloadDataUrl(dataUrl: string, fileName: string) {
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function safeBrowserFileName(value: string, fallback = "pin-paper") {
+  const clean = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return clean || fallback;
+}
+
 async function importWebImageCandidates(candidates: WebImageCandidate[]) {
   const sources: ImageSource[] = [];
   const warnings: string[] = [];
   for (const candidate of candidates) {
-    const payload = candidate.file
-      ? {
-          dataUrl: await readImageFileAsDataUrl(candidate.file),
-          name: candidate.name || candidate.file.name || "copied image",
-          mimeType: candidate.mimeType || candidate.file.type
-        }
-      : { url: candidate.url, name: candidate.name, mimeType: candidate.mimeType };
-    const result = await window.wallpaperApi.importWebImage(payload);
-    if (result.source) sources.push(result.source);
-    else if (result.error) warnings.push(result.error);
+    if (window.wallpaperApi?.importWebImage) {
+      const payload = candidate.file
+        ? {
+            dataUrl: await readImageFileAsDataUrl(candidate.file),
+            name: candidate.name || candidate.file.name || "copied image",
+            mimeType: candidate.mimeType || candidate.file.type
+          }
+        : { url: candidate.url, name: candidate.name, mimeType: candidate.mimeType };
+      const result = await window.wallpaperApi.importWebImage(payload);
+      if (result.source) sources.push(result.source);
+      else if (result.error) warnings.push(result.error);
+      continue;
+    }
+
+    if (candidate.file) {
+      const result = await browserImageSourceFromFiles([candidate.file], candidate.name || "Browser Image");
+      if (result.source) sources.push(result.source);
+      warnings.push(...result.warnings);
+      continue;
+    }
+
+    if (candidate.url?.startsWith("data:image/")) {
+      const id = uid("web-image");
+      const image: LocalImageRef = { id, name: candidate.name || "browser image", path: `web-data-url:${id}`, url: candidate.url, mediaType: "image" };
+      sources.push({
+        id: uid("source"),
+        identityKey: `browser-data-url:${candidate.url.slice(0, 96)}`,
+        providerId: "local-file",
+        type: "local-file",
+        name: candidate.name || "Browser Image",
+        images: [image],
+        mediaPolicy: "images-and-video-thumbnails",
+        mediaCounts: { total: 1, images: 1, videos: 0 },
+        importStatus: "ready",
+        importLog: ["Imported a browser image."],
+        updatedAt: new Date().toISOString()
+      });
+      continue;
+    }
+
+    warnings.push("Linked web images need the desktop app for caching. Download the image, then import it as a file in the web version.");
   }
   return { sources, warnings };
 }
@@ -2122,10 +2254,27 @@ function App() {
   }
 
   async function addFolderSource() {
-    const result = await window.wallpaperApi.chooseFolder();
-    if (result.canceled) return;
-    if (result.error || !result.source) {
-      setMessage(result.error ?? "Unable to add folder.");
+    if (window.wallpaperApi?.chooseFolder) {
+      const result = await window.wallpaperApi.chooseFolder();
+      if (result.canceled) return;
+      if (result.error || !result.source) {
+        setMessage(result.error ?? "Unable to add folder.");
+        return;
+      }
+      const merged = addSourcesToProjectDetailed([result.source], true, false);
+      const resolved = merged.resolved[0];
+      if (resolved) {
+        setSelectedSourceId(resolved.id);
+        setMessage(importResultMessage(result.summary, merged, result.warnings));
+      }
+      return;
+    }
+
+    const files = await browserFileInput(true);
+    if (!files) return;
+    const result = await browserImageSourceFromFiles(files, "Browser Folder");
+    if (!result.source) {
+      setMessage(result.warnings[0] ?? "No supported images were selected.");
       return;
     }
     const merged = addSourcesToProjectDetailed([result.source], true, false);
@@ -2542,10 +2691,27 @@ function App() {
   }
 
   async function addLocalImagesSource() {
-    const result = await window.wallpaperApi.chooseImageFiles();
-    if (result.canceled) return;
-    if (result.error || !result.source) {
-      setMessage(result.error ?? "No images selected.");
+    if (window.wallpaperApi?.chooseImageFiles) {
+      const result = await window.wallpaperApi.chooseImageFiles();
+      if (result.canceled) return;
+      if (result.error || !result.source) {
+        setMessage(result.error ?? "No images selected.");
+        return;
+      }
+      const merged = addSourcesToProjectDetailed([result.source], true, false);
+      const resolved = merged.resolved[0];
+      if (resolved) {
+        setSelectedSourceId(resolved.id);
+        setMessage(importResultMessage(result.summary, merged, result.warnings));
+      }
+      return;
+    }
+
+    const files = await browserFileInput(false);
+    if (!files) return;
+    const result = await browserImageSourceFromFiles(files, files.length === 1 ? files[0]?.name?.replace(/\.[^.]+$/, "") || "Browser Image" : "Browser Images");
+    if (!result.source) {
+      setMessage(result.warnings[0] ?? "No supported images were selected.");
       return;
     }
     const merged = addSourcesToProjectDetailed([result.source], true, false);
@@ -2557,6 +2723,13 @@ function App() {
   }
 
   async function runPinterestImport(mode: "import" | "update") {
+    const pinterestApi = mode === "import" ? window.wallpaperApi?.importPinterestBoard : window.wallpaperApi?.updatePinterestBoard;
+    if (!platformCapabilities.canUsePinterestImport || !pinterestApi) {
+      const message = "Pinterest import is unavailable in the web version. Use the desktop app, or download images and import them as files.";
+      setPinterestDialog((current) => ({ ...current, busy: false, stage: "error", error: message, log: [...current.log, message] }));
+      setMessage(message);
+      return;
+    }
     const url = pinterestDialog.url.trim();
     const existing = project.sources.find(
       (source) => source.type === "pinterest-board" && source.url?.replace(/\/$/, "").toLowerCase() === url.replace(/\/$/, "").toLowerCase()
@@ -2583,10 +2756,7 @@ function App() {
       resumeBookmark: existing?.importCursor
     } as const;
     try {
-      const result =
-        mode === "import"
-          ? await window.wallpaperApi.importPinterestBoard(request)
-          : await window.wallpaperApi.updatePinterestBoard(request);
+      const result = await pinterestApi(request);
 
       setPinterestDialog((current) => {
         const completeEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, current.total, result.imagesFound));
@@ -2621,7 +2791,7 @@ function App() {
   async function cancelPinterestImport() {
     const jobId = pinterestDialog.jobId;
     if (!jobId) return;
-    await window.wallpaperApi.cancelPinterestImport(jobId);
+    await window.wallpaperApi?.cancelPinterestImport?.(jobId);
     setPinterestDialog((current) => ({ ...current, busy: false, stage: "canceled", error: "Import canceled. Cached pins were preserved." }));
   }
 
@@ -3064,10 +3234,16 @@ function App() {
   async function exportWallpaper(format: "png" | "jpeg") {
     try {
       const dataUrl = await renderProjectToDataUrl(project, format);
+      const suggestedName = `${safeBrowserFileName(project.name)}.${format === "png" ? "png" : "jpg"}`;
+      if (!window.wallpaperApi?.exportImage) {
+        downloadDataUrl(dataUrl, suggestedName);
+        setMessage(`Downloaded ${suggestedName}`);
+        return;
+      }
       const result = await window.wallpaperApi.exportImage({
         dataUrl,
         format,
-        suggestedName: `${project.name}.${format === "png" ? "png" : "jpg"}`
+        suggestedName
       });
       if (!result.canceled) setMessage(`Exported ${result.filePath}`);
     } catch (error) {
@@ -3114,6 +3290,10 @@ function App() {
 
   async function cleanupWallpaperSets() {
     setToolbarMenuOpen(false);
+    if (!window.wallpaperApi?.cleanupExportSets) {
+      setMessage("Native wallpaper pack cleanup is only available in the desktop app.");
+      return;
+    }
     setExportSet((current) => ({ ...current, cleanupBusy: true, error: undefined }));
     const result = await window.wallpaperApi.cleanupExportSets(exportSet.destinationPath);
     if (!result.ok) {
@@ -3136,6 +3316,10 @@ function App() {
   async function revealWallpaperSet(folderPath?: string) {
     const target = folderPath ?? exportSet.finalPath ?? exportSet.destinationPath;
     if (!target) return;
+    if (!window.wallpaperApi?.revealExportSet) {
+      setMessage("Browser downloads were sent to your default Downloads folder.");
+      return;
+    }
     const result = await window.wallpaperApi.revealExportSet(target);
     if (!result.ok) setMessage(result.error ?? "Unable to open the wallpaper set folder.");
   }
@@ -3195,18 +3379,88 @@ function App() {
   async function runExportSet() {
     const options = exportSet;
     const count = clamp(Math.round(options.count), 1, 500);
+    const template = projectRef.current.templates.templates.find((item) => item.id === options.templateId)
+      ?? projectRef.current.templates.templates.find((item) => item.id === projectRef.current.templates.activeTemplateId);
+    if (!template) {
+      setExportSet((current) => ({ ...current, error: "Choose a template before creating a wallpaper set." }));
+      return;
+    }
+
+    if (!window.wallpaperApi?.beginExportSet || !window.wallpaperApi?.writeExportSetFile || !window.wallpaperApi?.finalizeExportSet) {
+      exportCancelRef.current = false;
+      setExportSet((current) => ({
+        ...current,
+        busy: true,
+        cancelRequested: false,
+        completed: 0,
+        skipped: 0,
+        failed: 0,
+        finalPath: undefined,
+        firstFilePath: undefined,
+        error: undefined
+      }));
+      let exportProject = workspaceFromTemplate(cloneProject(projectRef.current), template);
+      const used = new Set<string>();
+      const signatures = new Set<string>();
+      let completed = 0;
+      let failed = 0;
+      let firstError: string | undefined;
+      for (let index = 1; index <= count; index += 1) {
+        if (exportCancelRef.current) break;
+        let prepared = prepareGeneratedProjectWithUsed(exportProject, template.id, options.avoidRepeats ? used : new Set<string>());
+        let signature = Object.values(prepared.combination.assignments).sort().join("|");
+        let attempts = 0;
+        while (options.avoidRepeats && signatures.has(signature) && attempts < 5) {
+          prepared = prepareGeneratedProjectWithUsed(prepared.project, template.id, used);
+          signature = Object.values(prepared.combination.assignments).sort().join("|");
+          attempts += 1;
+        }
+        signatures.add(signature);
+        exportProject = prepared.project;
+        const fileName = `${safeBrowserFileName(options.setName || template.name || projectRef.current.name)}-${String(index).padStart(3, "0")}.png`;
+        try {
+          const dataUrl = await renderProjectToDataUrl(exportProject, "png", 1);
+          downloadDataUrl(dataUrl, fileName);
+          completed += 1;
+        } catch (error) {
+          failed = 1;
+          firstError = error instanceof Error ? error.message : `Could not export ${fileName}.`;
+          break;
+        }
+        setExportSet((current) => ({ ...current, completed, failed }));
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+      if (options.advanceLiveState && completed > 0) {
+        const normalized = touchProject(updateActiveTemplateSnapshot(normalizeProject(exportProject)));
+        const nextProject = projectAfterExportSet(projectRef.current, normalized, true);
+        projectRef.current = nextProject;
+        setProject(nextProject);
+      }
+      const canceled = exportCancelRef.current;
+      setExportSet((current) => ({
+        ...current,
+        busy: false,
+        cancelRequested: canceled,
+        completed,
+        failed,
+        finalPath: canceled || failed ? undefined : "Browser Downloads",
+        firstFilePath: undefined,
+        error: failed ? firstError : undefined
+      }));
+      setMessage(canceled
+        ? "Wallpaper pack download canceled."
+        : failed
+          ? firstError ?? "Wallpaper pack download failed."
+          : `Downloaded ${completed} wallpaper${completed === 1 ? "" : "s"} from the web version.`);
+      return;
+    }
+
     let rootPath = options.destinationPath;
     if (!rootPath) {
       const result = await window.wallpaperApi.getDefaultExportSetFolder();
       if (result.canceled || !result.filePath) return;
       rootPath = result.filePath;
       setExportSet((current) => ({ ...current, destinationPath: rootPath }));
-    }
-    const template = projectRef.current.templates.templates.find((item) => item.id === options.templateId)
-      ?? projectRef.current.templates.templates.find((item) => item.id === projectRef.current.templates.activeTemplateId);
-    if (!template) {
-      setExportSet((current) => ({ ...current, error: "Choose a template before creating a wallpaper set." }));
-      return;
     }
 
     exportCancelRef.current = false;
@@ -3313,7 +3567,7 @@ function App() {
       completed,
       failed: 0,
       finalPath: finalized.finalPath,
-      firstFilePath,
+      firstFilePath: finalized.firstFilePath ?? (firstFilePath && finalized.finalPath ? `${finalized.finalPath}${firstFilePath.includes("\\") ? "\\" : "/"}${firstFilePath.split(/[\\/]/).pop()}` : firstFilePath),
       error: undefined
     }));
   }
@@ -3946,6 +4200,10 @@ function App() {
     if (getDroppedSourceId(event)) return;
     const pinterestUrl = getDroppedPinterestUrl(event);
     if (pinterestUrl) {
+      if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.importPinterestBoard) {
+        setMessage("Pinterest import is unavailable in the web version. Download images and import them as files, or use the desktop app.");
+        return;
+      }
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
       return;
     }
@@ -3973,6 +4231,10 @@ function App() {
 
     const pinterestUrl = getDroppedPinterestUrl(event);
     if (pinterestUrl) {
+      if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.importPinterestBoard) {
+        setMessage("Pinterest import is unavailable in the web version. Download images and import them as files, or use the desktop app.");
+        return;
+      }
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
       setMessage("Import the Pinterest board, then drag its source onto the canvas to position it.");
       return;
@@ -4588,7 +4850,13 @@ function App() {
             <AddSourceControl
               onAddFolder={() => void addFolderSource()}
               onAddImages={() => void addLocalImagesSource()}
-              onAddPinterest={() => setPinterestDialog((current) => ({ ...current, open: true }))}
+              onAddPinterest={() => {
+                if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.importPinterestBoard) {
+                  setMessage("Pinterest import is unavailable in the web version. Use the desktop app, or download images and import them as files.");
+                  return;
+                }
+                setPinterestDialog((current) => ({ ...current, open: true }));
+              }}
             />
           </div>
 

@@ -1176,7 +1176,8 @@ ipcMain.handle("export-set:finalize", async (_event, payload: WallpaperSetFinali
     await rename(session.stagingPath, session.finalPath);
     wallpaperSetSessions.delete(session.id);
     const manifestPath = path.join(session.finalPath, wallpaperSetManifestFile);
-    return { ok: true, finalPath: session.finalPath, manifestPath, fileCount: session.files.length };
+    const firstFilePath = session.files[0]?.fileName ? path.join(session.finalPath, session.files[0].fileName) : undefined;
+    return { ok: true, finalPath: session.finalPath, manifestPath, fileCount: session.files.length, firstFilePath };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Unable to finalize the wallpaper set." };
   }

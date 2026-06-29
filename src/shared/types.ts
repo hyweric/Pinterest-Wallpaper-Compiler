@@ -740,6 +740,7 @@ export interface WallpaperSetFinalizeResult {
   finalPath?: string;
   manifestPath?: string;
   fileCount?: number;
+  firstFilePath?: string;
   error?: string;
 }
 
