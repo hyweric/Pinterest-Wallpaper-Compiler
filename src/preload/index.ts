@@ -18,6 +18,7 @@ import type {
   PinterestImportResult,
   SaveDialogResult,
   WallpaperApplyFilePayload,
+  WallpaperSetApplyPayload,
   WallpaperApplyPayload,
   WallpaperApplyTargetsPayload,
   WallpaperApplyResult,
@@ -79,6 +80,8 @@ const api = {
     ipcRenderer.invoke("wallpaper:apply", payload),
   applyWallpaperFile: (payload: WallpaperApplyFilePayload): Promise<WallpaperApplyResult> =>
     ipcRenderer.invoke("wallpaper:apply-file", payload),
+  applyWallpaperSet: (payload: WallpaperSetApplyPayload): Promise<WallpaperApplyResult> =>
+    ipcRenderer.invoke("wallpaper:apply-set", payload),
   getWallpaperTargets: (): Promise<WallpaperTarget[]> => ipcRenderer.invoke("wallpaper:targets"),
   getMacOSWallpaperDiagnostic: (): Promise<MacOSWallpaperDiagnosticReport> => ipcRenderer.invoke("wallpaper:macos-diagnostic"),
   applyWallpaperTargets: (payload: WallpaperApplyTargetsPayload): Promise<WallpaperApplyResult> =>

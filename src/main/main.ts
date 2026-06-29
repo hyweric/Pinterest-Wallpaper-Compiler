@@ -20,6 +20,7 @@ import type {
   PinterestImportProgress,
   PinterestImportRequest,
   WallpaperApplyFilePayload,
+  WallpaperSetApplyPayload,
   WallpaperApplyPayload,
   WallpaperApplyResult,
   WallpaperApplyTargetsPayload,
@@ -64,6 +65,25 @@ const nativePlatformCopy = platformCopy(nativePlatformKind);
 const macOSMainMenuLabelMarkers = { preview: "Preview on Current Desktop" };
 const nativePlatformCapabilities = platformCapabilities(nativePlatformKind);
 const wallpaperController = createWallpaperController();
+
+type WindowsWallpaperRotationState = {
+  timer?: ReturnType<typeof setInterval>;
+  folderPath: string;
+  files: string[];
+  index: number;
+  intervalMs: number;
+  previousFilePath?: string;
+  displayMode?: WallpaperSetApplyPayload["displayMode"];
+  transitionEnabled?: boolean;
+  transitionDurationMs?: number;
+};
+
+let windowsWallpaperRotationState: WindowsWallpaperRotationState | undefined;
+
+function stopWindowsWallpaperRotation() {
+  if (windowsWallpaperRotationState?.timer) clearInterval(windowsWallpaperRotationState.timer);
+  windowsWallpaperRotationState = undefined;
+}
 
 type WallpaperSetSession = {
   id: string;
@@ -726,7 +746,8 @@ async function startFadeTransition(
   items: FadeOverlayItem[],
   options: { enabled?: boolean; durationMs?: number; allDisplays?: boolean } = {}
 ): Promise<FadeOverlaySession | undefined> {
-  if (!fadeOverlayTransitionsEnabled || process.platform !== "darwin" || options.enabled === false || reduceMotionEnabled() || !items.length) return undefined;
+  const overlayTransitionsAllowed = process.platform === "win32" || (fadeOverlayTransitionsEnabled && process.platform === "darwin");
+  if (!overlayTransitionsAllowed || options.enabled === false || reduceMotionEnabled() || !items.length) return undefined;
   const displays = screen.getAllDisplays();
   if (!displays.length) return undefined;
   const duration = Math.max(200, Math.min(1600, options.durationMs ?? 650));
@@ -829,6 +850,108 @@ window.pwcRollback=()=>new Promise(resolve=>{nextImage.style.opacity='0';setTime
     }
     return undefined;
   }
+}
+
+async function windowsWallpaperSetFiles(folderPath: string) {
+  const directory = await readdir(folderPath, { withFileTypes: true });
+  const files = directory
+    .filter((entry) => entry.isFile() && imageExtensions.has(path.extname(entry.name).toLowerCase()))
+    .map((entry) => path.join(folderPath, entry.name))
+    .sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true, sensitivity: "base" }));
+  if (!files.length) throw new Error("No wallpaper images were found in the selected wallpaper pack folder.");
+  return files;
+}
+
+async function applyWindowsWallpaperRotationFile(
+  filePath: string,
+  payload: Pick<WallpaperSetApplyPayload, "displayMode" | "transitionEnabled" | "transitionDurationMs"> = {},
+  oldFilePath?: string
+): Promise<WallpaperApplyResult> {
+  if (process.platform !== "win32") throw new Error("Wallpaper pack rotation is only available on Windows.");
+  const file = await validateRenderedWallpaperImage(filePath);
+  const transition = await startFadeTransition([{ filePath, oldFilePath }], {
+    enabled: payload.transitionEnabled ?? true,
+    durationMs: payload.transitionDurationMs ?? 700,
+    allDisplays: true
+  });
+  const transitionAnimation = transition?.begin();
+  let diagnostics: WallpaperApplyDiagnostics;
+  try {
+    diagnostics = await wallpaperController.setWallpaper(filePath, {
+      monitorMode: "span",
+      displayMode: payload.displayMode,
+      scope: "current-desktop",
+      targetMode: "all-visible-monitors"
+    });
+    await transitionAnimation;
+    diagnostics.transitionDiagnostics = transition?.diagnostics;
+    await transition?.complete(diagnostics.changed);
+  } catch (error) {
+    await transitionAnimation;
+    await transition?.complete(false);
+    throw error;
+  }
+  diagnostics.renderedPath = filePath;
+  diagnostics.fileSize = file.size;
+  diagnostics.validImage = true;
+  if (!diagnostics.changed) {
+    throw Object.assign(new Error(diagnostics.lastError ?? "Windows did not confirm the desktop wallpaper changed."), { diagnostics });
+  }
+  return {
+    ok: true,
+    filePath,
+    fileSize: file.size,
+    appliedAt: new Date().toISOString(),
+    platform: process.platform,
+    diagnostics
+  };
+}
+
+async function applyWindowsWallpaperSet(payload: WallpaperSetApplyPayload): Promise<WallpaperApplyResult> {
+  if (process.platform !== "win32") {
+    return { ok: false, error: "Wallpaper pack rotation is only available on Windows.", platform: process.platform };
+  }
+  const folderPath = payload.folderPath?.trim();
+  if (!folderPath) return { ok: false, error: "No wallpaper pack folder was provided.", platform: process.platform };
+  const files = await windowsWallpaperSetFiles(folderPath);
+  const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
+  stopWindowsWallpaperRotation();
+  const state: WindowsWallpaperRotationState = {
+    folderPath,
+    files,
+    index: 0,
+    intervalMs: intervalSeconds * 1000,
+    displayMode: payload.displayMode,
+    transitionEnabled: payload.transitionEnabled ?? true,
+    transitionDurationMs: payload.transitionDurationMs ?? 700
+  };
+  windowsWallpaperRotationState = state;
+
+  const applyNext = async () => {
+    const currentState = windowsWallpaperRotationState;
+    if (!currentState || currentState.folderPath !== folderPath) return undefined;
+    const filePath = currentState.files[currentState.index % currentState.files.length];
+    currentState.index = (currentState.index + 1) % currentState.files.length;
+    const result = await applyWindowsWallpaperRotationFile(filePath, currentState, currentState.previousFilePath);
+    currentState.previousFilePath = filePath;
+    return result;
+  };
+
+  const firstResult = await applyNext();
+  if (files.length > 1) {
+    state.timer = setInterval(() => {
+      void applyNext().catch((error) => {
+        console.error("Windows wallpaper rotation step failed", error);
+      });
+    }, state.intervalMs);
+  }
+  return {
+    ...(firstResult ?? { ok: true }),
+    filePath: firstResult?.filePath ?? files[0],
+    appliedAt: firstResult?.appliedAt ?? new Date().toISOString(),
+    platform: process.platform,
+    diagnostics: firstResult?.diagnostics
+  };
 }
 
 async function applyWallpaperFilePath(
@@ -1375,6 +1498,21 @@ ipcMain.handle("wallpaper:apply-file", async (_event, payload: WallpaperApplyFil
       ok: false,
       filePath: payload.filePath,
       error: error instanceof Error ? error.message : "Unable to set wallpaper.",
+      platform: process.platform,
+      diagnostics: diagnosticsFromError(error)
+    };
+  }
+});
+
+ipcMain.handle("wallpaper:apply-set", async (_event, payload: WallpaperSetApplyPayload): Promise<WallpaperApplyResult> => {
+  try {
+    return await applyWindowsWallpaperSet(payload);
+  } catch (error) {
+    console.error("Wallpaper set apply failed", error);
+    return {
+      ok: false,
+      filePath: payload.folderPath,
+      error: error instanceof Error ? error.message : "Unable to start wallpaper rotation.",
       platform: process.platform,
       diagnostics: diagnosticsFromError(error)
     };

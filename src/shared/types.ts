@@ -800,6 +800,14 @@ export interface WallpaperApplyFilePayload {
   transitionDurationMs?: number;
 }
 
+export interface WallpaperSetApplyPayload {
+  folderPath: string;
+  intervalSeconds: number;
+  displayMode?: WallpaperDisplayMode;
+  transitionEnabled?: boolean;
+  transitionDurationMs?: number;
+}
+
 export interface WallpaperTargetApplyItem {
   targetId: string;
   targetLabel: string;

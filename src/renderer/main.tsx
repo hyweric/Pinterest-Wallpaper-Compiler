@@ -137,6 +137,7 @@ import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
+const layerClipboardKey = "pwc.layerClipboard.v1";
 const historyLimit = 80;
 const snapDistance = 8;
 const hasDesktopRuntimeApi = Boolean((window as Window & { wallpaperApi?: unknown }).wallpaperApi);
@@ -484,6 +485,7 @@ type ExportSetState = {
   failed: number;
   finalPath?: string;
   firstFilePath?: string;
+  windowsCycleSeconds: number;
   error?: string;
 };
 
@@ -577,6 +579,34 @@ function isTypingTarget(target: EventTarget | null) {
     || target instanceof HTMLSelectElement
     || target.isContentEditable
     || Boolean(target.closest('[contenteditable="true"]'));
+}
+
+function isRichTextEditingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return target instanceof HTMLTextAreaElement
+    || target.isContentEditable
+    || Boolean(target.closest('[contenteditable="true"]'));
+}
+
+function inputHasSelectedText(target: EventTarget | null) {
+  if (!(target instanceof HTMLInputElement)) return false;
+  try {
+    return typeof target.selectionStart === "number"
+      && typeof target.selectionEnd === "number"
+      && target.selectionStart !== target.selectionEnd;
+  } catch {
+    return false;
+  }
+}
+
+function shouldUseNativeClipboardShortcut(target: EventTarget | null, key: "c" | "v", hasLayerClipboard: boolean) {
+  if (isRichTextEditingTarget(target)) return true;
+  if (target instanceof HTMLInputElement) {
+    if (key === "c" && inputHasSelectedText(target)) return true;
+    if (key === "v" && !hasLayerClipboard) return true;
+    return false;
+  }
+  return target instanceof HTMLSelectElement && !hasLayerClipboard;
 }
 
 function sourceKindLabel(source: ImageSource) {
@@ -1601,7 +1631,8 @@ function App() {
     cancelRequested: false,
     completed: 0,
     skipped: 0,
-    failed: 0
+    failed: 0,
+    windowsCycleSeconds: 60
   });
   const dragRef = useRef<DragState | undefined>(undefined);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
@@ -2108,10 +2139,39 @@ function App() {
     return projectRef.current.layers.filter((layer) => idSet.has(layer.id) && !layer.locked);
   }
 
+  function persistLayerClipboard(layers: PlaceholderLayer[]) {
+    try {
+      if (layers.length) localStorage.setItem(layerClipboardKey, clipboardLayerPayload(layers));
+      else localStorage.removeItem(layerClipboardKey);
+    } catch {
+      // Browser storage can fail in private windows or under quota pressure.
+      // The in-memory clipboard ref remains the primary desktop clipboard path.
+    }
+  }
+
+  function readPersistedLayerClipboard() {
+    try {
+      return parseClipboardLayers(localStorage.getItem(layerClipboardKey) ?? undefined) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  function layerClipboardForPaste() {
+    if (clipboardLayersRef.current.length) return clipboardLayersRef.current;
+    const restored = readPersistedLayerClipboard();
+    if (restored.length) {
+      clipboardLayersRef.current = restored;
+      setClipboardLayers(restored);
+    }
+    return restored;
+  }
+
   function storeCopiedLayers(layers: PlaceholderLayer[]) {
     const cloned = structuredClone(layers);
     clipboardLayersRef.current = cloned;
     setClipboardLayers(cloned);
+    persistLayerClipboard(cloned);
     if (cloned.length) setMessage(`Copied ${cloned.length} layer${cloned.length === 1 ? "" : "s"}.`);
     return cloned.length > 0;
   }
@@ -2140,7 +2200,7 @@ function App() {
     return JSON.stringify({ app: "pin-paper", version: 1, layers });
   }
 
-  function pasteCopiedLayers(layers = clipboardLayersRef.current) {
+  function pasteCopiedLayers(layers = layerClipboardForPaste()) {
     if (viewRef.current !== "editor" || layers.length === 0) return false;
     const existingNames = new Set(projectRef.current.layers.map((layer) => layer.name));
     const pasted = layers.map((layer) => {
@@ -3460,12 +3520,12 @@ function App() {
     if (!result.ok) setMessage(result.error ?? "Unable to open macOS Wallpaper Settings.");
   }
 
-  async function applyExportedWallpaperPack(filePath?: string) {
-    if (!filePath) {
-      setMessage("No exported wallpaper is available to set yet.");
+  async function applyExportedWallpaperPack(targetPath?: string, intervalSeconds?: number) {
+    if (!targetPath) {
+      setMessage("No exported wallpaper pack is available to set yet.");
       return;
     }
-    if (!platformCapabilities.canApplyWallpaper || !window.wallpaperApi?.applyWallpaperFile) {
+    if (!platformCapabilities.canApplyWallpaper) {
       setMessage(`${platformCopy.applyWallpaper} is not available in this version.`);
       return;
     }
@@ -3476,25 +3536,37 @@ function App() {
     }
     try {
       setWallpaperStatus("applying");
-      const result = await withWallpaperTimeout(window.wallpaperApi.applyWallpaperFile({
-        filePath,
-        monitorMode: currentPlatform.kind === "windows" ? "span" : "primary",
-        displayMode: projectRef.current.wallpaper.displayMode,
-        scope: "current-desktop",
-        targetMode: "current-desktop",
-        monitorId: undefined,
-        allSpacesRefreshMode: normalizeAllSpacesRefreshMode(projectRef.current.wallpaper.allSpacesRefreshMode),
-        transitionEnabled: projectRef.current.wallpaper.transitionEnabled,
-        transitionDurationMs: projectRef.current.wallpaper.transitionDurationMs
-      }), 45_000, "Setting the exported wallpaper timed out.");
+      const cycleSeconds = clamp(Math.round(intervalSeconds ?? exportSet.windowsCycleSeconds ?? 60), 5, 86_400);
+      const timeoutMs = currentPlatform.kind === "windows" ? 60_000 : 45_000;
+      const result = currentPlatform.kind === "windows" && window.wallpaperApi?.applyWallpaperSet
+        ? await withWallpaperTimeout(window.wallpaperApi.applyWallpaperSet({
+            folderPath: targetPath,
+            intervalSeconds: cycleSeconds,
+            displayMode: projectRef.current.wallpaper.displayMode,
+            transitionEnabled: true,
+            transitionDurationMs: Math.max(450, projectRef.current.wallpaper.transitionDurationMs || 700)
+          }), timeoutMs, "Starting Windows wallpaper rotation timed out.")
+        : window.wallpaperApi?.applyWallpaperFile
+          ? await withWallpaperTimeout(window.wallpaperApi.applyWallpaperFile({
+              filePath: targetPath,
+              monitorMode: "primary",
+              displayMode: projectRef.current.wallpaper.displayMode,
+              scope: "current-desktop",
+              targetMode: "current-desktop",
+              monitorId: undefined,
+              allSpacesRefreshMode: normalizeAllSpacesRefreshMode(projectRef.current.wallpaper.allSpacesRefreshMode),
+              transitionEnabled: projectRef.current.wallpaper.transitionEnabled,
+              transitionDurationMs: projectRef.current.wallpaper.transitionDurationMs
+            }), timeoutMs, "Setting the exported wallpaper timed out.")
+          : { ok: false, error: `${platformCopy.applyWallpaper} is not available in this version.` };
       if (!result.ok) {
         recordWallpaperFailure(result.error ?? "Unable to set exported wallpaper.");
         return;
       }
       setWallpaperStatus("applied");
       setMessage(currentPlatform.kind === "windows"
-        ? `Set exported wallpaper on Windows desktops: ${result.filePath ?? filePath}`
-        : `${platformCopy.applyWallpaper}: ${result.filePath ?? filePath}`);
+        ? `Started Windows wallpaper rotation every ${cycleSeconds}s: ${result.filePath ?? targetPath}`
+        : `${platformCopy.applyWallpaper}: ${result.filePath ?? targetPath}`);
     } catch (error) {
       setWallpaperStatus("failed");
       recordWallpaperFailure(error instanceof Error ? error.message : "Unable to set exported wallpaper.");
@@ -4796,7 +4868,10 @@ function App() {
     function onKeyDown(event: KeyboardEvent) {
       const command = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      if (isTypingTarget(event.target) && !(command && key === "s")) return;
+      const isClipboardShortcut = command && (key === "c" || key === "v");
+      const hasLayerClipboard = clipboardLayersRef.current.length > 0 || readPersistedLayerClipboard().length > 0;
+      if (isClipboardShortcut && shouldUseNativeClipboardShortcut(event.target, key as "c" | "v", hasLayerClipboard)) return;
+      if (isTypingTarget(event.target) && !(command && key === "s") && !isClipboardShortcut) return;
       if (view === "editor" && command && (event.key === "=" || event.key === "+")) {
         event.preventDefault();
         zoomCanvasByStep(1);
@@ -4822,14 +4897,19 @@ function App() {
         event.preventDefault();
         redo();
       } else if (command && key === "c") {
-        if (copySelectedLayersForClipboard()) event.preventDefault();
+        if (copySelectedLayersForClipboard()) {
+          // Do not prevent the native copy event. Let Electron/browser populate the
+          // system clipboard with our custom app payload when possible; the
+          // in-memory/localStorage layer clipboard above is the reliable fallback.
+        }
       } else if (command && key === "v") {
+        const layersToPaste = layerClipboardForPaste();
         const pasteVersion = pasteEventVersionRef.current;
         if (pasteFallbackTimerRef.current !== undefined) window.clearTimeout(pasteFallbackTimerRef.current);
         pasteFallbackTimerRef.current = window.setTimeout(() => {
           pasteFallbackTimerRef.current = undefined;
-          if (pasteEventVersionRef.current === pasteVersion) pasteCopiedLayers();
-        }, 90);
+          if (pasteEventVersionRef.current === pasteVersion) pasteCopiedLayers(layersToPaste);
+        }, 45);
       } else if (command && key === "d") {
         event.preventDefault();
         duplicateSelectedLayer();
@@ -4888,7 +4968,7 @@ function App() {
       const candidates = webImageCandidatesFromTransfer(event.clipboardData);
       if (candidates.length === 0) {
         const appLayers = parseClipboardLayers(event.clipboardData?.getData("application/x-pin-paper-layers"));
-        const layersToPaste = appLayers ?? clipboardLayersRef.current;
+        const layersToPaste = appLayers ?? layerClipboardForPaste();
         if (viewRef.current !== "editor" || layersToPaste.length === 0) return;
         event.preventDefault();
         event.stopPropagation();
@@ -4957,7 +5037,7 @@ function App() {
           onCleanup={() => void cleanupWallpaperSets()}
           onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
           onOpenSettings={() => void openMacOSWallpaperSettings()}
-          onApplyPack={(filePath) => void applyExportedWallpaperPack(filePath)}
+          onApplyPack={(folderPath, intervalSeconds) => void applyExportedWallpaperPack(folderPath, intervalSeconds)}
           onClose={() => setExportSet((current) => ({ ...current, open: false }))}
         />
         <GlobalTooltip />
@@ -5706,7 +5786,7 @@ function App() {
         onCleanup={() => void cleanupWallpaperSets()}
         onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
         onOpenSettings={() => void openMacOSWallpaperSettings()}
-        onApplyPack={(filePath) => void applyExportedWallpaperPack(filePath)}
+        onApplyPack={(folderPath, intervalSeconds) => void applyExportedWallpaperPack(folderPath, intervalSeconds)}
         onClose={() => setExportSet((current) => ({ ...current, open: false }))}
       />
       <GlobalTooltip />
@@ -6423,7 +6503,7 @@ function ExportSetDialog({
   onCleanup: () => void;
   onReveal: (folderPath?: string) => void;
   onOpenSettings: () => void;
-  onApplyPack: (filePath?: string) => void;
+  onApplyPack: (folderPath?: string, intervalSeconds?: number) => void;
   onClose: () => void;
 }) {
   if (!state.open) return null;
@@ -6468,12 +6548,19 @@ function ExportSetDialog({
                   </div>
                 </>
               ) : (
-                <div className="wallpaper-setup-actions">
+                <>
                   {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
-                    <button className="button primary" onClick={() => onApplyPack(state.firstFilePath)}>Set on All Desktops</button>
+                    <div className="export-set-grid simplified windows-rotation-options">
+                      <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>
+                    </div>
                   )}
-                  <button className={currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper ? "button secondary" : "button primary"} onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
-                </div>
+                  <div className="wallpaper-setup-actions">
+                    {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
+                      <button className="button primary" onClick={() => onApplyPack(state.finalPath, state.windowsCycleSeconds)}>Start Rotation on All Desktops</button>
+                    )}
+                    <button className={currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper ? "button secondary" : "button primary"} onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
+                  </div>
+                </>
               )}
             </section>
             <div className="dialog-actions wallpaper-ready-actions">
@@ -6493,6 +6580,7 @@ function ExportSetDialog({
             <div className="export-set-grid simplified">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
               <label>Image variation count<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /></label>
+              {currentPlatform.kind === "windows" && <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>}
             </div>
 
             <details className="advanced-wallpaper-set-options">
