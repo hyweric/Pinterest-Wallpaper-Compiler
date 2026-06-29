@@ -1,0 +1,1726 @@
+1. Stopping Pin Paper, old Pinterest Wallpaper Compiler, and helpers...
+2. Clearing resettable app runtime data while preserving media/source caches...
+   Preserving persistent media/cache folders under:
+   /Users/Evelyn/Pictures/Pin Paper
+   /Users/Evelyn/Pictures/Pinterest Wallpaper Compiler
+3. Extracting Phase 28.7 text/editing/template-preview build into isolation...
+4. Replacing project folder...
+5. Removing stale build outputs and dependency folders...
+6. Installing dependencies...
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated rimraf@2.6.3: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
+added 361 packages, and audited 362 packages in 11s
+
+57 packages are looking for funding
+  run `npm fund` for details
+
+1 high severity vulnerability
+
+To address all issues, run:
+  npm audit fix
+
+Run `npm audit` for details.
+7. Running checks...
+
+> pin-paper@0.1.0 typecheck
+> tsc --noEmit && tsc -p tsconfig.electron.json --noEmit
+
+
+> pin-paper@0.1.0 test
+> npm run build:electron && node --test dist/main/*.test.js
+
+
+> pin-paper@0.1.0 build:electron
+> tsc -p tsconfig.electron.json
+
+TAP version 13
+# Subtest: fixed frame mode preserves stored layer rectangle
+ok 1 - fixed frame mode preserves stored layer rectangle
+  ---
+  duration_ms: 7.52675
+  type: 'test'
+  ...
+# Subtest: adaptive aspect keeps the same center and target area
+ok 2 - adaptive aspect keeps the same center and target area
+  ---
+  duration_ms: 0.140208
+  type: 'test'
+  ...
+# Subtest: adaptive aspect falls back to stored bounds without image dimensions
+ok 3 - adaptive aspect falls back to stored bounds without image dimensions
+  ---
+  duration_ms: 0.084833
+  type: 'test'
+  ...
+# Subtest: canvas zoom clamps every input to 10 through 500 percent
+ok 4 - canvas zoom clamps every input to 10 through 500 percent
+  ---
+  duration_ms: 0.6365
+  type: 'test'
+  ...
+# Subtest: wheel deltas are normalized across pixel, line, and page devices
+ok 5 - wheel deltas are normalized across pixel, line, and page devices
+  ---
+  duration_ms: 0.067375
+  type: 'test'
+  ...
+# Subtest: wheel and button zoom are multiplicative and bounded
+ok 6 - wheel and button zoom are multiplicative and bounded
+  ---
+  duration_ms: 0.077
+  type: 'test'
+  ...
+# Subtest: fit zoom respects viewport padding and global limits
+ok 7 - fit zoom respects viewport padding and global limits
+  ---
+  duration_ms: 0.057625
+  type: 'test'
+  ...
+# Subtest: cursor anchors map from the scaled client rectangle into logical canvas coordinates
+ok 8 - cursor anchors map from the scaled client rectangle into logical canvas coordinates
+  ---
+  duration_ms: 0.860334
+  type: 'test'
+  ...
+# Subtest: dropped placeholders are centered on the canvas drop point
+ok 9 - dropped placeholders are centered on the canvas drop point
+  ---
+  duration_ms: 4.269958
+  type: 'test'
+  ...
+# Subtest: drop placement clamps frames inside the canvas
+ok 10 - drop placement clamps frames inside the canvas
+  ---
+  duration_ms: 0.336583
+  type: 'test'
+  ...
+# Subtest: multiple dropped sources receive a visible cascade offset
+ok 11 - multiple dropped sources receive a visible cascade offset
+  ---
+  duration_ms: 0.288083
+  type: 'test'
+  ...
+# Subtest: drop placement can match the aspect ratio of the selected dropped image
+ok 12 - drop placement can match the aspect ratio of the selected dropped image
+  ---
+  duration_ms: 0.407042
+  type: 'test'
+  ...
+# Subtest: export set preserves live state unless explicitly advanced
+ok 13 - export set preserves live state unless explicitly advanced
+  ---
+  duration_ms: 1.531708
+  type: 'test'
+  ...
+# Subtest: legacy paper-frame values migrate into versioned Polaroid and Torn effects
+ok 14 - legacy paper-frame values migrate into versioned Polaroid and Torn effects
+  ---
+  duration_ms: 0.85
+  type: 'test'
+  ...
+# Subtest: Polaroid insets use independent borders, caption height, and image inset
+ok 15 - Polaroid insets use independent borders, caption height, and image inset
+  ---
+  duration_ms: 1.806208
+  type: 'test'
+  ...
+# Subtest: torn-paper polygons are seeded and stable until Regenerate Tear changes the seed
+ok 16 - torn-paper polygons are seeded and stable until Regenerate Tear changes the seed
+  ---
+  duration_ms: 1.15325
+  type: 'test'
+  ...
+# Subtest: individual torn edges can be disabled without randomizing other edges
+ok 17 - individual torn edges can be disabled without randomizing other edges
+  ---
+  duration_ms: 0.59
+  type: 'test'
+  ...
+# Subtest: project normalization, save/load, and duplication preserve independent expanded effects
+ok 18 - project normalization, save/load, and duplication preserve independent expanded effects
+  ---
+  duration_ms: 4.188584
+  type: 'test'
+  ...
+# Subtest: fit modes preserve or change aspect ratio as requested
+ok 19 - fit modes preserve or change aspect ratio as requested
+  ---
+  duration_ms: 3.054459
+  type: 'test'
+  ...
+# Subtest: background reset preserves color and clears image
+ok 20 - background reset preserves color and clears image
+  ---
+  duration_ms: 0.16325
+  type: 'test'
+  ...
+# Subtest: canvas resize can scale or center layers
+ok 21 - canvas resize can scale or center layers
+  ---
+  duration_ms: 0.536166
+  type: 'test'
+  ...
+# Subtest: crop offsets and zoom use the same deterministic placement engine
+ok 22 - crop offsets and zoom use the same deterministic placement engine
+  ---
+  duration_ms: 0.077542
+  type: 'test'
+  ...
+# Subtest: fill placement covers extreme aspect ratios with overscan
+ok 23 - fill placement covers extreme aspect ratios with overscan
+  ---
+  duration_ms: 0.205292
+  type: 'test'
+  ...
+# Subtest: crop clamping prevents blank areas after rotation-safe and rounded-frame sizing
+ok 24 - crop clamping prevents blank areas after rotation-safe and rounded-frame sizing
+  ---
+  duration_ms: 0.110958
+  type: 'test'
+  ...
+# Subtest: mask geometry clamps rounded corners and distinguishes circles
+ok 25 - mask geometry clamps rounded corners and distinguishes circles
+  ---
+  duration_ms: 0.278417
+  type: 'test'
+  ...
+# Subtest: reorder block preserves relative order and render semantics
+ok 26 - reorder block preserves relative order and render semantics
+  ---
+  duration_ms: 1.443458
+  type: 'test'
+  ...
+# Subtest: drag reorder uses reversed panel order correctly
+ok 27 - drag reorder uses reversed panel order correctly
+  ---
+  duration_ms: 0.143917
+  type: 'test'
+  ...
+# Subtest: shift selection follows visible panel order
+ok 28 - shift selection follows visible panel order
+  ---
+  duration_ms: 0.171875
+  type: 'test'
+  ...
+# Subtest: reordered layers preserve IDs and order through persistence
+ok 29 - reordered layers preserve IDs and order through persistence
+  ---
+  duration_ms: 0.17175
+  type: 'test'
+  ...
+# Subtest: selection marquee includes visible unlocked intersecting layers
+ok 30 - selection marquee includes visible unlocked intersecting layers
+  ---
+  duration_ms: 0.155417
+  type: 'test'
+  ...
+# Subtest: local file URLs are converted to the app-owned renderer protocol
+ok 31 - local file URLs are converted to the app-owned renderer protocol
+  ---
+  duration_ms: 2.424292
+  type: 'test'
+  ...
+# Subtest: local file protocol decoding preserves escaped filename characters
+ok 32 - local file protocol decoding preserves escaped filename characters
+  ---
+  duration_ms: 1.059084
+  type: 'test'
+  ...
+# Subtest: non-file URLs are left untouched
+ok 33 - non-file URLs are left untouched
+  ---
+  duration_ms: 0.108042
+  type: 'test'
+  ...
+# Subtest: imports folders and groups loose images while skipping unsupported and broken files
+ok 34 - imports folders and groups loose images while skipping unsupported and broken files
+  ---
+  duration_ms: 36.661125
+  type: 'test'
+  ...
+# Subtest: canonicalizes symbolic paths and suppresses duplicate top-level imports
+ok 35 - canonicalizes symbolic paths and suppresses duplicate top-level imports
+  ---
+  duration_ms: 5.80325
+  type: 'test'
+  ...
+# Subtest: does not create a source for an empty or unsupported folder
+ok 36 - does not create a source for an empty or unsupported folder
+  ---
+  duration_ms: 6.930916
+  type: 'test'
+  ...
+# Subtest: folder scanning remains top-level by default
+ok 37 - folder scanning remains top-level by default
+  ---
+  duration_ms: 1.911667
+  type: 'test'
+  ...
+# Denied browser permission request: media (audio)
+# Denied browser permission request: notifications
+# Subtest: media permission classifier blocks microphone, camera, and media capture aliases
+ok 38 - media permission classifier blocks microphone, camera, and media capture aliases
+  ---
+  duration_ms: 0.627917
+  type: 'test'
+  ...
+# Subtest: strict browser permission policy never grants renderer-origin prompts
+ok 39 - strict browser permission policy never grants renderer-origin prompts
+  ---
+  duration_ms: 1.831667
+  type: 'test'
+  ...
+# Subtest: legacy images-only policy is normalized to include usable video thumbnails
+ok 40 - legacy images-only policy is normalized to include usable video thumbnails
+  ---
+  duration_ms: 1.322917
+  type: 'test'
+  ...
+# Subtest: images-and-video-thumbnails includes usable thumbnails but not raw video
+ok 41 - images-and-video-thumbnails includes usable thumbnails but not raw video
+  ---
+  duration_ms: 0.069458
+  type: 'test'
+  ...
+# Subtest: polaroid reserves a larger bottom border
+ok 42 - polaroid reserves a larger bottom border
+  ---
+  duration_ms: 1.075
+  type: 'test'
+  ...
+# Subtest: paper rotation is deterministic
+ok 43 - paper rotation is deterministic
+  ---
+  duration_ms: 0.132959
+  type: 'test'
+  ...
+# Subtest: legacy deckle uses the same deterministic torn-paper geometry
+ok 44 - legacy deckle uses the same deterministic torn-paper geometry
+  ---
+  duration_ms: 0.341375
+  type: 'test'
+  ...
+# Subtest: normal editor UI separates current-desktop preview from wallpaper-set export
+ok 45 - normal editor UI separates current-desktop preview from wallpaper-set export
+  ---
+  duration_ms: 8.594292
+  type: 'test'
+  ...
+# Subtest: main process registers generation and apply-file IPC handlers
+ok 46 - main process registers generation and apply-file IPC handlers
+  ---
+  duration_ms: 1.134875
+  type: 'test'
+  ...
+# Subtest: autosave compaction removes rendered previews without mutating live state
+ok 47 - autosave compaction removes rendered previews without mutating live state
+  ---
+  duration_ms: 4.224875
+  type: 'test'
+  ...
+# Subtest: renderer has a visible recovery boundary instead of an empty root
+ok 48 - renderer has a visible recovery boundary instead of an empty root
+  ---
+  duration_ms: 7.626125
+  type: 'test'
+  ...
+# Subtest: macOS wallpaper sets are versioned, staged, and finalized atomically
+ok 49 - macOS wallpaper sets are versioned, staged, and finalized atomically
+  ---
+  duration_ms: 5.748875
+  type: 'test'
+  ...
+# Subtest: Generate and Apply opens set creation for manual inactive-Space requests
+ok 50 - Generate and Apply opens set creation for manual inactive-Space requests
+  ---
+  duration_ms: 1.804333
+  type: 'test'
+  ...
+# Subtest: wallpaper set deletion requires explicit confirmation and preserves the parent folder
+ok 51 - wallpaper set deletion requires explicit confirmation and preserves the parent folder
+  ---
+  duration_ms: 1.276667
+  type: 'test'
+  ...
+# Subtest: current-desktop preview is explicit and never follows the saved all-Space target
+ok 52 - current-desktop preview is explicit and never follows the saved all-Space target
+  ---
+  duration_ms: 4.517875
+  type: 'test'
+  ...
+# Subtest: app scheduling controls and tray rotation commands are removed
+ok 53 - app scheduling controls and tray rotation commands are removed
+  ---
+  duration_ms: 3.126166
+  type: 'test'
+  ...
+# Subtest: wallpaper settings opens only from the explicit setup button
+ok 54 - wallpaper settings opens only from the explicit setup button
+  ---
+  duration_ms: 3.191292
+  type: 'test'
+  ...
+# Subtest: setup dialog keeps the exact folder path and readable numbered instructions
+ok 55 - setup dialog keeps the exact folder path and readable numbered instructions
+  ---
+  duration_ms: 3.732209
+  type: 'test'
+  ...
+# Subtest: current desktop preview explicitly advances assigned source pools once before rendering
+ok 56 - current desktop preview explicitly advances assigned source pools once before rendering
+  ---
+  duration_ms: 3.45425
+  type: 'test'
+  ...
+# Subtest: current desktop apply falls back to System Events and stops folder rotation
+ok 57 - current desktop apply falls back to System Events and stops folder rotation
+  ---
+  duration_ms: 1.081
+  type: 'test'
+  ...
+# Subtest: automation denial provides an actionable preview error
+ok 58 - automation denial provides an actionable preview error
+  ---
+  duration_ms: 1.157125
+  type: 'test'
+  ...
+# Subtest: shared wallpaper Store records are excluded from the user-visible desktop count
+ok 59 - shared wallpaper Store records are excluded from the user-visible desktop count
+  ---
+  duration_ms: 1.135209
+  type: 'test'
+  ...
+# Subtest: modern Store updates preserve macOS-generated Configuration and change only Files paths
+ok 60 - modern Store updates preserve macOS-generated Configuration and change only Files paths
+  ---
+  duration_ms: 5.940917
+  type: 'test'
+  ...
+# Subtest: modern Store transaction verifies user desktops and shared records separately
+ok 61 - modern Store transaction verifies user desktops and shared records separately
+  ---
+  duration_ms: 1.212375
+  type: 'test'
+  ...
+# Subtest: modern Store is the only inactive-Space strategy and refresh never restarts Dock
+ok 62 - modern Store is the only inactive-Space strategy and refresh never restarts Dock
+  ---
+  duration_ms: 3.806875
+  type: 'test'
+  ...
+# Subtest: desktop overlay architecture is completely removed
+ok 63 - desktop overlay architecture is completely removed
+  ---
+  duration_ms: 4.354083
+  type: 'test'
+  ...
+# Subtest: obsolete private bridge and desktop overlay architecture are not part of the build
+ok 64 - obsolete private bridge and desktop overlay architecture are not part of the build
+  ---
+  duration_ms: 2.908334
+  type: 'test'
+  ...
+# Subtest: legacy native global controller remains bounded while the renderer uses immutable wallpaper sets
+ok 65 - legacy native global controller remains bounded while the renderer uses immutable wallpaper sets
+  ---
+  duration_ms: 4.297875
+  type: 'test'
+  ...
+# Subtest: native global eligibility protects per-monitor and different-image batches
+ok 66 - native global eligibility protects per-monitor and different-image batches
+  ---
+  duration_ms: 0.177416
+  type: 'test'
+  ...
+# Subtest: legacy native global telemetry stays typed but is no longer the primary all-Space UI
+ok 67 - legacy native global telemetry stays typed but is no longer the primary all-Space UI
+  ---
+  duration_ms: 3.371875
+  type: 'test'
+  ...
+# Subtest: fade overlays stay disabled while native desktop refresh is the default
+ok 68 - fade overlays stay disabled while native desktop refresh is the default
+  ---
+  duration_ms: 1.423833
+  type: 'test'
+  ...
+# Subtest: renderer scheduling is removed while wallpaper operations remain single-flight
+ok 69 - renderer scheduling is removed while wallpaper operations remain single-flight
+  ---
+  duration_ms: 5.654208
+  type: 'test'
+  ...
+# Subtest: wallpaper controller is process-wide so the active-Space observer is not duplicated
+ok 70 - wallpaper controller is process-wide so the active-Space observer is not duplicated
+  ---
+  duration_ms: 1.010667
+  type: 'test'
+  ...
+# Subtest: visible-display application has bounded delayed verification before failure
+ok 71 - visible-display application has bounded delayed verification before failure
+  ---
+  duration_ms: 0.93475
+  type: 'test'
+  ...
+# Subtest: failed inactive-Space adoption rolls back to a visible-preserving Store baseline
+ok 72 - failed inactive-Space adoption rolls back to a visible-preserving Store baseline
+  ---
+  duration_ms: 3.338542
+  type: 'test'
+  ...
+# Subtest: wallpaper set cleanup is visible, destructive, and reports failures outside the modal
+ok 73 - wallpaper set cleanup is visible, destructive, and reports failures outside the modal
+  ---
+  duration_ms: 8.74875
+  type: 'test'
+  ...
+# Subtest: native confirmation names the exact folder and every child type being erased
+ok 74 - native confirmation names the exact folder and every child type being erased
+  ---
+  duration_ms: 3.339708
+  type: 'test'
+  ...
+# Subtest: Finder paths use Electron webUtils instead of deprecated File.path
+ok 75 - Finder paths use Electron webUtils instead of deprecated File.path
+  ---
+  duration_ms: 10.4305
+  type: 'test'
+  ...
+# Subtest: main process validates every picker and Finder import through one service
+ok 76 - main process validates every picker and Finder import through one service
+  ---
+  duration_ms: 2.108125
+  type: 'test'
+  ...
+# Subtest: empty-canvas Finder and existing-source drops create positioned placeholders
+ok 77 - empty-canvas Finder and existing-source drops create positioned placeholders
+  ---
+  duration_ms: 2.095584
+  type: 'test'
+  ...
+# Subtest: placeholder Finder drops assign all imported pools in shuffle mode
+ok 78 - placeholder Finder drops assign all imported pools in shuffle mode
+  ---
+  duration_ms: 1.503417
+  type: 'test'
+  ...
+# Subtest: drag feedback distinguishes sources, empty canvas, placeholders, and invalid items
+ok 79 - drag feedback distinguishes sources, empty canvas, placeholders, and invalid items
+  ---
+  duration_ms: 3.117875
+  type: 'test'
+  ...
+# Subtest: source reuse prefers canonical identity keys and existing image supersets
+ok 80 - source reuse prefers canonical identity keys and existing image supersets
+  ---
+  duration_ms: 2.06925
+  type: 'test'
+  ...
+# Subtest: the Sources header exposes one labeled Add Source control instead of three icon buttons
+ok 81 - the Sources header exposes one labeled Add Source control instead of three icon buttons
+  ---
+  duration_ms: 8.7685
+  type: 'test'
+  ...
+# Subtest: Add Source menu keeps every existing source workflow with visible labels and descriptions
+ok 82 - Add Source menu keeps every existing source workflow with visible labels and descriptions
+  ---
+  duration_ms: 2.882
+  type: 'test'
+  ...
+# Subtest: Add Source menu supports click toggling, outside clicks, and keyboard navigation without hover-opening
+ok 83 - Add Source menu supports click toggling, outside clicks, and keyboard navigation without hover-opening
+  ---
+  duration_ms: 3.489
+  type: 'test'
+  ...
+# Subtest: Add Source menu is portaled and clamped inside the application viewport
+ok 84 - Add Source menu is portaled and clamped inside the application viewport
+  ---
+  duration_ms: 4.104167
+  type: 'test'
+  ...
+# Subtest: Settings is shown only by the inspector tab and not repeated inside the panel
+ok 85 - Settings is shown only by the inspector tab and not repeated inside the panel
+  ---
+  duration_ms: 1.897041
+  type: 'test'
+  ...
+# Subtest: wheel zoom is editor-scoped, non-passive, coalesced, and faster
+ok 86 - wheel zoom is editor-scoped, non-passive, coalesced, and faster
+  ---
+  duration_ms: 7.204208
+  type: 'test'
+  ...
+# Subtest: the logical canvas is scaled as one composited surface instead of resizing every layer
+ok 87 - the logical canvas is scaled as one composited surface instead of resizing every layer
+  ---
+  duration_ms: 3.917
+  type: 'test'
+  ...
+# Subtest: cursor anchoring preserves the exact point beneath the pointer
+ok 88 - cursor anchoring preserves the exact point beneath the pointer
+  ---
+  duration_ms: 1.619834
+  type: 'test'
+  ...
+# Subtest: keyboard zoom remains available while the persistent percentage panel is hidden
+ok 89 - keyboard zoom remains available while the persistent percentage panel is hidden
+  ---
+  duration_ms: 3.102084
+  type: 'test'
+  ...
+# Subtest: zoom state commits once after the gesture settles
+ok 90 - zoom state commits once after the gesture settles
+  ---
+  duration_ms: 1.654208
+  type: 'test'
+  ...
+# Subtest: editor preview and export share the same deterministic surface renderer
+ok 91 - editor preview and export share the same deterministic surface renderer
+  ---
+  duration_ms: 6.749875
+  type: 'test'
+  ...
+# Subtest: canvas surface is drawn behind placeholders so uploaded sources remain unaffected
+ok 92 - canvas surface is drawn behind placeholders so uploaded sources remain unaffected
+  ---
+  duration_ms: 4.320125
+  type: 'test'
+  ...
+# Subtest: all requested surface controls update persisted canvas settings
+ok 93 - all requested surface controls update persisted canvas settings
+  ---
+  duration_ms: 3.608208
+  type: 'test'
+  ...
+# Subtest: procedural texture generation is cached, bounded, and contains no implicit random regeneration
+ok 94 - procedural texture generation is cached, bounded, and contains no implicit random regeneration
+  ---
+  duration_ms: 1.473041
+  type: 'test'
+  ...
+# Subtest: resize handles render in an unclipped sibling overlay
+ok 95 - resize handles render in an unclipped sibling overlay
+  ---
+  duration_ms: 4.554
+  type: 'test'
+  ...
+# Subtest: resize dots have large hit targets while keeping compact visible markers
+ok 96 - resize dots have large hit targets while keeping compact visible markers
+  ---
+  duration_ms: 2.5875
+  type: 'test'
+  ...
+# Subtest: resize controls isolate pointerdown from the layer move gesture
+ok 97 - resize controls isolate pointerdown from the layer move gesture
+  ---
+  duration_ms: 6.041667
+  type: 'test'
+  ...
+# Subtest: Add Source transitions from plus to a down chevron while expanded
+ok 98 - Add Source transitions from plus to a down chevron while expanded
+  ---
+  duration_ms: 3.272458
+  type: 'test'
+  ...
+# Subtest: Phase 18.4 restyles only the right inspector with flat divided sections
+ok 99 - Phase 18.4 restyles only the right inspector with flat divided sections
+  ---
+  duration_ms: 6.135709
+  type: 'test'
+  ...
+# Subtest: Phase 18.4 keeps the inspector structure intact while later phases can remove wallpaper guidance
+ok 100 - Phase 18.4 keeps the inspector structure intact while later phases can remove wallpaper guidance
+  ---
+  duration_ms: 3.814958
+  type: 'test'
+  ...
+# Subtest: background choices contain only Color and Image and legacy clear projects migrate to color
+ok 101 - background choices contain only Color and Image and legacy clear projects migrate to color
+  ---
+  duration_ms: 16.381458
+  type: 'test'
+  ...
+# Subtest: Wallpaper Rotation removes Apply to, template mapping, Advanced, and Diagnostics
+ok 102 - Wallpaper Rotation removes Apply to, template mapping, Advanced, and Diagnostics
+  ---
+  duration_ms: 3.212166
+  type: 'test'
+  ...
+# Subtest: the Canvas settings panel no longer exposes an Advanced section
+ok 103 - the Canvas settings panel no longer exposes an Advanced section
+  ---
+  duration_ms: 3.125959
+  type: 'test'
+  ...
+# Subtest: legacy target template modes normalize to the two supported assignment choices
+ok 104 - legacy target template modes normalize to the two supported assignment choices
+  ---
+  duration_ms: 0.21325
+  type: 'test'
+  ...
+# Subtest: editor and exporter consume the same normalized expanded frame geometry
+ok 105 - editor and exporter consume the same normalized expanded frame geometry
+  ---
+  duration_ms: 5.563125
+  type: 'test'
+  ...
+# Subtest: expanded effect state participates in structured project cloning, undo, autosave, and template snapshots
+ok 106 - expanded effect state participates in structured project cloning, undo, autosave, and template snapshots
+  ---
+  duration_ms: 3.209125
+  type: 'test'
+  ...
+# Subtest: legacy Paper Frame controls synchronize the new expanded effect structures during migration phase
+ok 107 - legacy Paper Frame controls synchronize the new expanded effect structures during migration phase
+  ---
+  duration_ms: 2.605916
+  type: 'test'
+  ...
+# Subtest: expanded Polaroid inspector is reduced to direct-canvas photo positioning and a few frame controls
+ok 108 - expanded Polaroid inspector is reduced to direct-canvas photo positioning and a few frame controls
+  ---
+  duration_ms: 6.7345
+  type: 'test'
+  ...
+# Subtest: drop shadow editing is simplified to one slider and no checkbox shadow editor
+ok 109 - drop shadow editing is simplified to one slider and no checkbox shadow editor
+  ---
+  duration_ms: 2.3805
+  type: 'test'
+  ...
+# Subtest: editor and export both render Polaroid image transforms, warmth, caption, and shadows
+ok 110 - editor and export both render Polaroid image transforms, warmth, caption, and shadows
+  ---
+  duration_ms: 2.9095
+  type: 'test'
+  ...
+# Subtest: Polaroid patches are committed through the normal project undo path
+ok 111 - Polaroid patches are committed through the normal project undo path
+  ---
+  duration_ms: 3.29775
+  type: 'test'
+  ...
+# Subtest: expanded Torn Paper inspector exposes only depth, ridge count, and regenerate
+ok 112 - expanded Torn Paper inspector exposes only depth, ridge count, and regenerate
+  ---
+  duration_ms: 6.376792
+  type: 'test'
+  ...
+# Subtest: torn paper uses two shared tear controls instead of per-edge preset management
+ok 113 - torn paper uses two shared tear controls instead of per-edge preset management
+  ---
+  duration_ms: 1.627708
+  type: 'test'
+  ...
+# Subtest: tear regeneration is explicit and does not use Math.random in the Torn inspector
+ok 114 - tear regeneration is explicit and does not use Math.random in the Torn inspector
+  ---
+  duration_ms: 2.401083
+  type: 'test'
+  ...
+# Subtest: editor and export share deterministic torn texture detail rendering
+ok 115 - editor and export share deterministic torn texture detail rendering
+  ---
+  duration_ms: 2.776042
+  type: 'test'
+  ...
+# Subtest: many customized Polaroid and Torn layers normalize and round-trip without sharing effect objects
+ok 116 - many customized Polaroid and Torn layers normalize and round-trip without sharing effect objects
+  ---
+  duration_ms: 13.929958
+  type: 'test'
+  ...
+# Subtest: stable effect geometry and texture details survive restart-style serialization
+ok 117 - stable effect geometry and texture details survive restart-style serialization
+  ---
+  duration_ms: 3.428084
+  type: 'test'
+  ...
+# Subtest: 4K Polaroid and Torn render geometry remains finite and procedural texture output stays bounded
+ok 118 - 4K Polaroid and Torn render geometry remains finite and procedural texture output stays bounded
+  ---
+  duration_ms: 1.4985
+  type: 'test'
+  ...
+# Subtest: editor and export retain one shared expanded-effect geometry and detail implementation
+ok 119 - editor and export retain one shared expanded-effect geometry and detail implementation
+  ---
+  duration_ms: 6.675625
+  type: 'test'
+  ...
+# Subtest: Phase 19 retains simplified inspector and wallpaper assignment while exposing both expanded effects
+ok 120 - Phase 19 retains simplified inspector and wallpaper assignment while exposing both expanded effects
+  ---
+  duration_ms: 3.823583
+  type: 'test'
+  ...
+# Subtest: current Paper Frame styles survive normalization while legacy aliases merge into simplified styles
+ok 121 - current Paper Frame styles survive normalization while legacy aliases merge into simplified styles
+  ---
+  duration_ms: 6.074458
+  type: 'test'
+  ...
+# Subtest: legacy Paper Frame aliases still migrate to their current style names
+ok 122 - legacy Paper Frame aliases still migrate to their current style names
+  ---
+  duration_ms: 0.997792
+  type: 'test'
+  ...
+# Subtest: Polaroid photo manipulation is direct, isolated, and committed through undo history
+ok 123 - Polaroid photo manipulation is direct, isolated, and committed through undo history
+  ---
+  duration_ms: 9.23525
+  type: 'test'
+  ...
+# Subtest: transparent-capable imported images render without a forced white background
+ok 124 - transparent-capable imported images render without a forced white background
+  ---
+  duration_ms: 0.875333
+  type: 'test'
+  ...
+# Subtest: managed overlay sources are treated as overlay-like and not temporary file placeholders
+ok 125 - managed overlay sources are treated as overlay-like and not temporary file placeholders
+  ---
+  duration_ms: 0.206958
+  type: 'test'
+  ...
+# Subtest: Add Overlay now reuses canvas drop placement instead of a square contain frame
+ok 126 - Add Overlay now reuses canvas drop placement instead of a square contain frame
+  ---
+  duration_ms: 7.976292
+  type: 'test'
+  ...
+# Subtest: dropped transparent images and overlays get transparent, non-framed placement defaults
+ok 127 - dropped transparent images and overlays get transparent, non-framed placement defaults
+  ---
+  duration_ms: 2.643833
+  type: 'test'
+  ...
+# Subtest: background buttons have a clear active state and assign-source text is readable
+ok 128 - background buttons have a clear active state and assign-source text is readable
+  ---
+  duration_ms: 1.346
+  type: 'test'
+  ...
+# Subtest: Phase 20.2 keeps unassigned placeholders neutral and removes the Add Overlay button
+ok 129 - Phase 20.2 keeps unassigned placeholders neutral and removes the Add Overlay button
+  ---
+  duration_ms: 5.271625
+  type: 'test'
+  ...
+# Subtest: Phase 20.2 restyles active background tabs, surface cards, sliders, and scrollable menus
+ok 130 - Phase 20.2 restyles active background tabs, surface cards, sliders, and scrollable menus
+  ---
+  duration_ms: 3.496584
+  type: 'test'
+  ...
+# Subtest: Phase 20 simplifies effect choices and maps legacy aliases into current paper styles
+ok 131 - Phase 20 simplifies effect choices and maps legacy aliases into current paper styles
+  ---
+  duration_ms: 13.858
+  type: 'test'
+  ...
+# Subtest: Phase 20 starts effects from calmer user-friendly defaults
+ok 132 - Phase 20 starts effects from calmer user-friendly defaults
+  ---
+  duration_ms: 0.2555
+  type: 'test'
+  ...
+# Subtest: Phase 20 adds managed overlay images instead of temporary overlay file paths
+ok 133 - Phase 20 adds managed overlay images instead of temporary overlay file paths
+  ---
+  duration_ms: 3.99225
+  type: 'test'
+  ...
+# Subtest: Phase 20 removes noisy UI items and keeps PNG-only export controls
+ok 134 - Phase 20 removes noisy UI items and keeps PNG-only export controls
+  ---
+  duration_ms: 2.648083
+  type: 'test'
+  ...
+# Subtest: Phase 22.2 source drops choose one random starting image but keep Add Object frame geometry
+ok 135 - Phase 22.2 source drops choose one random starting image but keep Add Object frame geometry
+  ---
+  duration_ms: 5.661625
+  type: 'test'
+  ...
+# Subtest: Phase 22.2 current desktop preview advances once without the generic generation selector
+ok 136 - Phase 22.2 current desktop preview advances once without the generic generation selector
+  ---
+  duration_ms: 2.786208
+  type: 'test'
+  ...
+# Subtest: Phase 22.2 keeps imported dimensions available but source drops use stable placeholder sizing
+ok 137 - Phase 22.2 keeps imported dimensions available but source drops use stable placeholder sizing
+  ---
+  duration_ms: 6.656333
+  type: 'test'
+  ...
+# Subtest: Phase 22.1 restores blue inspector styling and keeps the inspector header on one row
+ok 138 - Phase 22.1 restores blue inspector styling and keeps the inspector header on one row
+  ---
+  duration_ms: 2.867542
+  type: 'test'
+  ...
+# Subtest: Phase 22.2 exposes previous and next image controls without replacing generation duplicate prevention
+ok 139 - Phase 22.2 exposes previous and next image controls without replacing generation duplicate prevention
+  ---
+  duration_ms: 3.092
+  type: 'test'
+  ...
+# Subtest: Phase 22.2 advances current desktop preview and left-aligns Add Object
+ok 140 - Phase 22.2 advances current desktop preview and left-aligns Add Object
+  ---
+  duration_ms: 3.8295
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10.1 adds a no-texture paper option
+ok 141 - phase 22.3.10.1 adds a no-texture paper option
+  ---
+  duration_ms: 1.597291
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10.1 disables frame texture rendering when None is selected
+ok 142 - phase 22.3.10.1 disables frame texture rendering when None is selected
+  ---
+  duration_ms: 0.362917
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.11 restores fixed-shape fill immediately after Adaptive Aspect
+ok 143 - Phase 22.3.10.11 restores fixed-shape fill immediately after Adaptive Aspect
+  ---
+  duration_ms: 4.399333
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10.2 frame texture overlay keeps hook order stable when selecting None/Paper/Crumpled
+ok 144 - phase 22.3.10.2 frame texture overlay keeps hook order stable when selecting None/Paper/Crumpled
+  ---
+  duration_ms: 1.590167
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10.2 removes lock layer buttons from canvas controls and the floating toolbar
+ok 145 - phase 22.3.10.2 removes lock layer buttons from canvas controls and the floating toolbar
+  ---
+  duration_ms: 0.267625
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.4 supports persistent pasted and dragged web image imports
+ok 146 - Phase 22.3.10.4 supports persistent pasted and dragged web image imports
+  ---
+  duration_ms: 7.222125
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.4 removes the images-only UI and keeps video thumbnails eligible
+ok 147 - Phase 22.3.10.4 removes the images-only UI and keeps video thumbnails eligible
+  ---
+  duration_ms: 1.949125
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.4 applies Pin Paper branding and removes surface preview swatches
+ok 148 - Phase 22.3.10.4 applies Pin Paper branding and removes surface preview swatches
+  ---
+  duration_ms: 3.771875
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.4 decouples torn image tearing from paper border and clips filters to the image area
+ok 149 - Phase 22.3.10.4 decouples torn image tearing from paper border and clips filters to the image area
+  ---
+  duration_ms: 4.135375
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.5 uses inline-safe Pin Paper branding inside the renderer
+ok 150 - Phase 22.3.10.5 uses inline-safe Pin Paper branding inside the renderer
+  ---
+  duration_ms: 6.788583
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.5 tightens import modal copy and gives close buttons wider shorter hit areas
+ok 151 - Phase 22.3.10.5 tightens import modal copy and gives close buttons wider shorter hit areas
+  ---
+  duration_ms: 3.949542
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.5 places the supporting home copy on its own line
+ok 152 - Phase 22.3.10.5 places the supporting home copy on its own line
+  ---
+  duration_ms: 3.46425
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.5 removes the opened-template bottom status toast
+ok 153 - Phase 22.3.10.5 removes the opened-template bottom status toast
+  ---
+  duration_ms: 2.886667
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.6 removes source media/details UI labels
+ok 154 - Phase 22.3.10.6 removes source media/details UI labels
+  ---
+  duration_ms: 4.820334
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.6 removes duplicate background color text and bottom status bars
+ok 155 - Phase 22.3.10.6 removes duplicate background color text and bottom status bars
+  ---
+  duration_ms: 3.340292
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.10.6 removes visible Pinterest web refresh flow
+ok 156 - Phase 22.3.10.6 removes visible Pinterest web refresh flow
+  ---
+  duration_ms: 3.002875
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10 removes the duplicate outer Polaroid border
+ok 157 - phase 22.3.10 removes the duplicate outer Polaroid border
+  ---
+  duration_ms: 7.18675
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10 keeps image step buttons text-only
+ok 158 - phase 22.3.10 keeps image step buttons text-only
+  ---
+  duration_ms: 2.626375
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10 enlarges tear regeneration and photo reset buttons
+ok 159 - phase 22.3.10 enlarges tear regeneration and photo reset buttons
+  ---
+  duration_ms: 2.55225
+  type: 'test'
+  ...
+# Subtest: phase 22.3.10 strengthens visible frame texture
+ok 160 - phase 22.3.10 strengthens visible frame texture
+  ---
+  duration_ms: 2.758375
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.2 Add Object no longer has a second backing rectangle
+ok 161 - Phase 22.3.2 Add Object no longer has a second backing rectangle
+  ---
+  duration_ms: 3.221166
+  type: 'test'
+  ...
+# Subtest: Phase 22.3.2 constrained numbers allow typing before soft validation
+ok 162 - Phase 22.3.2 constrained numbers allow typing before soft validation
+  ---
+  duration_ms: 3.071083
+  type: 'test'
+  ...
+# Subtest: phase 22.3.3 toolbar and dropdown polish
+    # Subtest: removes hide layer from the selected-image floating toolbar only
+    ok 1 - removes hide layer from the selected-image floating toolbar only
+      ---
+      duration_ms: 0.508208
+      type: 'test'
+      ...
+    # Subtest: keeps one final dropdown padding standard for inspector and sidebar selects
+    ok 2 - keeps one final dropdown padding standard for inspector and sidebar selects
+      ---
+      duration_ms: 0.249959
+      type: 'test'
+      ...
+    1..2
+ok 163 - phase 22.3.3 toolbar and dropdown polish
+  ---
+  duration_ms: 1.27675
+  type: 'suite'
+  ...
+# Subtest: phase 22.3.6 keeps the white selected-toolbar shell while removing inner blue capsules
+ok 164 - phase 22.3.6 keeps the white selected-toolbar shell while removing inner blue capsules
+  ---
+  duration_ms: 1.082708
+  type: 'test'
+  ...
+# Subtest: phase 22.3.7 removes internal helper copy from the visible effects inspector
+ok 165 - phase 22.3.7 removes internal helper copy from the visible effects inspector
+  ---
+  duration_ms: 6.00375
+  type: 'test'
+  ...
+# Subtest: phase 22.3.7+ keeps texture wording without the old wrinkles label
+ok 166 - phase 22.3.7+ keeps texture wording without the old wrinkles label
+  ---
+  duration_ms: 2.096583
+  type: 'test'
+  ...
+# Subtest: phase 22.3.7 keeps the single Settings tab visually neutral
+ok 167 - phase 22.3.7 keeps the single Settings tab visually neutral
+  ---
+  duration_ms: 1.177875
+  type: 'test'
+  ...
+# Subtest: phase 22.3.8 removes Clean Paper and keeps only Polaroid and Torn Paper frame styles
+ok 168 - phase 22.3.8 removes Clean Paper and keeps only Polaroid and Torn Paper frame styles
+  ---
+  duration_ms: 4.668958
+  type: 'test'
+  ...
+# Subtest: phase 22.3.8 replaces texture slider with curated paper texture choices
+ok 169 - phase 22.3.8 replaces texture slider with curated paper texture choices
+  ---
+  duration_ms: 2.656833
+  type: 'test'
+  ...
+# Subtest: phase 22.3.8 keeps Polaroid simple controls without a generic Border Size slider
+ok 170 - phase 22.3.8 keeps Polaroid simple controls without a generic Border Size slider
+  ---
+  duration_ms: 2.041375
+  type: 'test'
+  ...
+# Subtest: phase 22.3.9 restores per-side Polaroid border controls without generic Border Size
+ok 171 - phase 22.3.9 restores per-side Polaroid border controls without generic Border Size
+  ---
+  duration_ms: 5.142583
+  type: 'test'
+  ...
+# Subtest: phase 22.3.9 makes reset placement full-width and keeps text unclipped
+ok 172 - phase 22.3.9 makes reset placement full-width and keeps text unclipped
+  ---
+  duration_ms: 2.881083
+  type: 'test'
+  ...
+# Subtest: phase 22.3.9 uses the real surface renderer for visible frame textures
+ok 173 - phase 22.3.9 uses the real surface renderer for visible frame textures
+  ---
+  duration_ms: 1.560667
+  type: 'test'
+  ...
+# Subtest: phase 22.3 normal source drops use fill while only managed overlays use contain
+ok 174 - phase 22.3 normal source drops use fill while only managed overlays use contain
+  ---
+  duration_ms: 6.042
+  type: 'test'
+  ...
+# Subtest: phase 22.3.1 quick canvas toolbar is compact but keeps layer controls
+ok 175 - phase 22.3.1 quick canvas toolbar is compact but keeps layer controls
+  ---
+  duration_ms: 3.501417
+  type: 'test'
+  ...
+# Subtest: phase 22.3.1 effects tab removes the extra frame style section but keeps simple frame controls
+ok 176 - phase 22.3.1 effects tab removes the extra frame style section but keeps simple frame controls
+  ---
+  duration_ms: 2.689083
+  type: 'test'
+  ...
+# Subtest: Phase 22 compacts the image inspector, simplifies torn controls, and cleans the surface panel
+ok 177 - Phase 22 compacts the image inspector, simplifies torn controls, and cleans the surface panel
+  ---
+  duration_ms: 8.343542
+  type: 'test'
+  ...
+# Subtest: Phase 22 still avoids duplicate shared-source images across a wallpaper until unique choices are exhausted
+ok 178 - Phase 22 still avoids duplicate shared-source images across a wallpaper until unique choices are exhausted
+  ---
+  duration_ms: 0.89325
+  type: 'test'
+  ...
+# Subtest: Phase 22 surface defaults are tuned for paper and crumpled paper
+ok 179 - Phase 22 surface defaults are tuned for paper and crumpled paper
+  ---
+  duration_ms: 1.172709
+  type: 'test'
+  ...
+# Subtest: Phase 23 paste and default aspect handling are single-source and ratio-aware
+ok 180 - Phase 23 paste and default aspect handling are single-source and ratio-aware
+  ---
+  duration_ms: 6.489417
+  type: 'test'
+  ...
+# Subtest: Phase 23 Pinterest import handles Unicode sections, count overflow, and promoted cards
+ok 181 - Phase 23 Pinterest import handles Unicode sections, count overflow, and promoted cards
+  ---
+  duration_ms: 2.150167
+  type: 'test'
+  ...
+# Subtest: Phase 24 selection marquee, group snap, and flat layer controls are enabled
+ok 182 - Phase 24 selection marquee, group snap, and flat layer controls are enabled
+  ---
+  duration_ms: 2.540916
+  type: 'test'
+  ...
+# Subtest: Phase 25 through 27 simplify import completion and wallpaper set UI without debug artifacts
+ok 183 - Phase 25 through 27 simplify import completion and wallpaper set UI without debug artifacts
+  ---
+  duration_ms: 3.722708
+  type: 'test'
+  ...
+# Subtest: Phase 28.5 exposes Add Object with frame and text without placeholder wording
+ok 184 - Phase 28.5 exposes Add Object with frame and text without placeholder wording
+  ---
+  duration_ms: 3.720042
+  type: 'test'
+  ...
+# Subtest: Phase 28.5 creates persistent text layers and preserves custom current size
+ok 185 - Phase 28.5 creates persistent text layers and preserves custom current size
+  ---
+  duration_ms: 2.6685
+  type: 'test'
+  ...
+# Subtest: Phase 28.5 compacts source cards and raises toolbar menus
+ok 186 - Phase 28.5 compacts source cards and raises toolbar menus
+  ---
+  duration_ms: 1.63025
+  type: 'test'
+  ...
+# Subtest: Phase 28 removes clutter and keeps the new simplified controls
+ok 187 - Phase 28 removes clutter and keeps the new simplified controls
+  ---
+  duration_ms: 7.926959
+  type: 'test'
+  ...
+# Subtest: Phase 28 shifts surface texture strength upward
+ok 188 - Phase 28 shifts surface texture strength upward
+  ---
+  duration_ms: 0.36975
+  type: 'test'
+  ...
+# Subtest: collects and deduplicates a mocked 700-pin Pinterest board across bookmarks
+ok 189 - collects and deduplicates a mocked 700-pin Pinterest board across bookmarks
+  ---
+  duration_ms: 1.64725
+  type: 'test'
+  ...
+# Subtest: retries a transient failed page without losing collected items
+ok 190 - retries a transient failed page without losing collected items
+  ---
+  duration_ms: 1.976375
+  type: 'test'
+  ...
+# Subtest: stops on a repeated bookmark instead of looping forever
+ok 191 - stops on a repeated bookmark instead of looping forever
+  ---
+  duration_ms: 0.314958
+  type: 'test'
+  ...
+# Subtest: Polaroid defaults preserve the established frame proportions
+ok 192 - Polaroid defaults preserve the established frame proportions
+  ---
+  duration_ms: 0.736292
+  type: 'test'
+  ...
+# Subtest: Polaroid controls normalize independently and survive round-trip serialization
+ok 193 - Polaroid controls normalize independently and survive round-trip serialization
+  ---
+  duration_ms: 0.7905
+  type: 'test'
+  ...
+# Subtest: paper warmth has deterministic warm and cool overlays
+ok 194 - paper warmth has deterministic warm and cool overlays
+  ---
+  duration_ms: 0.104458
+  type: 'test'
+  ...
+# Subtest: direct Polaroid dragging follows the rotated frame axes
+ok 195 - direct Polaroid dragging follows the rotated frame axes
+  ---
+  duration_ms: 1.446291
+  type: 'test'
+  ...
+# Subtest: direct Polaroid corner resizing changes only image scale
+ok 196 - direct Polaroid corner resizing changes only image scale
+  ---
+  duration_ms: 0.288458
+  type: 'test'
+  ...
+# Subtest: direct Polaroid rotation remains stable across the angle wrap
+ok 197 - direct Polaroid rotation remains stable across the angle wrap
+  ---
+  duration_ms: 0.395541
+  type: 'test'
+  ...
+# Subtest: pointer distance is deterministic
+ok 198 - pointer distance is deterministic
+  ---
+  duration_ms: 0.181291
+  type: 'test'
+  ...
+# Subtest: current desktop preview randomizes beyond the first alternative instead of bouncing between two images
+ok 199 - current desktop preview randomizes beyond the first alternative instead of bouncing between two images
+  ---
+  duration_ms: 0.970166
+  type: 'test'
+  ...
+# Subtest: current desktop preview avoids duplicate images across placeholders in one click
+ok 200 - current desktop preview avoids duplicate images across placeholders in one click
+  ---
+  duration_ms: 0.176458
+  type: 'test'
+  ...
+# Subtest: resize handles change size while keeping the layer center fixed
+ok 201 - resize handles change size while keeping the layer center fixed
+  ---
+  duration_ms: 2.807375
+  type: 'test'
+  ...
+# Subtest: aspect-locked resizing preserves aspect ratio and center
+ok 202 - aspect-locked resizing preserves aspect ratio and center
+  ---
+  duration_ms: 0.197042
+  type: 'test'
+  ...
+# Subtest: centered resizing remains inside canvas bounds
+ok 203 - centered resizing remains inside canvas bounds
+  ---
+  duration_ms: 0.075209
+  type: 'test'
+  ...
+# Subtest: five-second countdown visibly progresses from 5 to 0
+ok 204 - five-second countdown visibly progresses from 5 to 0
+  ---
+  duration_ms: 2.087166
+  type: 'test'
+  ...
+# Subtest: scheduler runs a five-second task exactly once
+ok 205 - scheduler runs a five-second task exactly once
+  ---
+  duration_ms: 0.157375
+  type: 'test'
+  ...
+# Subtest: replacement, duplicate, and cancellation behavior is single-run
+ok 206 - replacement, duplicate, and cancellation behavior is single-run
+  ---
+  duration_ms: 0.117
+  type: 'test'
+  ...
+# Subtest: manual and scheduled wallpaper work cannot overlap
+ok 207 - manual and scheduled wallpaper work cannot overlap
+  ---
+  duration_ms: 0.094375
+  type: 'test'
+  ...
+# Subtest: stale wallpaper operation can be recovered and old completion cannot unlock the replacement
+ok 208 - stale wallpaper operation can be recovered and old completion cannot unlock the replacement
+  ---
+  duration_ms: 0.060708
+  type: 'test'
+  ...
+# Subtest: shared source queue gives unique images to placeholders in one generation
+ok 209 - shared source queue gives unique images to placeholders in one generation
+  ---
+  duration_ms: 2.267875
+  type: 'test'
+  ...
+# Subtest: queue continues across generations and persists on the source
+ok 210 - queue continues across generations and persists on the source
+  ---
+  duration_ms: 0.397083
+  type: 'test'
+  ...
+# Subtest: fixed placeholders do not consume the source shuffle queue
+ok 211 - fixed placeholders do not consume the source shuffle queue
+  ---
+  duration_ms: 2.090083
+  type: 'test'
+  ...
+# Subtest: reuse occurs deterministically only when placeholders outnumber images
+ok 212 - reuse occurs deterministically only when placeholders outnumber images
+  ---
+  duration_ms: 1.158833
+  type: 'test'
+  ...
+# Subtest: shuffle generation avoids the current generated image when possible
+ok 213 - shuffle generation avoids the current generated image when possible
+  ---
+  duration_ms: 0.107875
+  type: 'test'
+  ...
+# Subtest: stable asset-slot planning covers every app-owned Space without changing Store paths
+ok 214 - stable asset-slot planning covers every app-owned Space without changing Store paths
+  ---
+  duration_ms: 2.752208
+  type: 'test'
+  ...
+# Subtest: shared Store records are updated but excluded from the user desktop count
+ok 215 - shared Store records are updated but excluded from the user desktop count
+  ---
+  duration_ms: 0.134083
+  type: 'test'
+  ...
+# Subtest: stable asset-slot planning refuses to overwrite wallpaper files outside the permanent vault
+ok 216 - stable asset-slot planning refuses to overwrite wallpaper files outside the permanent vault
+  ---
+  duration_ms: 0.179958
+  type: 'test'
+  ...
+# Subtest: global backing slots are included only when one wallpaper targets all monitors
+ok 217 - global backing slots are included only when one wallpaper targets all monitors
+  ---
+  duration_ms: 0.349041
+  type: 'test'
+  ...
+# Subtest: surface normalization preserves stable persisted settings
+ok 218 - surface normalization preserves stable persisted settings
+  ---
+  duration_ms: 1.494208
+  type: 'test'
+  ...
+# Subtest: legacy texture projects remain enabled while none stays disabled
+ok 219 - legacy texture projects remain enabled while none stays disabled
+  ---
+  duration_ms: 0.139958
+  type: 'test'
+  ...
+# Subtest: surface seeds and cache keys are deterministic until regenerate is requested
+ok 220 - surface seeds and cache keys are deterministic until regenerate is requested
+  ---
+  duration_ms: 0.684417
+  type: 'test'
+  ...
+# Subtest: preview buffers stay bounded for large wallpapers
+ok 221 - preview buffers stay bounded for large wallpapers
+  ---
+  duration_ms: 0.124541
+  type: 'test'
+  ...
+# Subtest: surface caches have explicit memory bounds
+ok 222 - surface caches have explicit memory bounds
+  ---
+  duration_ms: 0.045792
+  type: 'test'
+  ...
+# Subtest: bundled surface manifest is complete and uses CC0 provenance
+ok 223 - bundled surface manifest is complete and uses CC0 provenance
+  ---
+  duration_ms: 2.385709
+  type: 'test'
+  ...
+# Subtest: every surface manifest entry has an asset and thumbnail
+ok 224 - every surface manifest entry has an asset and thumbnail
+  ---
+  duration_ms: 3.41125
+  type: 'test'
+  ...
+# Subtest: surface aliases keep older projects compatible while the editor shows the new curated set
+ok 225 - surface aliases keep older projects compatible while the editor shows the new curated set
+  ---
+  duration_ms: 0.285542
+  type: 'test'
+  ...
+# Subtest: bundled surfaces expose the requested default controls for each sourced texture
+ok 226 - bundled surfaces expose the requested default controls for each sourced texture
+  ---
+  duration_ms: 0.138916
+  type: 'test'
+  ...
+# Subtest: bundled surface presets default to multiply blending
+ok 227 - bundled surface presets default to multiply blending
+  ---
+  duration_ms: 0.061792
+  type: 'test'
+  ...
+# Subtest: torn paper includes three simplified editable bundled presets
+ok 228 - torn paper includes three simplified editable bundled presets
+  ---
+  duration_ms: 2.876584
+  type: 'test'
+  ...
+# Subtest: applying a torn preset changes editable settings without changing the stable seed
+ok 229 - applying a torn preset changes editable settings without changing the stable seed
+  ---
+  duration_ms: 0.763583
+  type: 'test'
+  ...
+# Subtest: custom torn presets serialize independently from the active effect
+ok 230 - custom torn presets serialize independently from the active effect
+  ---
+  duration_ms: 0.612417
+  type: 'test'
+  ...
+# Subtest: torn texture details are deterministic and regenerate only when the seed changes
+ok 231 - torn texture details are deterministic and regenerate only when the seed changes
+  ---
+  duration_ms: 1.284084
+  type: 'test'
+  ...
+# Subtest: individual torn edges can remain disabled through normalization
+ok 232 - individual torn edges can remain disabled through normalization
+  ---
+  duration_ms: 0.543917
+  type: 'test'
+  ...
+# Subtest: tooltip placement stays inside narrow viewports
+ok 233 - tooltip placement stays inside narrow viewports
+  ---
+  duration_ms: 1.1495
+  type: 'test'
+  ...
+# Subtest: tooltip falls below controls near the top edge
+ok 234 - tooltip falls below controls near the top edge
+  ---
+  duration_ms: 0.063375
+  type: 'test'
+  ...
+# Subtest: render file validation rejects missing and empty files
+ok 235 - render file validation rejects missing and empty files
+  ---
+  duration_ms: 10.281916
+  type: 'test'
+  ...
+# Subtest: cleanup keeps only the newest generated files
+ok 236 - cleanup keeps only the newest generated files
+  ---
+  duration_ms: 9.989541
+  type: 'test'
+  ...
+# Subtest: suggested names cannot escape the generated directory
+ok 237 - suggested names cannot escape the generated directory
+  ---
+  duration_ms: 0.327166
+  type: 'test'
+  ...
+# Subtest: cleanup never removes preserved active wallpaper files
+ok 238 - cleanup never removes preserved active wallpaper files
+  ---
+  duration_ms: 7.232
+  type: 'test'
+  ...
+# Subtest: manual generation renders once, persists once, and reports generated state
+ok 239 - manual generation renders once, persists once, and reports generated state
+  ---
+  duration_ms: 2.4275
+  type: 'test'
+  ...
+# Subtest: manual application applies the exact generated file and verifies success
+ok 240 - manual application applies the exact generated file and verifies success
+  ---
+  duration_ms: 0.153958
+  type: 'test'
+  ...
+# Subtest: generate and apply is sequential and uses the generated file path
+ok 241 - generate and apply is sequential and uses the generated file path
+  ---
+  duration_ms: 0.174916
+  type: 'test'
+  ...
+# Subtest: generation errors prevent application and preserve the real error
+ok 242 - generation errors prevent application and preserve the real error
+  ---
+  duration_ms: 0.256583
+  type: 'test'
+  ...
+# Subtest: render, persist, and apply timeouts reject instead of leaving the UI busy
+ok 243 - render, persist, and apply timeouts reject instead of leaving the UI busy
+  ---
+  duration_ms: 32.266834
+  type: 'test'
+  ...
+# Subtest: wallpaper set names are Finder-safe
+ok 244 - wallpaper set names are Finder-safe
+  ---
+  duration_ms: 1.8365
+  type: 'test'
+  ...
+# Subtest: wallpaper set paths never overwrite an existing set
+ok 245 - wallpaper set paths never overwrite an existing set
+  ---
+  duration_ms: 2.44625
+  type: 'test'
+  ...
+# Subtest: cleanup deletes only managed old sets and keeps the newest five
+ok 246 - cleanup deletes only managed old sets and keeps the newest five
+  ---
+  duration_ms: 15.196625
+  type: 'test'
+  ...
+# Subtest: erase all removes every child entry but preserves the Wallpaper Sets root
+ok 247 - erase all removes every child entry but preserves the Wallpaper Sets root
+  ---
+  duration_ms: 5.46575
+  type: 'test'
+  ...
+# Subtest: rotation scheduling computes the next run
+ok 248 - rotation scheduling computes the next run
+  ---
+  duration_ms: 1.486125
+  type: 'test'
+  ...
+# Subtest: history navigation does not wrap or mutate history
+ok 249 - history navigation does not wrap or mutate history
+  ---
+  duration_ms: 0.796292
+  type: 'test'
+  ...
+# Subtest: template rotation is planned without mutating persisted state
+ok 250 - template rotation is planned without mutating persisted state
+  ---
+  duration_ms: 0.180625
+  type: 'test'
+  ...
+# Subtest: generated shuffle state is committed only after a successful application
+ok 251 - generated shuffle state is committed only after a successful application
+  ---
+  duration_ms: 0.061292
+  type: 'test'
+  ...
+# Subtest: macOS target discovery preserves inactive Spaces even when wallpapers match
+ok 252 - macOS target discovery preserves inactive Spaces even when wallpapers match
+  ---
+  duration_ms: 0.196792
+  type: 'test'
+  ...
+# Subtest: fade planning creates exactly one overlay assignment per visible display
+ok 253 - fade planning creates exactly one overlay assignment per visible display
+  ---
+  duration_ms: 0.123167
+  type: 'test'
+  ...
+# Subtest: visibility classification consumes duplicate wallpaper paths only once per visible desktop
+ok 254 - visibility classification consumes duplicate wallpaper paths only once per visible desktop
+  ---
+  duration_ms: 0.104666
+  type: 'test'
+  ...
+# Subtest: current desktop resolves to the display containing the app window
+ok 255 - current desktop resolves to the display containing the app window
+  ---
+  duration_ms: 1.326959
+  type: 'test'
+  ...
+# Subtest: current monitor honors the explicit monitor selection
+ok 256 - current monitor honors the explicit monitor selection
+  ---
+  duration_ms: 0.076792
+  type: 'test'
+  ...
+# Subtest: all visible monitors selects every reliable connected physical display
+ok 257 - all visible monitors selects every reliable connected physical display
+  ---
+  duration_ms: 0.0545
+  type: 'test'
+  ...
+# Subtest: inactive Space modes retain their physical display scope
+ok 258 - inactive Space modes retain their physical display scope
+  ---
+  duration_ms: 0.103041
+  type: 'test'
+  ...
+# Subtest: macOS all-desktop implementation is diagnostic-driven, transactional, and uses the modern Store on macOS 15
+ok 259 - macOS all-desktop implementation is diagnostic-driven, transactional, and uses the modern Store on macOS 15
+  ---
+  duration_ms: 3.174125
+  type: 'test'
+  ...
+# Subtest: targeting UI hides low-level targets and exposes only supported wallpaper assignment choices
+ok 260 - targeting UI hides low-level targets and exposes only supported wallpaper assignment choices
+  ---
+  duration_ms: 1.065167
+  type: 'test'
+  ...
+1..260
+# tests 261
+# suites 1
+# pass 261
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 982.482458
+
+> pin-paper@0.1.0 build
+> tsc && vite build && node scripts/inline-renderer-assets.cjs && npm run build:electron
+
+vite v8.0.16 building client environment for production...
+[2Ktransforming...✓ 1598 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/renderer/index.html                               0.39 kB │ gzip:   0.26 kB
+dist/renderer/assets/paper-CUeaSNll.webp              10.58 kB
+dist/renderer/assets/grid-paper-JBgwdWet.webp         13.28 kB
+dist/renderer/assets/dotted-paper-DvrsNG4f.webp       13.80 kB
+dist/renderer/assets/crumpled-paper-C1_fiSSh.webp     50.62 kB
+dist/renderer/assets/dotted-paper-dO_ndJPJ.webp    1,508.36 kB
+dist/renderer/assets/grid-paper-CG9g66sk.webp      1,509.13 kB
+dist/renderer/assets/paper-Cx8Fw7Io.webp           1,515.00 kB
+dist/renderer/assets/index-ChTInIr1.css              115.31 kB │ gzip:  22.21 kB
+dist/renderer/assets/index-BlzCfTkR.js               438.47 kB │ gzip: 147.40 kB
+
+✓ built in 336ms
+Inlined index-ChTInIr1.css and index-BlzCfTkR.js into dist/renderer/index.html
+
+> pin-paper@0.1.0 build:electron
+> tsc -p tsconfig.electron.json
+
+8. Building macOS app directory...
+
+> pin-paper@0.1.0 app:dir
+> npm run build && electron-builder --dir
+
+
+> pin-paper@0.1.0 build
+> tsc && vite build && node scripts/inline-renderer-assets.cjs && npm run build:electron
+
+vite v8.0.16 building client environment for production...
+[2Ktransforming...✓ 1598 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/renderer/index.html                               0.39 kB │ gzip:   0.26 kB
+dist/renderer/assets/paper-CUeaSNll.webp              10.58 kB
+dist/renderer/assets/grid-paper-JBgwdWet.webp         13.28 kB
+dist/renderer/assets/dotted-paper-DvrsNG4f.webp       13.80 kB
+dist/renderer/assets/crumpled-paper-C1_fiSSh.webp     50.62 kB
+dist/renderer/assets/dotted-paper-dO_ndJPJ.webp    1,508.36 kB
+dist/renderer/assets/grid-paper-CG9g66sk.webp      1,509.13 kB
+dist/renderer/assets/paper-Cx8Fw7Io.webp           1,515.00 kB
+dist/renderer/assets/index-ChTInIr1.css              115.31 kB │ gzip:  22.21 kB
+dist/renderer/assets/index-BlzCfTkR.js               438.47 kB │ gzip: 147.40 kB
+
+✓ built in 148ms
+Inlined index-ChTInIr1.css and index-BlzCfTkR.js into dist/renderer/index.html
+
+> pin-paper@0.1.0 build:electron
+> tsc -p tsconfig.electron.json
+
+  • electron-builder  version=26.15.3 os=24.6.0
+  • loaded configuration  file=package.json ("build" field)
+  • executing @electron/rebuild  electronVersion=39.8.5 arch=arm64 buildFromSource=false workspaceRoot=/Users/Evelyn/Documents/PROGAYER/Projects/Pinterest Wallpaper Compiler projectDir=./ appDir=./
+  • installing native dependencies  arch=arm64
+  • completed installing native dependencies
+  • packaging       platform=darwin arch=arm64 electron=39.8.5 appOutDir=release/mac-arm64
+  • downloaded      label=electron progress=100%
+  • downloaded electron zip extracted successfully  output=/Users/Evelyn/Documents/PROGAYER/Projects/Pinterest Wallpaper Compiler/release/mac-arm64
+  • searching for node modules  pm=npm searchDir=/Users/Evelyn/Documents/PROGAYER/Projects/Pinterest Wallpaper Compiler
+  • downloaded      label=icons-bundle.tar.gz progress=100%
+  • skipped macOS application code signing  reason=cannot find valid "Developer ID Application" identity or custom non-Apple code signing certificate, it could cause some undefined behaviour, e.g. macOS localized description not visible, see https://electron.build/code-signing allIdentities=  1) FBE7ED79443F08FD0E8248054A2C6D3EAB34849B "Petes-MBP" (CSSMERR_TP_CERT_EXPIRED)
+  2) 001D1497983D5F98E77EB1A6A3997F390BD0B883 "Petes-MacBook-Pro.local" (CSSMERR_TP_CERT_EXPIRED)
+  3) CAA3582D78A46604EDC7DA6DDF5D86156717D862 "localhost" (CSSMERR_TP_CERT_EXPIRED)
+  4) 9DE1898262CC71C44280F0F65F4C5C00E5D41CE6 "desktop-de5b9gc.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+  5) 179FA7094964D33ABD7EE3A8AA03041C4A9F227A "vibez.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+  6) 3AECD0505753EAAD7CA7E78B5E1C11D56A41B17F "msjh91970-cc.mission.fmtusd.org" (CSSMERR_TP_CERT_EXPIRED)
+  7) C4A7782E107B59B60EFE33FC27A158C2C357FABA "fusd-tl109641w.mission.fmtusd.org" (CSSMERR_TP_CERT_EXPIRED)
+  8) 323F6510C97C24BD370E32D55F38E89E954F31A6 "tianxin-laptop.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+  9) F9026CE359002138996CEDA4EE231826D9014BC4 "msjh100025-cc.mission.fmtusd.org" (CSSMERR_TP_CERT_EXPIRED)
+ 10) E4937F0AC56B276BBF211C11B25949513749760C "Petes-MacBook-Pro.local" (CSSMERR_TP_CERT_EXPIRED)
+ 11) 9D8F749C99D4CA1B16270779A5A7675EA2D0DEFC "desktop-53ufqn7.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 12) 114E4A6DB4D0DA97D6229716B84B3EB5018ECCC2 "localhost" (CSSMERR_TP_CERT_EXPIRED)
+ 13) E9B4B481FEC17606F25E090851ACDB1D40171657 "msi.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 14) 6328D7585BBC98F0987985AFDE8A6B3715D775EA "oliviasurface.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 15) 4834E32E15B8EF67E072772E6F76251169E66E6B "galaxymap.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 16) F50DA429CFA065B7D18A9487B46DF6F7C614293A "Eric-MacBook-Pro-2.local" (CSSMERR_TP_CERT_EXPIRED)
+ 17) CFAA038FA9AE45094AD8B1D00BD68BC7B728D92F "howardt490s.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 18) 9BE82BD8DA15999E4792C1DF1A44FFA116BB519D "eric-mbp-2.localdomain" (CSSMERR_TP_CERT_EXPIRED)
+ 19) FCC7DC710AB8385A063C6DC189323BDD33A0785C "macbookpro.localdomain" (CSSMERR_TP_CERT_EXPIRED)
+ 20) 7D40E91A31998520CF6531466927F59F830F6913 "desktop-9bs226b.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 21) 6F399DD4E52BFEC3F2685B5A3D50C3E32BE306F9 "msjh96364-cct.mission.fmtusd.org" (CSSMERR_TP_CERT_EXPIRED)
+ 22) A3A3774C5F706234BDE51D69134C5A2D1CB7C563 "lenovo-ideapad5.fusdk12.net" (CSSMERR_TP_CERT_EXPIRED)
+ 23) 871ADBE3DCB9E03B7AF1C558C5D1938526F3E450 "macbookpro.mshome.net" (CSSMERR_TP_CERT_EXPIRED)
+ 24) CDA17A4CC8A48D622087F87473D7BB639CA69FDD "MacBook-Pro.local" (CSSMERR_TP_NOT_TRUSTED)
+ 25) 95B1D106213B0F1E155F658DE8C16D6398ED9F56 "MacBook-Pro-10.local" (CSSMERR_TP_NOT_TRUSTED)
+ 26) B073847B4A619E2776E75BB1C589988FD1DF94B4 "MacBook-Pro-55.local" (CSSMERR_TP_NOT_TRUSTED)
+ 27) 69936DC89ACFE1904E27DB6391A399B3FDA47C8F "pal-nat186-70-58.itap.purdue.edu" (CSSMERR_TP_NOT_TRUSTED)
+ 28) 427B295EB35593F01C9E02D3B0876C5F3F21054B "localhost" (CSSMERR_TP_NOT_TRUSTED)
+ 29) 78E7F4073EEDBC76AC4F114E1DC5FD67B608DB96 "fe80::4fb:4df6:326a:f504%en0" (CSSMERR_TP_NOT_TRUSTED)
+ 30) 494814ED6FE667789C9114466DC1465BA948555F "mac" (CSSMERR_TP_NOT_TRUSTED)
+     30 identities found
+                                                Valid identities only
+     0 valid identities found
+9. Scrubbing accidental macOS media permission keys...
+10. Launching fresh Pin Paper...
+Done. App: /Users/Evelyn/Documents/PROGAYER/Projects/Pinterest Wallpaper Compiler/release/mac-arm64/Pin Paper.app
+Install log: /Users/Evelyn/Desktop/Pin-Paper-Logs/install-phase28-7.log
+Runtime log: /Users/Evelyn/Desktop/Pin-Paper-Logs/runtime-phase28-7.log
