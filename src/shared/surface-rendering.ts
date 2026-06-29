@@ -42,8 +42,8 @@ export function surfaceEffectIsVisible(effect: PaperTextureEffect) {
 export function surfaceCompositeAlpha(effect: PaperTextureEffect) {
   const normalized = normalizeSurfaceEffect(effect);
   if (!surfaceEffectIsVisible(normalized)) return 0;
-  const opacity = normalized.opacity <= 0 ? 0 : Math.min(1, 0.28 + normalized.opacity * 0.86);
-  const intensity = Math.min(1, 0.68 + (normalized.intensity / 100) * 0.42);
+  const opacity = normalized.opacity <= 0 ? 0 : Math.min(1, 0.38 + normalized.opacity * 0.92);
+  const intensity = Math.min(1, 0.76 + (normalized.intensity / 100) * 0.48);
   return Math.min(1, opacity * intensity);
 }
 

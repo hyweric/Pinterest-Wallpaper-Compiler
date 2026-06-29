@@ -163,14 +163,15 @@ export function createPlaceholder(canvas: CanvasSettings, index: number): Placeh
 
 
 export function createTextLayer(canvas: CanvasSettings, index: number): PlaceholderLayer {
-  const width = Math.round(canvas.width * 0.28);
-  const height = Math.round(canvas.height * 0.12);
+  const width = Math.round(canvas.width * 0.32);
+  const fontSize = Math.max(28, Math.round(canvas.width * 0.04));
+  const height = Math.max(42, Math.round(fontSize * 1.34));
   return {
     id: uid("text"),
     type: "placeholder",
     objectKind: "text",
     name: `Text ${index}`,
-    text: "Text",
+    text: "Add text here",
     x: Math.round(canvas.width * 0.5 - width / 2),
     y: Math.round(canvas.height * 0.5 - height / 2),
     width,
@@ -192,13 +193,13 @@ export function createTextLayer(canvas: CanvasSettings, index: number): Placehol
     crop: { offsetX: 0, offsetY: 0, zoom: 1 },
     effects: createDefaultEffects(),
     sourceState: createDefaultSourceState(),
-    fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-    fontSize: Math.max(28, Math.round(canvas.width * 0.038)),
-    fontWeight: 800,
-    textColor: "#26313a",
+    fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif",
+    fontSize,
+    fontWeight: 600,
+    textColor: "#6f675e",
     textAlign: "center",
     lineHeight: 1.12,
-    letterSpacing: 0
+    letterSpacing: 0.2
   };
 }
 

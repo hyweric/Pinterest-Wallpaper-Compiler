@@ -264,13 +264,13 @@ async function createSurfaceTile(effect: PaperTextureEffect, custom?: CustomText
   }
   if (normalized.type === "dotted-paper") {
     context.save();
-    context.globalAlpha = 0.58;
+    context.globalAlpha = 0.82;
     const spacing = 42;
-    context.fillStyle = "rgba(78,98,130,.72)";
+    context.fillStyle = "rgba(45,64,92,.92)";
     for (let y = spacing / 2; y < TILE_SIZE; y += spacing) {
       for (let x = spacing / 2; x < TILE_SIZE; x += spacing) {
         context.beginPath();
-        context.arc(x, y, 2.15, 0, Math.PI * 2);
+        context.arc(x, y, 2.55, 0, Math.PI * 2);
         context.fill();
       }
     }

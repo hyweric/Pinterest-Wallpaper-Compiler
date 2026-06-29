@@ -36,7 +36,9 @@ import {
   Trash2,
   Upload,
   Wallpaper,
-  Type
+  Type,
+  Link,
+  Unlink
 } from "lucide-react";
 import type {
   CanvasResizeMode,
@@ -137,6 +139,17 @@ const historyLimit = 80;
 const snapDistance = 8;
 const isMacOS = /Macintosh|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
 
+function pinterestPartialIsCloseEnough(imagesCached: number, total?: number, imagesFound?: number) {
+  const reported = Math.max(0, total ?? 0, imagesFound ?? 0);
+  if (!reported) return false;
+  const missing = reported - imagesCached;
+  return missing <= Math.max(4, Math.ceil(reported * 0.04));
+}
+
+function softenPinterestPartialError(error: string | undefined, completeEnough: boolean) {
+  return completeEnough ? undefined : error;
+}
+
 type TextPresetId = "heading" | "caption" | "quote" | "label" | "soft";
 
 const textStylePresets: Array<{ id: TextPresetId; label: string; text: string; fontFamily: string; fontWeight: number; sizeScale: number; lineHeight: number; letterSpacing: number; color: string }> = [
@@ -144,8 +157,40 @@ const textStylePresets: Array<{ id: TextPresetId; label: string; text: string; f
   { id: "caption", label: "Small caption", text: "Add a caption", fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", fontWeight: 650, sizeScale: 0.026, lineHeight: 1.16, letterSpacing: 0, color: "#4c5661" },
   { id: "quote", label: "Editorial quote", text: "Add a quote", fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 700, sizeScale: 0.044, lineHeight: 1.08, letterSpacing: -0.1, color: "#2c3137" },
   { id: "label", label: "Tiny label", text: "LABEL", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 800, sizeScale: 0.018, lineHeight: 1.08, letterSpacing: 1.6, color: "#5a6470" },
-  { id: "soft", label: "Soft title", text: "Soft title", fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 600, sizeScale: 0.04, lineHeight: 1.12, letterSpacing: 0.2, color: "#6f675e" }
+  { id: "soft", label: "Soft title", text: "Add text here", fontFamily: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif", fontWeight: 600, sizeScale: 0.04, lineHeight: 1.12, letterSpacing: 0.2, color: "#6f675e" }
 ];
+
+const textFontOptions = [
+  { label: "Avenir Next", value: "Avenir Next, Inter, ui-sans-serif, system-ui, sans-serif" },
+  { label: "Baskerville", value: "Baskerville, Georgia, Times New Roman, serif" },
+  { label: "Brush Script MT", value: "Brush Script MT, Snell Roundhand, cursive" },
+  { label: "Chalkboard SE", value: "Chalkboard SE, Comic Sans MS, cursive" },
+  { label: "Comic Sans MS", value: "Comic Sans MS, Chalkboard SE, cursive" },
+  { label: "Courier New", value: "Courier New, Menlo, SFMono-Regular, monospace" },
+  { label: "Didot", value: "Didot, Bodoni 72, Georgia, serif" },
+  { label: "Futura", value: "Futura, Avenir Next, Inter, sans-serif" },
+  { label: "Garamond", value: "Garamond, Baskerville, Georgia, serif" },
+  { label: "Georgia", value: "Georgia, Times New Roman, serif" },
+  { label: "Gill Sans", value: "Gill Sans, Avenir Next, Inter, sans-serif" },
+  { label: "Helvetica Neue", value: "Helvetica Neue, Inter, Arial, sans-serif" },
+  { label: "Hoefler Text", value: "Hoefler Text, Georgia, serif" },
+  { label: "Impact", value: "Impact, Haettenschweiler, Arial Narrow Bold, sans-serif" },
+  { label: "Inter", value: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" },
+  { label: "Marker Felt", value: "Marker Felt, Chalkboard SE, cursive" },
+  { label: "Menlo", value: "Menlo, SFMono-Regular, Consolas, monospace" },
+  { label: "Palatino", value: "Palatino, Palatino Linotype, Book Antiqua, serif" },
+  { label: "SF Pro", value: "SF Pro Text, -apple-system, BlinkMacSystemFont, Inter, sans-serif" },
+  { label: "Snell Roundhand", value: "Snell Roundhand, Brush Script MT, cursive" },
+  { label: "Times New Roman", value: "Times New Roman, Times, serif" },
+  { label: "Trebuchet MS", value: "Trebuchet MS, Inter, sans-serif" }
+];
+
+function estimateTextLayerHeight(layer: Pick<PlaceholderLayer, "text" | "fontSize" | "lineHeight">, minHeight = 42) {
+  const lines = Math.max(1, (layer.text ?? "Text").split(/\r?\n/).length);
+  const fontSize = layer.fontSize ?? 72;
+  const lineHeight = layer.lineHeight ?? 1.12;
+  return Math.max(minHeight, Math.ceil(lines * fontSize * lineHeight + Math.max(22, fontSize * 0.34)));
+}
 
 function textPresetForLayer(layer: PlaceholderLayer): TextPresetId {
   const fontSize = layer.fontSize ?? 72;
@@ -157,16 +202,19 @@ function textPresetForLayer(layer: PlaceholderLayer): TextPresetId {
 }
 
 function applyTextPreset(canvas: CanvasSettings, presetId: TextPresetId, keepText?: string): Partial<PlaceholderLayer> {
-  const preset = textStylePresets.find((item) => item.id === presetId) ?? textStylePresets[0];
+  const preset = textStylePresets.find((item) => item.id === presetId) ?? textStylePresets.find((item) => item.id === "soft") ?? textStylePresets[0];
+  const text = keepText?.trim() ? keepText : preset.text;
+  const fontSize = Math.max(14, Math.round(canvas.width * preset.sizeScale));
   return {
-    text: keepText?.trim() ? keepText : preset.text,
+    text,
     fontFamily: preset.fontFamily,
-    fontSize: Math.max(14, Math.round(canvas.width * preset.sizeScale)),
+    fontSize,
     fontWeight: preset.fontWeight,
     textColor: preset.color,
     lineHeight: preset.lineHeight,
     letterSpacing: preset.letterSpacing,
-    textAlign: "center"
+    textAlign: "center",
+    height: estimateTextLayerHeight({ text, fontSize, lineHeight: preset.lineHeight })
   };
 }
 
@@ -183,18 +231,20 @@ function numberedCopyName(baseName: string, existingNames: Iterable<string>) {
   return candidate;
 }
 
-function createProjectForCurrentScreen() {
-  const project = createProject();
+function currentScreenCanvas() {
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(640, Math.round(window.screen.width * ratio));
   const height = Math.max(480, Math.round(window.screen.height * ratio));
-  const canvas = {
-    ...project.canvas,
+  return {
     width,
     height,
     presetId: "custom" as const,
     orientation: width === height ? "square" as const : width > height ? "landscape" as const : "portrait" as const
   };
+}
+
+function projectWithCurrentScreenCanvas(project: WallpaperProject) {
+  const canvas = { ...project.canvas, ...currentScreenCanvas() };
   return {
     ...project,
     canvas,
@@ -202,10 +252,14 @@ function createProjectForCurrentScreen() {
       ...project.templates,
       templates: project.templates.templates.map((template) => ({
         ...template,
-        project: { ...template.project, canvas: structuredClone(canvas) }
+        project: { ...template.project, canvas: { ...template.project.canvas, ...currentScreenCanvas() } }
       }))
     }
   };
+}
+
+function createProjectForCurrentScreen() {
+  return projectWithCurrentScreenCanvas(createProject());
 }
 
 function cssImageUrl(src?: string) {
@@ -423,7 +477,12 @@ function cloneProject(project: WallpaperProject): WallpaperProject {
 }
 
 function isTypingTarget(target: EventTarget | null) {
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  if (!(target instanceof HTMLElement)) return false;
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target.isContentEditable
+    || Boolean(target.closest('[contenteditable="true"]'));
 }
 
 function sourceKindLabel(source: ImageSource) {
@@ -1146,7 +1205,14 @@ function App() {
     const autosaved = localStorage.getItem(autosaveKey);
     if (!autosaved) return createProjectForCurrentScreen();
     try {
-      return compactProjectForAutosave(normalizeProject(JSON.parse(autosaved) as WallpaperProject));
+      const restored = compactProjectForAutosave(normalizeProject(JSON.parse(autosaved) as WallpaperProject));
+      if (!localStorage.getItem(filePathKey)
+        && restored.canvas.presetId === "custom"
+        && restored.canvas.width === 1920
+        && restored.canvas.height === 1080) {
+        return projectWithCurrentScreenCanvas(restored);
+      }
+      return restored;
     } catch {
       return createProjectForCurrentScreen();
     }
@@ -1169,6 +1235,8 @@ function App() {
   const [wallpaperHistoryIndex, setWallpaperHistoryIndex] = useState(0);
   const [toolbarMenuOpen, setToolbarMenuOpen] = useState(false);
   const [addObjectMenuOpen, setAddObjectMenuOpen] = useState(false);
+  const toolbarMenuCloseTimerRef = useRef<number | undefined>(undefined);
+  const addObjectMenuCloseTimerRef = useRef<number | undefined>(undefined);
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | undefined>();
   const [layerMenu, setLayerMenu] = useState<LayerMenuState | undefined>();
   const [layerDropIndicator, setLayerDropIndicator] = useState<{ targetId: string; before: boolean } | undefined>();
@@ -1179,6 +1247,7 @@ function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [renameState, setRenameState] = useState<RenameState | undefined>();
   const [editingTextLayerId, setEditingTextLayerId] = useState<string | undefined>();
+  const [projectNameEditing, setProjectNameEditing] = useState(false);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
   const [wallpaperStatus, setWallpaperStatus] = useState<WallpaperRuntimeStatus>("idle");
   const [wallpaperTargets, setWallpaperTargets] = useState<WallpaperTarget[]>([]);
@@ -1247,6 +1316,35 @@ function App() {
     }
     return templates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }, [project.templates.templates, templateFilter]);
+
+  useEffect(() => {
+    if (!editingTextLayerId) return;
+    const frame = requestAnimationFrame(() => {
+      const editor = canvasRef.current?.querySelector(`[data-text-layer-id="${CSS.escape(editingTextLayerId)}"]`) as HTMLElement | null;
+      if (!editor) return;
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editingTextLayerId]);
+
+  useEffect(() => {
+    if (!addObjectMenuOpen && !toolbarMenuOpen) return;
+    function closeFloatingMenus(event: Event) {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(".add-object-wrap") || target.closest(".overflow-wrap")) return;
+      setAddObjectMenuOpen(false);
+      setToolbarMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", closeFloatingMenus, true);
+    return () => document.removeEventListener("pointerdown", closeFloatingMenus, true);
+  }, [addObjectMenuOpen, toolbarMenuOpen]);
 
 
   function beginWallpaperOperation(kind: "manual" | "scheduled" | "history" | "source-change") {
@@ -1536,7 +1634,7 @@ function App() {
     });
   }
 
-  function addTextLayer(presetId: TextPresetId = "heading") {
+  function addTextLayer(presetId: TextPresetId = "soft") {
     setAddObjectMenuOpen(false);
     commitProject((current) => {
       const textCount = current.layers.filter((layer) => layer.objectKind === "text").length;
@@ -1544,6 +1642,30 @@ function App() {
       selectOnlyLayer(layer.id);
       return { ...current, layers: [...current.layers, layer] };
     });
+  }
+
+  function clearAddObjectCloseTimer() {
+    if (addObjectMenuCloseTimerRef.current !== undefined) {
+      window.clearTimeout(addObjectMenuCloseTimerRef.current);
+      addObjectMenuCloseTimerRef.current = undefined;
+    }
+  }
+
+  function scheduleAddObjectClose() {
+    clearAddObjectCloseTimer();
+    addObjectMenuCloseTimerRef.current = window.setTimeout(() => setAddObjectMenuOpen(false), 650);
+  }
+
+  function clearToolbarMenuCloseTimer() {
+    if (toolbarMenuCloseTimerRef.current !== undefined) {
+      window.clearTimeout(toolbarMenuCloseTimerRef.current);
+      toolbarMenuCloseTimerRef.current = undefined;
+    }
+  }
+
+  function scheduleToolbarMenuClose() {
+    clearToolbarMenuCloseTimer();
+    toolbarMenuCloseTimerRef.current = window.setTimeout(() => setToolbarMenuOpen(false), 650);
   }
 
   function deleteLayers(ids: string[]) {
@@ -2279,24 +2401,29 @@ function App() {
           ? await window.wallpaperApi.importPinterestBoard(request)
           : await window.wallpaperApi.updatePinterestBoard(request);
 
-      setPinterestDialog((current) => ({
-        ...current,
-        busy: false,
-        stage: result.canceled ? "canceled" : result.partial ? "partial" : result.ok ? "complete" : "error",
-        progress: result.progress,
-        imagesFound: result.imagesFound,
-        imagesCached: result.imagesCached,
-        log: result.log,
-        current: result.imagesCached,
-        total: result.partial ? current.total : Math.max(result.imagesFound, result.imagesCached),
-        error: result.error
-      }));
+      setPinterestDialog((current) => {
+        const completeEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, current.total, result.imagesFound));
+        return {
+          ...current,
+          busy: false,
+          stage: result.canceled ? "canceled" : completeEnough || result.ok ? "complete" : result.partial ? "partial" : "error",
+          progress: completeEnough ? 100 : result.progress,
+          imagesFound: result.imagesFound,
+          imagesCached: result.imagesCached,
+          log: result.log,
+          current: result.imagesCached,
+          total: completeEnough || !result.partial ? Math.max(result.imagesFound, result.imagesCached) : current.total,
+          error: softenPinterestPartialError(result.error, completeEnough)
+        };
+      });
 
+      const importCompleteEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, pinterestDialog.total ?? existing?.expectedItemCount, result.imagesFound));
       if (result.source && result.source.images.length > 0) {
-        const [resolved] = addSourcesToProject([result.source], [], true);
+        const sourceForProject = importCompleteEnough ? { ...result.source, importStatus: "ready" as const, expectedItemCount: Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound) } : result.source;
+        const [resolved] = addSourcesToProject([sourceForProject], [], true);
         setSelectedSourceId(resolved?.id ?? result.source.id);
       }
-      setMessage(result.error ?? `Pinterest board ready with ${result.imagesCached} cached pins.`);
+      setMessage(softenPinterestPartialError(result.error, importCompleteEnough) ?? `Pinterest board ready with ${result.imagesCached} cached pins.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Pinterest import failed.";
       setPinterestDialog((current) => ({ ...current, busy: false, stage: "error", error: message, log: [...current.log, message] }));
@@ -3809,24 +3936,29 @@ function App() {
         existingSource: source,
         resumeBookmark: source.importCursor
       });
-      setPinterestDialog((current) => ({
-        ...current,
-        busy: false,
-        stage: result.canceled ? "canceled" : result.partial ? "partial" : result.ok ? "complete" : "error",
-        progress: result.progress,
-        imagesFound: result.imagesFound,
-        imagesCached: result.imagesCached,
-        log: result.log,
-        current: result.imagesCached,
-        total: result.partial ? current.total : Math.max(result.imagesFound, result.imagesCached),
-        error: result.error
-      }));
+      setPinterestDialog((current) => {
+        const completeEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, current.total, result.imagesFound));
+        return {
+          ...current,
+          busy: false,
+          stage: result.canceled ? "canceled" : completeEnough || result.ok ? "complete" : result.partial ? "partial" : "error",
+          progress: completeEnough ? 100 : result.progress,
+          imagesFound: result.imagesFound,
+          imagesCached: result.imagesCached,
+          log: result.log,
+          current: result.imagesCached,
+          total: completeEnough || !result.partial ? Math.max(result.imagesFound, result.imagesCached) : current.total,
+          error: softenPinterestPartialError(result.error, completeEnough)
+        };
+      });
+      const refreshCompleteEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, source.expectedItemCount, result.imagesFound));
       if (result.source && result.source.images.length > 0) {
+        const sourceForProject = refreshCompleteEnough ? { ...result.source, importStatus: "ready" as const, expectedItemCount: Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound) } : result.source;
         commitProject((current) => ({
           ...current,
-          sources: current.sources.map((item) => (item.id === source.id ? { ...result.source!, id: source.id, name: source.name } : item))
+          sources: current.sources.map((item) => (item.id === source.id ? { ...sourceForProject, id: source.id, name: source.name } : item))
         }));
-        setMessage(result.error ?? `Refreshed ${result.source.images.length} Pinterest pins.`);
+        setMessage(softenPinterestPartialError(result.error, refreshCompleteEnough) ?? `Refreshed ${result.source.images.length} Pinterest pins.`);
       } else {
         setMessage(result.error ?? "Pinterest import unavailable");
       }
@@ -4113,8 +4245,20 @@ function App() {
             <img className="brand-mark pin-paper-mark" src={pinPaperIcon} alt="Pin Paper" />
           </button>
           <div className="brand-copy">
-            <input className="project-name" value={project.name} onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))} />
-            <p><span>{project.sources.length} pools</span><span>{project.templates.templates.length} templates</span></p>
+            {projectNameEditing ? (
+              <input
+                className="project-name editing"
+                value={project.name}
+                autoFocus
+                onFocus={(event) => event.currentTarget.select()}
+                onBlur={() => setProjectNameEditing(false)}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur(); }}
+                onChange={(event) => commitProject((current) => ({ ...current, name: event.target.value }))}
+              />
+            ) : (
+              <button className="project-name-display" title={project.name} onClick={() => setProjectNameEditing(true)}>{project.name}</button>
+            )}
+
           </div>
           <button className="icon-button panel-local-toggle tooltip-anchor" data-tooltip="Hide source panel" aria-label="Hide source panel" onClick={() => setLeftPanelOpen(false)}><PanelLeft size={16} /></button>
         </div>
@@ -4150,22 +4294,6 @@ function App() {
             <button className={sourceLibraryView === "linked" ? "active" : ""} onClick={() => setSourceLibraryView("linked")}>Linked <span>{linkedSources.length}</span></button>
             <button className={sourceLibraryView === "global" ? "active" : ""} onClick={() => setSourceLibraryView("global")}>Global <span>{project.sources.length}</span></button>
           </div>
-
-          {selectedSource && !selectedLayer && (
-            <div className="source-detail-card">
-              <div className="source-detail-heading">
-                <span className="source-icon">{selectedSource.type === "local-folder" ? <FolderOpen size={17} /> : selectedSource.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
-                <div>
-                  <strong>{selectedSource.name}</strong>
-                  <span>{sourceKindLabel(selectedSource)}</span>
-                </div>
-              </div>
-              <div className="source-detail-actions">
-                <button className="pill-button" onClick={() => void rescanSource(selectedSource)}>Refresh</button>
-              </div>
-            </div>
-          )}
-
 
           <div className="source-list collection-list">
             {visibleSources.length === 0 ? (
@@ -4203,17 +4331,18 @@ function App() {
                     <span className="source-icon">{source.type === "local-folder" ? <FolderOpen size={17} /> : source.type === "pinterest-board" ? <Sparkles size={17} /> : <Images size={17} />}</span>
                     <span className="source-copy">
                       <strong>{source.name}</strong>
-                      <span>{countLabel}{source.importStatus === "partial" ? " partial" : ""}</span>
+                      <span><span>{sourceKindLabel(source)}</span><span>{countLabel}{source.importStatus === "partial" ? " partial" : ""}</span></span>
                     </span>
                     {selectedLayer && assigned && <span className="assigned-dot" title="Assigned to selected frame" />}
                   </button>
                   <div className="source-row-actions">
+                    <button className="icon-button source-row-icon-action" title="Refresh source" aria-label="Refresh source" onClick={() => void rescanSource(source)}><RefreshCcw size={15} /></button>
                     {sourceLibraryView === "linked" ? (
-                      <button className="source-mini-action" title="Unlink from this template" onClick={() => unlinkSourceFromTemplate(source)}>Unlink</button>
+                      <button className="icon-button source-row-icon-action" title="Unlink from this template" aria-label="Unlink from this template" onClick={() => unlinkSourceFromTemplate(source)}><Unlink size={15} /></button>
                     ) : linked ? (
                       <span className="source-linked-badge">Linked</span>
                     ) : (
-                      <button className="source-mini-action" title="Link to this template" onClick={() => linkSourceToTemplate(source)}>Link</button>
+                      <button className="icon-button source-row-icon-action" title="Link to this template" aria-label="Link to this template" onClick={() => linkSourceToTemplate(source)}><Link size={15} /></button>
                     )}
                     {sourceLibraryView === "global" && (
                       <button className="icon-button source-delete" title="Delete global source" onClick={() => removeSource(source)}><Trash2 size={14} /></button>
@@ -4364,14 +4493,12 @@ function App() {
             <button className="icon-button tooltip-anchor" data-tooltip="Undo" aria-label="Undo" onClick={undo} disabled={history.past.length === 0}>↶</button>
             <button className="icon-button tooltip-anchor" data-tooltip="Redo" aria-label="Redo" onClick={redo} disabled={history.future.length === 0}>↷</button>
           </div>
-          <div className="toolbar-create-actions add-object-wrap">
-            <button className="secondary-action compact-top-action" onClick={() => setAddObjectMenuOpen((value) => !value)}><Plus size={16} /> Add Object <ChevronDown size={14} /></button>
+          <div className="toolbar-create-actions add-object-wrap" onMouseEnter={clearAddObjectCloseTimer} onMouseLeave={scheduleAddObjectClose}>
+            <button className="secondary-action compact-top-action" onClick={() => { clearAddObjectCloseTimer(); setAddObjectMenuOpen((value) => !value); }}><Plus size={16} /> Add Object <ChevronDown size={14} /></button>
             {addObjectMenuOpen && (
-              <div className="popover-menu add-object-menu">
+              <div className="popover-menu add-object-menu" onMouseEnter={clearAddObjectCloseTimer} onMouseLeave={scheduleAddObjectClose}>
                 <button onClick={addPlaceholder}><ImagePlus size={16} /> Frame</button>
-                {textStylePresets.map((preset) => (
-                  <button key={preset.id} onClick={() => addTextLayer(preset.id)}><Type size={16} /> {preset.label}</button>
-                ))}
+                <button onClick={() => addTextLayer()}><Type size={16} /> Text</button>
               </div>
             )}
           </div>
@@ -4392,10 +4519,10 @@ function App() {
                 <Images size={17} /> Create Wallpaper Set
               </button>
             )}
-            <div className="overflow-wrap">
-              <button className="icon-button tooltip-anchor" data-tooltip="More actions" aria-label="More actions" onClick={() => setToolbarMenuOpen((value) => !value)}><MoreHorizontal size={18} /></button>
+            <div className="overflow-wrap" onMouseEnter={clearToolbarMenuCloseTimer} onMouseLeave={scheduleToolbarMenuClose}>
+              <button className="icon-button tooltip-anchor" data-tooltip="More actions" aria-label="More actions" onClick={() => { clearToolbarMenuCloseTimer(); setToolbarMenuOpen((value) => !value); }}><MoreHorizontal size={18} /></button>
               {toolbarMenuOpen && (
-                <div className="popover-menu toolbar-overflow">
+                <div className="popover-menu toolbar-overflow" onMouseEnter={clearToolbarMenuCloseTimer} onMouseLeave={scheduleToolbarMenuClose}>
                   <button onClick={openProject}><FolderOpen size={16} /> Open</button>
                   <button onClick={saveProject}><Save size={16} /> Save</button>
                   <button onClick={saveProjectAs}>Save as</button>
@@ -4421,7 +4548,7 @@ function App() {
               onPatch={(patch) => patchSelectedLayer(patch)}
               onDone={() => setCropModeLayerId(undefined)}
             />
-          ) : selectedLayer && !selectedLayer.locked ? (
+          ) : selectedLayer && !selectedLayer.locked && selectedLayer.objectKind !== "text" ? (
             <ContextToolbar
               layer={selectedLayer}
               onPatch={(patch) => patchSelectedLayer(patch)}
@@ -4541,7 +4668,10 @@ function App() {
                       }}
                       onDoubleClick={(event) => {
                         event.stopPropagation();
-                        if (!layer.locked) setEditingTextLayerId(layer.id);
+                        if (!layer.locked) {
+                          selectOnlyLayer(layer.id);
+                          setEditingTextLayerId(layer.id);
+                        }
                       }}
                       onPointerDown={(event) => {
                         if (editing) return;
@@ -4550,6 +4680,7 @@ function App() {
                     >
                       <div
                         className="text-layer-content"
+                        data-text-layer-id={layer.id}
                         contentEditable={editing && !layer.locked}
                         suppressContentEditableWarning
                         style={{
@@ -4563,9 +4694,11 @@ function App() {
                         }}
                         onBlur={(event) => {
                           setEditingTextLayerId(undefined);
-                          patchLayer(layer.id, { text: event.currentTarget.innerText || "Text" });
+                          const text = event.currentTarget.innerText || "Text";
+                          patchLayer(layer.id, { text, height: estimateTextLayerHeight({ text, fontSize: layer.fontSize, lineHeight: layer.lineHeight }) });
                         }}
                         onKeyDown={(event) => {
+                          event.stopPropagation();
                           if (event.key === "Escape") {
                             event.preventDefault();
                             setEditingTextLayerId(undefined);
@@ -4908,7 +5041,7 @@ function TemplateHome({
         ) : templates.map((template) => (
           <article className="home-template-card" key={template.id} onClick={() => onOpen(template)}>
             <div className="home-template-preview-wrap">
-              <TemplatePreview template={template} sources={project.sources} />
+              <TemplatePreview project={project} template={template} />
               <button
                 className={`template-favorite ${template.favorite ? "active" : ""}`}
                 title={template.favorite ? "Remove from favorites" : "Add to favorites"}
@@ -4922,7 +5055,7 @@ function TemplateHome({
             </div>
             <div className="home-template-copy">
               <div>
-                <h3>{template.name}</h3>
+                <h3 title={template.name}>{template.name}</h3>
                 <p><span>{template.project.canvas.width} × {template.project.canvas.height}</span><span>{template.project.layers.length} layers</span></p>
               </div>
               <time>{new Date(template.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
@@ -4943,10 +5076,32 @@ function TemplateHome({
   );
 }
 
-function TemplatePreview({ template, sources }: { template: WallpaperTemplate; sources: ImageSource[] }) {
-  // Render template previews live so borders, filters, shadows, and paper effects stay visible.
+function TemplatePreview({ project, template }: { project: WallpaperProject; template: WallpaperTemplate }) {
   const canvas = template.project.canvas;
-  return (
+  const [renderedPreview, setRenderedPreview] = useState<string | undefined>();
+
+  useEffect(() => {
+    let canceled = false;
+    setRenderedPreview(undefined);
+    const previewProject = normalizeProject(workspaceFromTemplate(project, template));
+    renderProjectToDataUrl(previewProject, "png")
+      .then((url) => {
+        if (!canceled) setRenderedPreview(url);
+      })
+      .catch(() => {
+        if (!canceled) setRenderedPreview(template.thumbnailDataUrl);
+      });
+    return () => { canceled = true; };
+  }, [project.updatedAt, project.sources.length, template.id, template.updatedAt, template.thumbnailDataUrl, JSON.stringify(template.project.canvas), JSON.stringify(template.project.layers)]);
+
+  return renderedPreview ? (
+    <img
+      className="home-template-image rendered-home-template-preview"
+      src={renderedPreview}
+      alt=""
+      style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
+    />
+  ) : (
     <div
       className="generated-template-preview"
       style={{
@@ -4970,7 +5125,7 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
                 opacity: layer.opacity,
                 color: layer.textColor ?? "#26313a",
                 fontFamily: layer.fontFamily,
-                fontSize: `${Math.max(8, ((layer.fontSize ?? 72) / canvas.width) * 100)}vw`,
+                fontSize: `${Math.max(2, ((layer.fontSize ?? 72) / canvas.width) * 100)}cqw`,
                 fontWeight: layer.fontWeight,
                 textAlign: layer.textAlign,
                 lineHeight: layer.lineHeight
@@ -4980,7 +5135,7 @@ function TemplatePreview({ template, sources }: { template: WallpaperTemplate; s
         }
         const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
         const previewSource = sourceIds
-          .map((sourceId) => sources.find((source) => source.id === sourceId))
+          .map((sourceId) => project.sources.find((source) => source.id === sourceId))
           .find((source) => source && sourceImagesForPolicy(source).length);
         const image = previewSource ? sourceImagesForPolicy(previewSource)[0] : undefined;
         return (
@@ -5361,12 +5516,15 @@ function TextTopBar({ layer, canvas, onPatch }: { layer: PlaceholderLayer; canva
       <select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>
         {textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
       </select>
+      <select className="text-font-select" value={layer.fontFamily ?? textFontOptions[0].value} onChange={(event) => onPatch({ fontFamily: event.target.value })}>
+        {textFontOptions.map((font) => <option key={font.label} value={font.value}>{font.label}</option>)}
+      </select>
       <div className="text-size-stepper">
-        <button aria-label="Decrease text size" onClick={() => onPatch({ fontSize: Math.max(8, fontSize - 4) })}>−</button>
+        <button aria-label="Decrease text size" onClick={() => { const next = Math.max(8, fontSize - 4); onPatch({ fontSize: next, height: estimateTextLayerHeight({ text: layer.text, fontSize: next, lineHeight: layer.lineHeight }) }); }}>−</button>
         <span>{Math.round(fontSize)}</span>
-        <button aria-label="Increase text size" onClick={() => onPatch({ fontSize: Math.min(420, fontSize + 4) })}>+</button>
+        <button aria-label="Increase text size" onClick={() => { const next = Math.min(420, fontSize + 4); onPatch({ fontSize: next, height: estimateTextLayerHeight({ text: layer.text, fontSize: next, lineHeight: layer.lineHeight }) }); }}>+</button>
       </div>
-      <label className="text-color-control" title="Text color"><span>A</span><input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
+      <label className="text-color-control full-color-control" title="Text color"><input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
       <button className={weight >= 800 ? "active" : ""} onClick={() => onPatch({ fontWeight: weight >= 800 ? 600 : 850 })}>B</button>
       <button onClick={() => onPatch({ textAlign: layer.textAlign === "left" ? "center" : layer.textAlign === "center" ? "right" : "left" })}>{layer.textAlign === "left" ? "⫷" : layer.textAlign === "right" ? "⫸" : "☰"}</button>
     </div>
@@ -5699,12 +5857,12 @@ function PinterestDialog({
             <div className="dialog-actions"><button className="pill-button primary" onClick={onClose}>Done</button></div>
           </div>
         )}
-        {state.error && (
-          <div className={`pinterest-error ${state.stage === "partial" ? "partial" : ""}`}>
-            <strong>{state.stage === "partial" ? "Pinterest import incomplete" : state.stage === "canceled" ? "Pinterest import stopped" : "Pinterest import unavailable"}</strong>
+        {state.error && state.stage !== "partial" && (
+          <div className="pinterest-error">
+            <strong>{state.stage === "canceled" ? "Pinterest import stopped" : "Pinterest import unavailable"}</strong>
             <p>{state.error}</p>
             <div className="dialog-actions">
-              <button className="pill-button primary" disabled={state.busy} onClick={onImport}>{state.stage === "partial" || state.stage === "canceled" ? "Resume Import" : "Retry"}</button>
+              <button className="pill-button primary" disabled={state.busy} onClick={onImport}>{state.stage === "canceled" ? "Resume Import" : "Retry"}</button>
               <button className="pill-button" onClick={onClose}>Close</button>
             </div>
           </div>
@@ -5947,9 +6105,10 @@ function Properties({
         <details open>
           <summary>Text <ChevronDown size={15} /></summary>
           <label>Text style<select value={textPresetForLayer(layer)} onChange={(event) => onPatch(applyTextPreset(canvas, event.target.value as TextPresetId, layer.text))}>{textStylePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}</select></label>
-          <label>Content<textarea value={layer.text ?? "Text"} rows={4} onChange={(event) => onPatch({ text: event.target.value })} /></label>
+          <label>Font<select value={layer.fontFamily ?? textFontOptions[0].value} onChange={(event) => onPatch({ fontFamily: event.target.value })}>{textFontOptions.map((font) => <option key={font.label} value={font.value}>{font.label}</option>)}</select></label>
+          <label>Content<textarea value={layer.text ?? "Text"} rows={4} onChange={(event) => { const text = event.target.value; onPatch({ text, height: estimateTextLayerHeight({ text, fontSize: layer.fontSize, lineHeight: layer.lineHeight }) }); }} /></label>
           <div className="two-col">
-            <label>Size<SoftNumberInput value={layer.fontSize ?? 72} min={8} max={400} onCommit={(value) => onPatch({ fontSize: Math.round(value) })} /></label>
+            <label>Size<SoftNumberInput value={layer.fontSize ?? 72} min={8} max={400} onCommit={(value) => { const fontSize = Math.round(value); onPatch({ fontSize, height: estimateTextLayerHeight({ text: layer.text, fontSize, lineHeight: layer.lineHeight }) }); }} /></label>
             <label>Weight<SoftNumberInput value={layer.fontWeight ?? 800} min={100} max={900} step={100} onCommit={(value) => onPatch({ fontWeight: Math.round(value) })} /></label>
             <label>Color<input type="color" value={layer.textColor ?? "#26313a"} onChange={(event) => onPatch({ textColor: event.target.value })} /></label>
             <label>Align<select value={layer.textAlign ?? "center"} onChange={(event) => onPatch({ textAlign: event.target.value as PlaceholderLayer["textAlign"] })}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
@@ -6100,7 +6259,7 @@ function Properties({
   return (
     <section className="panel properties">
       {activeTab === "image" && <>
-        <details>
+        <details open>
           <summary>Frame Position <ChevronDown size={15} /></summary>
           <div className="frame-mode-choice-grid" role="group" aria-label="Frame Mode">
             <button type="button" className={(layer.frameMode ?? "fixed") === "fixed" ? "active" : ""} onClick={() => patchFrameMode("fixed")}>Fixed Shape</button>
@@ -6115,7 +6274,7 @@ function Properties({
         <details open>
           <summary>Border and Shape <ChevronDown size={15} /></summary>
           <label>Shape<select value={layer.maskShape} onChange={(event) => onPatch({ maskShape: event.target.value as MaskShape })}><option value="rectangle">Rectangle</option><option value="rounded">Rounded</option><option value="circle">Circle</option></select></label>
-          <div className="two-col"><label>Border Thickness<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label>Border Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
+          <div className="two-col"><label>Border Thickness<SoftNumberInput value={layer.borderWidth} min={0} onCommit={(value) => onPatch({ borderWidth: Math.round(value) })} /></label><label>Radius<SoftNumberInput value={layer.borderRadius} min={0} disabled={layer.maskShape !== "rounded"} onCommit={(value) => onPatch({ borderRadius: Math.round(value) })} /></label><label className="rounded-color-label">Border Color<input type="color" value={layer.borderColor} onChange={(event) => onPatch({ borderColor: event.target.value })} /></label><label>Opacity<SoftNumberInput value={layer.borderOpacity} min={0} max={1} step={0.05} onCommit={(value) => onPatch({ borderOpacity: value })} /></label></div>
           <FilterSlider label="Image opacity" value={layer.opacity} min={0} max={1} step={.05} onChange={(value) => onPatch({ opacity: value })} />
         </details>
 
