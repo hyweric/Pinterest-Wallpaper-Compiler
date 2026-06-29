@@ -839,8 +839,10 @@ function browserSourceNameFromFiles(files: File[], fallback: string) {
   return fallback;
 }
 
-async function browserImageSourceFromFiles(files: File[], fallbackName: string): Promise<{ source?: ImageSource; summary: LocalImportSummary; warnings: string[] }> {
-  const supported = files.filter((file) => {
+async function browserImageSourceFromFiles(files: File[], fallbackName: string, directoryMode: BrowserDirectoryImportMode = "all"): Promise<{ source?: ImageSource; summary: LocalImportSummary; warnings: string[] }> {
+  const importFiles = directoryMode === "top-level-only" ? topLevelBrowserDirectoryFiles(files) : files;
+  const skippedNestedDirectoryCount = Math.max(0, files.length - importFiles.length);
+  const supported = importFiles.filter((file) => {
     const extension = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
     return file.type.startsWith("image/") || finderDropImageExtensions.has(extension);
   });
@@ -864,19 +866,20 @@ async function browserImageSourceFromFiles(files: File[], fallbackName: string):
       warnings.push(error instanceof Error ? error.message : `Unable to read ${file.name}.`);
     }
   }
+  if (skippedNestedDirectoryCount > 0) warnings.push(`Skipped ${skippedNestedDirectoryCount} image${skippedNestedDirectoryCount === 1 ? "" : "s"} inside subfolders. Browser folder import uses only the top level for now.`);
   const summary: LocalImportSummary = {
     requestedPathCount: files.length,
-    importedFolderCount: files.some((file) => file.webkitRelativePath) ? 1 : 0,
+    importedFolderCount: importFiles.some((file) => file.webkitRelativePath) ? 1 : 0,
     importedLooseImageCount: images.length,
     discoveredImageCount: supported.length,
-    skippedUnsupportedCount: Math.max(0, files.length - supported.length),
+    skippedUnsupportedCount: Math.max(0, importFiles.length - supported.length) + skippedNestedDirectoryCount,
     skippedUnreadableCount: Math.max(0, supported.length - images.length),
     skippedMissingCount: 0,
     duplicatePathCount: 0,
     emptyFolders: []
   };
   if (images.length === 0) return { summary, warnings: warnings.length ? warnings : ["No supported images were selected." ] };
-  const sourceName = browserSourceNameFromFiles(supported, fallbackName);
+  const sourceName = browserSourceNameFromFiles(importFiles, fallbackName);
   const source: ImageSource = {
     id: uid("source"),
     identityKey: `browser-files:${images.map((image) => image.path).sort().join("|")}`,
@@ -905,6 +908,96 @@ function downloadDataUrl(dataUrl: string, fileName: string) {
 function safeBrowserFileName(value: string, fallback = "pin-paper") {
   const clean = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return clean || fallback;
+}
+
+
+const webAutosaveDbName = "pin-paper-web-projects";
+const webAutosaveStoreName = "projects";
+const webAutosaveProjectKey = "autosave";
+
+type BrowserDirectoryImportMode = "all" | "top-level-only";
+
+function openWebAutosaveDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("Browser project storage is unavailable."));
+      return;
+    }
+    const request = indexedDB.open(webAutosaveDbName, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(webAutosaveStoreName)) db.createObjectStore(webAutosaveStoreName);
+    };
+    request.onerror = () => reject(request.error ?? new Error("Unable to open browser project storage."));
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function readWebAutosaveProject(): Promise<WallpaperProject | undefined> {
+  try {
+    const db = await openWebAutosaveDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(webAutosaveStoreName, "readonly");
+      const store = tx.objectStore(webAutosaveStoreName);
+      const request = store.get(webAutosaveProjectKey);
+      request.onerror = () => reject(request.error ?? new Error("Unable to read browser project storage."));
+      request.onsuccess = () => {
+        const value = request.result;
+        resolve(value && typeof value === "object" ? compactProjectForAutosave(normalizeProject(value as WallpaperProject)) : undefined);
+      };
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => reject(tx.error ?? new Error("Unable to read browser project storage."));
+    });
+  } catch (error) {
+    console.warn("Browser project restore failed", error);
+    return undefined;
+  }
+}
+
+async function writeWebAutosaveProject(project: WallpaperProject): Promise<void> {
+  const db = await openWebAutosaveDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(webAutosaveStoreName, "readwrite");
+    tx.objectStore(webAutosaveStoreName).put(compactProjectForAutosave(project), webAutosaveProjectKey);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error ?? new Error("Unable to save browser project storage."));
+    };
+  });
+}
+
+async function deleteWebAutosaveProject(): Promise<void> {
+  try {
+    const db = await openWebAutosaveDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(webAutosaveStoreName, "readwrite");
+      tx.objectStore(webAutosaveStoreName).delete(webAutosaveProjectKey);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error ?? new Error("Unable to reset browser project storage."));
+      };
+    });
+  } catch (error) {
+    console.warn("Browser project storage reset failed", error);
+  }
+}
+
+function topLevelBrowserDirectoryFiles(files: File[]): File[] {
+  const directoryFiles = files.filter((file) => file.webkitRelativePath);
+  if (directoryFiles.length === 0) return files;
+  return files.filter((file) => {
+    if (!file.webkitRelativePath) return true;
+    const parts = file.webkitRelativePath.split(/[\\/]/).filter(Boolean);
+    return parts.length <= 2;
+  });
 }
 
 async function importWebImageCandidates(candidates: WebImageCandidate[]) {
@@ -1152,6 +1245,7 @@ type AddSourceControlProps = {
   onAddFolder: () => void;
   onAddImages: () => void;
   onAddPinterest: () => void;
+  pinterestEnabled: boolean;
 };
 
 type AddSourceMenuPosition = {
@@ -1160,7 +1254,7 @@ type AddSourceMenuPosition = {
   ready: boolean;
 };
 
-function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourceControlProps) {
+function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest, pinterestEnabled }: AddSourceControlProps) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<AddSourceMenuPosition>({ left: 0, top: 0, ready: false });
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1187,14 +1281,14 @@ function AddSourceControl({ onAddFolder, onAddImages, onAddPinterest }: AddSourc
       icon: <ImagePlus size={18} />,
       action: onAddImages
     },
-    {
+    ...(pinterestEnabled ? [{
       id: "pinterest",
       label: "Pinterest Board",
       description: "Import images from a board",
       icon: <Sparkles size={18} />,
       action: onAddPinterest
-    }
-  ], [onAddFolder, onAddImages, onAddPinterest]);
+    }] : [])
+  ], [onAddFolder, onAddImages, onAddPinterest, pinterestEnabled]);
 
   const clearOpenTimer = useCallback(() => {
     if (openTimerRef.current !== undefined) window.clearTimeout(openTimerRef.current);
@@ -1417,7 +1511,7 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error?
           <p>{this.state.error}</p>
           <div>
             <button className="button primary" onClick={() => window.location.reload()}>Reload Editor</button>
-            <button className="button secondary" onClick={() => { localStorage.removeItem(autosaveKey); window.location.reload(); }}>Reset Autosave and Reload</button>
+            <button className="button secondary" onClick={() => { localStorage.removeItem(autosaveKey); void deleteWebAutosaveProject().finally(() => window.location.reload()); }}>Reset Autosave and Reload</button>
           </div>
           <small>Reset Autosave removes only crash-recovery state, not explicitly saved project files.</small>
         </section>
@@ -1428,7 +1522,7 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, { error?
 
 function App() {
   const [project, setProject] = useState<WallpaperProject>(() => {
-    const autosaved = localStorage.getItem(autosaveKey);
+    const autosaved = hasDesktopRuntimeApi ? localStorage.getItem(autosaveKey) : null;
     if (!autosaved) return createProjectForCurrentScreen();
     try {
       const restored = compactProjectForAutosave(normalizeProject(JSON.parse(autosaved) as WallpaperProject));
@@ -1450,6 +1544,7 @@ function App() {
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | undefined>(project.layers[0]?.id);
   const [selectedSourceId, setSelectedSourceId] = useState<string | undefined>(project.sources[0]?.id);
   const [projectPath, setProjectPath] = useState<string | undefined>(() => localStorage.getItem(filePathKey) ?? undefined);
+  const webAutosaveHydratedRef = useRef(hasDesktopRuntimeApi);
   const [message, setMessage] = useState("Ready");
   const [zoom, setZoom] = useState(0.36);
   const [previewUrl, setPreviewUrl] = useState<string | undefined>();
@@ -1724,8 +1819,36 @@ function App() {
   }, [project.layers, selectedLayerIds]);
 
   useEffect(() => {
+    if (hasDesktopRuntimeApi) return;
+    let canceled = false;
+    readWebAutosaveProject().then((restored) => {
+      if (canceled) return;
+      if (restored) {
+        projectRef.current = restored;
+        setProject(restored);
+        selectOnlyLayer(restored.layers[0]?.id);
+        setSelectedSourceId(restored.sources[0]?.id);
+        setMessage("Restored browser project from this device.");
+      }
+    }).finally(() => {
+      if (!canceled) webAutosaveHydratedRef.current = true;
+    });
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = window.setTimeout(() => {
+      if (!hasDesktopRuntimeApi) {
+        if (!webAutosaveHydratedRef.current) return;
+        void writeWebAutosaveProject(project).catch((error) => {
+          console.error("Browser autosave failed", error);
+          setMessage("Browser autosave could not be updated. Try exporting the project file manually.");
+        });
+        return;
+      }
       try {
         localStorage.setItem(autosaveKey, JSON.stringify(compactProjectForAutosave(project)));
       } catch (error) {
@@ -2272,7 +2395,7 @@ function App() {
 
     const files = await browserFileInput(true);
     if (!files) return;
-    const result = await browserImageSourceFromFiles(files, "Browser Folder");
+    const result = await browserImageSourceFromFiles(files, "Browser Folder", "top-level-only");
     if (!result.source) {
       setMessage(result.warnings[0] ?? "No supported images were selected.");
       return;
@@ -3269,7 +3392,7 @@ function App() {
       firstFilePath: undefined,
       error: undefined
     }));
-    if (!exportSet.destinationPath) {
+    if (!exportSet.destinationPath && window.wallpaperApi?.getDefaultExportSetFolder) {
       void window.wallpaperApi.getDefaultExportSetFolder().then((result) => {
         if (!result.canceled && result.filePath) {
           setExportSet((current) => current.open && !current.destinationPath ? { ...current, destinationPath: result.filePath } : current);
@@ -3279,6 +3402,10 @@ function App() {
   }
 
   async function chooseExportSetFolder() {
+    if (!window.wallpaperApi?.chooseExportSetFolder) {
+      setMessage("Choose-folder export is only available in the desktop app. The web version downloads wallpapers through the browser.");
+      return;
+    }
     const result = await window.wallpaperApi.chooseExportSetFolder();
     if (!result.canceled && result.filePath) setExportSet((current) => ({ ...current, destinationPath: result.filePath }));
   }
@@ -3573,6 +3700,12 @@ function App() {
   }
 
   async function saveProject() {
+    if (!window.wallpaperApi?.saveProject) {
+      const data = encodeURIComponent(JSON.stringify(compactProjectForAutosave(projectRef.current), null, 2));
+      downloadDataUrl(`data:application/json;charset=utf-8,${data}`, `${safeBrowserFileName(projectRef.current.name, "pin-paper-project")}.pwc.json`);
+      setMessage("Downloaded project file. Browser autosave also stays on this device.");
+      return;
+    }
     const result = await window.wallpaperApi.saveProject(project, projectPath);
     if (result.canceled) return;
     setProjectPath(result.filePath);
@@ -3580,6 +3713,10 @@ function App() {
   }
 
   async function saveProjectAs() {
+    if (!window.wallpaperApi?.saveProject) {
+      await saveProject();
+      return;
+    }
     const result = await window.wallpaperApi.saveProject(project);
     if (result.canceled) return;
     setProjectPath(result.filePath);
@@ -3587,6 +3724,26 @@ function App() {
   }
 
   async function openProject() {
+    if (!window.wallpaperApi?.openProject) {
+      const files = await browserFileInput(false);
+      const file = files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const opened = normalizeProject(JSON.parse(text) as WallpaperProject);
+        projectRef.current = opened;
+        setProject(opened);
+        setProjectPath(undefined);
+        selectOnlyLayer(opened.layers[0]?.id);
+        setSelectedSourceId(opened.sources[0]?.id);
+        setHistory({ past: [], future: [] });
+        setView("home");
+        setMessage(`Opened browser project file ${file.name}.`);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Unable to open browser project file.");
+      }
+      return;
+    }
     const result = await window.wallpaperApi.openProject();
     if (result.canceled) return;
     if (result.error || !result.project) {
@@ -4471,6 +4628,12 @@ function App() {
         progress: 5,
         imagesCached: source.images.length
       }));
+      if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.updatePinterestBoard) {
+        const message = "Pinterest refresh is unavailable in the web version. Use the desktop app, or download images and import them as files.";
+        setPinterestDialog((current) => ({ ...current, busy: false, stage: "error", error: message, log: [...current.log, message] }));
+        setMessage(message);
+        return;
+      }
       const result = await window.wallpaperApi.updatePinterestBoard({
         url: sourceUrl,
         mode: "update",
@@ -4850,6 +5013,7 @@ function App() {
             <AddSourceControl
               onAddFolder={() => void addFolderSource()}
               onAddImages={() => void addLocalImagesSource()}
+              pinterestEnabled={platformCapabilities.canUsePinterestImport}
               onAddPinterest={() => {
                 if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.importPinterestBoard) {
                   setMessage("Pinterest import is unavailable in the web version. Use the desktop app, or download images and import them as files.");
@@ -4870,7 +5034,7 @@ function App() {
               <button className="empty-source-card" onClick={sourceLibraryView === "linked" ? () => setSourceLibraryView("global") : addFolderSource}>
                 <FolderOpen size={20} />
                 <strong>{sourceLibraryView === "linked" ? "No sources linked" : "Add a source collection"}</strong>
-                <span>{sourceLibraryView === "linked" ? "Choose one from the global library" : "Drop a folder here or import a Pinterest board"}</span>
+                <span>{sourceLibraryView === "linked" ? "Choose one from the global library" : platformCapabilities.canUsePinterestImport ? "Drop a folder here or import a Pinterest board" : "Drop images here or add a folder"}</span>
               </button>
             ) : visibleSources.map((source) => {
               const linked = linkedSourceIds.includes(source.id);
