@@ -139,10 +139,11 @@ const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
 const historyLimit = 80;
 const snapDistance = 8;
-const currentPlatform = platformProfile(platformKindFromNavigator({
+const hasDesktopRuntimeApi = Boolean((window as Window & { wallpaperApi?: unknown }).wallpaperApi);
+const currentPlatform = platformProfile(hasDesktopRuntimeApi ? platformKindFromNavigator({
   userAgent: navigator.userAgent,
   platform: navigator.platform
-}));
+}) : "web");
 const platformCapabilities = currentPlatform.capabilities;
 const platformCopy = currentPlatform.copy;
 // Legacy regression markers for the macOS capability path:
@@ -482,6 +483,7 @@ type ExportSetState = {
   skipped: number;
   failed: number;
   finalPath?: string;
+  firstFilePath?: string;
   error?: string;
 };
 
@@ -1509,7 +1511,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!platformCapabilities.canUseNativeTray) return;
+    if (!platformCapabilities.canUseNativeTray || !window.wallpaperApi?.setTrayState) return;
     void window.wallpaperApi.setTrayState({
       enabled: false,
       paused: false,
@@ -1521,7 +1523,7 @@ function App() {
   }, [project.wallpaper.lastError, wallpaperStatus]);
 
   useEffect(() => {
-    if (!platformCapabilities.canApplyWallpaper) {
+    if (!platformCapabilities.canApplyWallpaper || !window.wallpaperApi?.getWallpaperTargets) {
       setWallpaperTargets([]);
       return;
     }
@@ -1547,7 +1549,7 @@ function App() {
   }, [project.wallpaper.enabled, project.wallpaper.paused, project.wallpaper.interval, project.wallpaper.nextScheduledAt]);
 
   useEffect(() => {
-    if (!platformCapabilities.canUseNativeTray) return;
+    if (!platformCapabilities.canUseNativeTray || !window.wallpaperApi?.onTrayCommand) return;
     return window.wallpaperApi.onTrayCommand((command) => {
       if (command === "generate-apply" && platformCapabilities.canPreviewCurrentDesktop) void previewOnCurrentDesktop();
       if (command === "previous" && platformCapabilities.canApplyWallpaper) void applyPreviousWallpaper();
@@ -1555,11 +1557,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!platformCapabilities.canUseStartupBehavior) return;
+    if (!platformCapabilities.canUseStartupBehavior || !window.wallpaperApi?.applyStartupBehavior) return;
     void window.wallpaperApi.applyStartupBehavior(projectRef.current.wallpaper.startMinimized);
   }, []);
 
   useEffect(() => {
+    if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.onPinterestProgress) return;
     return window.wallpaperApi.onPinterestProgress((progress) => {
       setPinterestDialog((current) => {
         if (current.jobId && current.jobId !== progress.jobId) return current;
@@ -3087,6 +3090,7 @@ function App() {
       skipped: 0,
       failed: 0,
       finalPath: undefined,
+      firstFilePath: undefined,
       error: undefined
     }));
     if (!exportSet.destinationPath) {
@@ -3137,8 +3141,55 @@ function App() {
   }
 
   async function openMacOSWallpaperSettings() {
+    if (!platformCapabilities.canOpenWallpaperSettings || !window.wallpaperApi?.openWallpaperSettings) {
+      setMessage(`${platformCopy.openWallpaperSettings} is not available in this version.`);
+      return;
+    }
     const result = await window.wallpaperApi.openWallpaperSettings();
     if (!result.ok) setMessage(result.error ?? "Unable to open macOS Wallpaper Settings.");
+  }
+
+  async function applyExportedWallpaperPack(filePath?: string) {
+    if (!filePath) {
+      setMessage("No exported wallpaper is available to set yet.");
+      return;
+    }
+    if (!platformCapabilities.canApplyWallpaper || !window.wallpaperApi?.applyWallpaperFile) {
+      setMessage(`${platformCopy.applyWallpaper} is not available in this version.`);
+      return;
+    }
+    const operationToken = beginWallpaperOperation("manual");
+    if (operationToken === undefined) {
+      setMessage("A wallpaper operation is already running.");
+      return;
+    }
+    try {
+      setWallpaperStatus("applying");
+      const result = await withWallpaperTimeout(window.wallpaperApi.applyWallpaperFile({
+        filePath,
+        monitorMode: currentPlatform.kind === "windows" ? "span" : "primary",
+        displayMode: projectRef.current.wallpaper.displayMode,
+        scope: "current-desktop",
+        targetMode: "current-desktop",
+        monitorId: undefined,
+        allSpacesRefreshMode: normalizeAllSpacesRefreshMode(projectRef.current.wallpaper.allSpacesRefreshMode),
+        transitionEnabled: projectRef.current.wallpaper.transitionEnabled,
+        transitionDurationMs: projectRef.current.wallpaper.transitionDurationMs
+      }), 45_000, "Setting the exported wallpaper timed out.");
+      if (!result.ok) {
+        recordWallpaperFailure(result.error ?? "Unable to set exported wallpaper.");
+        return;
+      }
+      setWallpaperStatus("applied");
+      setMessage(currentPlatform.kind === "windows"
+        ? `Set exported wallpaper on Windows desktops: ${result.filePath ?? filePath}`
+        : `${platformCopy.applyWallpaper}: ${result.filePath ?? filePath}`);
+    } catch (error) {
+      setWallpaperStatus("failed");
+      recordWallpaperFailure(error instanceof Error ? error.message : "Unable to set exported wallpaper.");
+    } finally {
+      finishWallpaperOperation(operationToken);
+    }
   }
 
   async function runExportSet() {
@@ -3167,6 +3218,7 @@ function App() {
       skipped: 0,
       failed: 0,
       finalPath: undefined,
+      firstFilePath: undefined,
       error: undefined
     }));
 
@@ -3192,6 +3244,7 @@ function App() {
     let completed = 0;
     let failed = 0;
     let firstError: string | undefined;
+    let firstFilePath: string | undefined;
 
     for (let index = 1; index <= count; index += 1) {
       if (exportCancelRef.current) break;
@@ -3210,6 +3263,7 @@ function App() {
         const dataUrl = await renderProjectToDataUrl(exportProject, "png", 1);
         const result = await window.wallpaperApi.writeExportSetFile({ sessionId, dataUrl, fileName });
         if (!result.ok) throw new Error(result.error ?? `Could not write ${fileName}.`);
+        firstFilePath ??= result.filePath;
         completed += 1;
       } catch (error) {
         failed = 1;
@@ -3251,7 +3305,7 @@ function App() {
       return;
     }
 
-    setMessage(`Created macOS wallpaper set with ${completed} variation${completed === 1 ? "" : "s"}: ${finalized.finalPath}`);
+    setMessage(`Created ${platformCopy.createWallpaperSet.toLowerCase()} with ${completed} variation${completed === 1 ? "" : "s"}: ${finalized.finalPath}`);
     setExportSet((current) => ({
       ...current,
       busy: false,
@@ -3259,6 +3313,7 @@ function App() {
       completed,
       failed: 0,
       finalPath: finalized.finalPath,
+      firstFilePath,
       error: undefined
     }));
   }
@@ -4477,6 +4532,7 @@ function App() {
           onCleanup={() => void cleanupWallpaperSets()}
           onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
           onOpenSettings={() => void openMacOSWallpaperSettings()}
+          onApplyPack={(filePath) => void applyExportedWallpaperPack(filePath)}
           onClose={() => setExportSet((current) => ({ ...current, open: false }))}
         />
         <GlobalTooltip />
@@ -5218,6 +5274,7 @@ function App() {
         onCleanup={() => void cleanupWallpaperSets()}
         onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
         onOpenSettings={() => void openMacOSWallpaperSettings()}
+        onApplyPack={(filePath) => void applyExportedWallpaperPack(filePath)}
         onClose={() => setExportSet((current) => ({ ...current, open: false }))}
       />
       <GlobalTooltip />
@@ -5923,6 +5980,7 @@ function ExportSetDialog({
   onCleanup,
   onReveal,
   onOpenSettings,
+  onApplyPack,
   onClose
 }: {
   state: ExportSetState;
@@ -5933,6 +5991,7 @@ function ExportSetDialog({
   onCleanup: () => void;
   onReveal: (folderPath?: string) => void;
   onOpenSettings: () => void;
+  onApplyPack: (filePath?: string) => void;
   onClose: () => void;
 }) {
   if (!state.open) return null;
@@ -5955,7 +6014,11 @@ function ExportSetDialog({
               <div className="wallpaper-set-path-card">
                 <span>{platformCapabilities.canOpenWallpaperSettings ? "Folder to select" : "Pack folder"}</span>
                 <code>{state.finalPath}</code>
-                <button className="button ghost" onClick={() => state.finalPath && void window.wallpaperApi.copyText(state.finalPath)}>Copy Folder Path</button>
+                <button className="button ghost" onClick={() => {
+                  if (!state.finalPath) return;
+                  if (window.wallpaperApi?.copyText) void window.wallpaperApi.copyText(state.finalPath);
+                  else void navigator.clipboard?.writeText(state.finalPath).catch(() => undefined);
+                }}>Copy Folder Path</button>
               </div>
 
               {platformCapabilities.canOpenWallpaperSettings ? (
@@ -5974,7 +6037,10 @@ function ExportSetDialog({
                 </>
               ) : (
                 <div className="wallpaper-setup-actions">
-                  <button className="button primary" onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
+                  {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
+                    <button className="button primary" onClick={() => onApplyPack(state.firstFilePath)}>Set on All Desktops</button>
+                  )}
+                  <button className={currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper ? "button secondary" : "button primary"} onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
                 </div>
               )}
             </section>
@@ -5982,6 +6048,7 @@ function ExportSetDialog({
               <button className="button secondary" onClick={() => onChange((current) => ({
                 ...current,
                 finalPath: undefined,
+                firstFilePath: undefined,
                 completed: 0,
                 failed: 0,
                 error: undefined
