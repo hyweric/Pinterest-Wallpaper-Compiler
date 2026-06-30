@@ -59,7 +59,7 @@ export function platformCapabilities(kind: PinPaperPlatformKind): PinPaperPlatfo
     case "macos":
       return {
         canApplyWallpaper: true,
-        canPreviewCurrentDesktop: true,
+        canPreviewCurrentDesktop: false,
         canCreateNativeWallpaperSet: true,
         canCreateExportPack: true,
         canUseMacSpaces: true,

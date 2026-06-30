@@ -279,7 +279,7 @@ function updateTrayMenu() {
     Menu.buildFromTemplate([
       { label: "Open Editor", click: showWindow },
       ...(nativePlatformCapabilities.canPreviewCurrentDesktop ? [{ label: nativePlatformCopy.previewCurrentDesktop, click: () => mainWindow?.webContents.send("tray:command", "generate-apply") } as const] : []),
-      ...(nativePlatformCapabilities.canApplyWallpaper ? [{ label: "Previous Preview", click: () => mainWindow?.webContents.send("tray:command", "previous") } as const] : []),
+      ...(nativePlatformCapabilities.canPreviewCurrentDesktop ? [{ label: "Previous Preview", click: () => mainWindow?.webContents.send("tray:command", "previous") } as const] : []),
       { type: "separator" },
       { label: `Status: ${trayRuntimeState.status ?? "idle"}`, enabled: false },
       ...(trayRuntimeState.lastError ? [{ label: `Last error: ${trayRuntimeState.lastError}`, enabled: false } as const] : []),

@@ -40,5 +40,5 @@ test("failed inactive-Space adoption rolls back to a visible-preserving Store ba
   assert.match(source, /return candidates\.find\(\(section\) => desktopReferencesPath\(get\(section, 'Desktop'\), assignment\.filePath\)\) \|\| candidates\[0\] \|\| null/);
   assert.doesNotMatch(source, /copyReplacing\(indexPath, backupPath\);\s*const initial = readMutablePlist\(indexPath\)/);
   assert.match(renderer, /Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings/);
-  assert.match(renderer, /Preview on Current Desktop/);
+  assert.doesNotMatch(renderer, /onClick=\{\(\) => void previewOnCurrentDesktop\(\)\}/);
 });

@@ -6,14 +6,15 @@ import test from "node:test";
 const root = process.cwd();
 const source = (relativePath: string) => readFile(path.join(root, relativePath), "utf8");
 
-test("current-desktop preview is explicit and never follows the saved all-Space target", async () => {
+test("current-desktop preview backend path stays explicit but the mac UI button is removed", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  assert.match(renderer, /Preview on Current Desktop/);
+  const platform = await source("src/shared/platform.ts");
   assert.match(renderer, /async function previewOnCurrentDesktop/);
   assert.match(renderer, /targetMode: "current-desktop"/);
   assert.match(renderer, /scope: "current-desktop"/);
   assert.match(renderer, /monitorMode: "primary"/);
-  assert.match(renderer, /Previewed on current desktop/);
+  assert.doesNotMatch(renderer, /onClick=\{\(\) => void previewOnCurrentDesktop\(\)\}/);
+  assert.match(platform, /canPreviewCurrentDesktop: false/);
 });
 
 test("app scheduling controls and tray rotation commands are removed", async () => {
@@ -22,7 +23,7 @@ test("app scheduling controls and tray rotation commands are removed", async () 
   assert.doesNotMatch(renderer, /<summary>Schedule/);
   assert.doesNotMatch(renderer, /SingleRunScheduler/);
   assert.doesNotMatch(main, /Pause Rotation|Resume Rotation|Current interval:|Next update:/);
-  assert.match(main, /Preview on Current Desktop/);
+  assert.doesNotMatch(main, /label: "Previous Preview", click: .*canApplyWallpaper/);
   assert.match(renderer, /Create a Wallpaper Set, then choose that folder in macOS Wallpaper Settings/);
 });
 

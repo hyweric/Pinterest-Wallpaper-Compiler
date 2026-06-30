@@ -4,11 +4,12 @@ import path from "node:path";
 import test from "node:test";
 import { compactProjectForAutosave, createProject } from "../renderer/project.js";
 
-test("normal editor UI separates current-desktop preview from wallpaper-set export", async () => {
+test("normal editor UI removes mac current-desktop preview while keeping wallpaper-set export", async () => {
   const source = await readFile(path.join(process.cwd(), "src/renderer/main.tsx"), "utf8");
-  assert.match(source, /Preview on Current Desktop/);
+  const platform = await readFile(path.join(process.cwd(), "src/shared/platform.ts"), "utf8");
   assert.match(source, /Create Wallpaper Set/);
-  assert.match(source, /onClick=\{\(\) => void previewOnCurrentDesktop\(\)\}/);
+  assert.doesNotMatch(source, /onClick=\{\(\) => void previewOnCurrentDesktop\(\)\}/);
+  assert.match(platform, /canPreviewCurrentDesktop: false/);
   assert.doesNotMatch(source, />Generate and Apply</);
 });
 

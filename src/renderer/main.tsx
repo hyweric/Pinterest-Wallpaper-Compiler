@@ -5324,7 +5324,6 @@ function App() {
                   <button onClick={saveProjectAs}>Save as</button>
                   <button onClick={() => exportWallpaper("png")}><Download size={16} /> Export PNG</button>
                   {platformCapabilities.canCreateExportPack && <button onClick={() => openExportSet()}><Images size={16} /> {platformCopy.createWallpaperSet}</button>}
-                  {platformCapabilities.canPreviewCurrentDesktop && <button onClick={() => void previewOnCurrentDesktop()}><Wallpaper size={16} /> {platformCopy.previewCurrentDesktop}</button>}
                   {platformCapabilities.canCleanNativeWallpaperSets && <button onClick={() => void cleanupWallpaperSets()}><Trash2 size={16} /> {platformCopy.cleanupWallpaperSets}</button>}
                 </div>
               )}
