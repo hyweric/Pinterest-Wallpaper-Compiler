@@ -19,13 +19,24 @@ export type PermissionCheckHandlerLike = (
 export type PermissionPolicySession = {
   setPermissionRequestHandler(handler: PermissionRequestHandlerLike | null): void;
   setPermissionCheckHandler(handler: PermissionCheckHandlerLike | null): void;
+  setDisplayMediaRequestHandler?: (handler: ((request: unknown, callback: (streams: { video?: unknown; audio?: unknown }) => void) => void) | null) => void;
+  setDevicePermissionHandler?: (handler: ((details: unknown) => boolean) | null) => void;
 };
 
 const blockedPermissionNames = new Set([
   "media",
+  "mediaaudio",
+  "mediavideo",
   "microphone",
+  "audioCapture",
+  "audiocapture",
   "camera",
+  "videoCapture",
+  "videocapture",
   "display-capture",
+  "displaycapture",
+  "desktop-capture",
+  "desktopcapture",
   "mediakeysystem",
   "geolocation",
   "notifications",
@@ -36,21 +47,24 @@ const blockedPermissionNames = new Set([
   "openexternal"
 ]);
 
-const blockedMediaTypes = new Set(["audio", "video"]);
+const blockedMediaTypes = new Set(["audio", "video", "microphone", "camera"]);
 
 function detailsLike(details: unknown): PermissionDetailsLike {
   if (!details || typeof details !== "object") return {};
-  const maybeDetails = details as { mediaTypes?: unknown };
-  return Array.isArray(maybeDetails.mediaTypes)
-    ? { mediaTypes: maybeDetails.mediaTypes.map((item) => String(item)) }
-    : {};
+  const maybeDetails = details as { mediaTypes?: unknown; mediaType?: unknown };
+  const rawMediaTypes = Array.isArray(maybeDetails.mediaTypes)
+    ? maybeDetails.mediaTypes
+    : maybeDetails.mediaType !== undefined
+      ? [maybeDetails.mediaType]
+      : [];
+  return { mediaTypes: rawMediaTypes.map((item) => String(item)) };
 }
 
 export function shouldDenyBrowserPermission(permission: string, details?: unknown) {
-  const normalized = permission.replace(/[-_]/g, "").toLowerCase();
+  const normalized = permission.replace(/[-_\s]/g, "").toLowerCase();
   if (blockedPermissionNames.has(normalized) || blockedPermissionNames.has(permission.toLowerCase())) return true;
   const mediaTypes = detailsLike(details).mediaTypes ?? [];
-  return mediaTypes.some((mediaType) => blockedMediaTypes.has(mediaType.toLowerCase()));
+  return mediaTypes.some((mediaType) => blockedMediaTypes.has(mediaType.replace(/[-_\s]/g, "").toLowerCase()) || blockedMediaTypes.has(mediaType.toLowerCase()));
 }
 
 export function installStrictMediaPermissionPolicy(targetSession: PermissionPolicySession) {
@@ -61,8 +75,8 @@ export function installStrictMediaPermissionPolicy(targetSession: PermissionPoli
       callback(false);
       return;
     }
-    // This app should not grant browser-origin permission prompts. File/folder access
-    // is handled only through Electron file dialogs and Finder drag/drop paths.
+    // Pin Paper should not grant browser-origin permission prompts. File/folder
+    // access is handled only through Electron file dialogs and drag/drop paths.
     callback(false);
   });
 
@@ -70,4 +84,18 @@ export function installStrictMediaPermissionPolicy(targetSession: PermissionPoli
     if (shouldDenyBrowserPermission(permission, details)) return false;
     return false;
   });
+
+  // Chromium can route screen/audio capture through a separate display-media
+  // handler. Explicitly cancel it so a remote Pinterest page, accidental input
+  // capture attribute, or future dependency cannot trigger macOS microphone or
+  // camera prompts.
+  targetSession.setDisplayMediaRequestHandler?.((_request, callback) => {
+    console.warn("Denied display/media capture request.");
+    callback({ video: undefined, audio: undefined });
+  });
+
+  // Deny device permissions as an extra guard for newer Electron/Chromium
+  // permission paths. This includes microphone/camera-like devices as well as
+  // USB/HID/serial prompts that Pin Paper does not need during import.
+  targetSession.setDevicePermissionHandler?.(() => false);
 }

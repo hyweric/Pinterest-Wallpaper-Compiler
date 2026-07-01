@@ -1,4 +1,5 @@
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39,6 +40,80 @@ export type PublicPinterestBoardLoader = (
     onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ) => Promise<PublicPinterestBoardResult>;
+
+
+const browserRenderableImageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+const heicImageExtensions = new Set([".heic", ".heif"]);
+const heicBrands = new Set(["heic", "heix", "hevc", "hevx", "mif1", "msf1"]);
+
+function imageExtensionFromContentType(contentType: string | null, fallback: string) {
+  const normalized = contentType?.toLowerCase().split(";")[0].trim();
+  if (normalized === "image/jpeg" || normalized === "image/jpg") return ".jpg";
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "image/heic") return ".heic";
+  if (normalized === "image/heif") return ".heif";
+  return fallback;
+}
+
+function isHeicLikeImage(filePath: string, bytes?: Buffer) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (heicImageExtensions.has(extension)) return true;
+  if (!bytes || bytes.length < 12) return false;
+  return bytes.subarray(4, 8).toString("ascii") === "ftyp" && heicBrands.has(bytes.subarray(8, 12).toString("ascii"));
+}
+
+function convertedHeicPath(filePath: string) {
+  return `${filePath}.png`;
+}
+
+async function fileExists(filePath: string) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function convertHeicToRenderablePng(filePath: string) {
+  if (process.platform !== "darwin") {
+    throw new Error("HEIC images need conversion before rendering; automatic HEIC conversion is only available on macOS right now.");
+  }
+  const outputPath = convertedHeicPath(filePath);
+  if (await fileExists(outputPath)) return outputPath;
+  await new Promise<void>((resolve, reject) => {
+    execFile("sips", ["-s", "format", "png", filePath, "--out", outputPath], { timeout: 30_000 }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  const converted = await stat(outputPath).catch(() => undefined);
+  if (!converted || converted.size < 16) {
+    throw new Error("HEIC conversion did not produce a readable PNG.");
+  }
+  return outputPath;
+}
+
+async function makePinterestImageRenderable(image: LocalImageRef, bytes?: Buffer): Promise<LocalImageRef> {
+  const extension = path.extname(image.path).toLowerCase();
+  if (browserRenderableImageExtensions.has(extension) && !isHeicLikeImage(image.path, bytes)) return image;
+  if (!isHeicLikeImage(image.path, bytes)) {
+    throw new Error(`Pinterest cached unsupported image format ${extension || "unknown"}.`);
+  }
+  const renderablePath = await convertHeicToRenderablePng(image.path);
+  const renderedStat = await stat(renderablePath);
+  return {
+    ...image,
+    name: path.basename(renderablePath),
+    path: renderablePath,
+    url: pathToFileURL(renderablePath).toString(),
+    size: renderedStat.size,
+    modifiedAt: renderedStat.mtime.toISOString(),
+    mediaType: "image"
+  };
+}
 
 export function validatePinterestBoardUrl(rawUrl: string): string | undefined {
   let url: URL;
@@ -189,7 +264,12 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     );
     const importedImages = new Map<string, LocalImageRef>();
     for (const image of existing?.images ?? []) {
-      if (image.externalId) importedImages.set(image.externalId, image);
+      if (!image.externalId) continue;
+      try {
+        importedImages.set(image.externalId, await makePinterestImageRenderable(image));
+      } catch (error) {
+        log.push(`Skipped cached pin ${image.externalId}: ${error instanceof Error ? error.message : "image could not be prepared for rendering"}`);
+      }
     }
 
     const missingPins = uniquePins.filter((pin) => {
@@ -644,9 +724,15 @@ function isPinterestVideoPin(pin: PinterestPidgetPin) {
   return /video|story/i.test(`${pin.type ?? ""} ${pin.media_type ?? ""}`) || Boolean(pin.videos || pin.story_pin_data);
 }
 
+function isHeicImageUrl(url?: string) {
+  return /\.(heic|heif)(?:[?#]|$)/i.test(url ?? "") || /[?&](fm|format)=hei[cf]\b/i.test(url ?? "");
+}
+
 function bestPinterestImageUrl(pin: PinterestPidgetPin) {
   const images = Object.values(pin.images ?? {}).filter((image) => image.url);
-  return images.sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url;
+  return images
+    .sort((a, b) => Number(isHeicImageUrl(a.url)) - Number(isHeicImageUrl(b.url)) || (b.width ?? 0) - (a.width ?? 0))[0]
+    ?.url;
 }
 
 async function downloadImage(pin: PinterestBoardPin, cachePath: string, signal?: AbortSignal): Promise<LocalImageRef> {
@@ -654,26 +740,30 @@ async function downloadImage(pin: PinterestBoardPin, cachePath: string, signal?:
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   const url = new URL(pin.imageUrl);
-  const extension = path.extname(url.pathname) || ".jpg";
+  const urlExtension = path.extname(url.pathname).toLowerCase() || ".jpg";
+  const extension = imageExtensionFromContentType(response.headers.get("content-type"), urlExtension);
   const hash = createHash("sha256").update(pin.id).digest("hex");
   const filePath = path.join(cachePath, `${hash}${extension}`);
+  let fileStat;
   try {
-    await stat(filePath);
+    fileStat = await stat(filePath);
   } catch {
     await writeFile(filePath, bytes);
+    fileStat = await stat(filePath);
   }
-  return {
+  const downloadedImage: LocalImageRef = {
     id: `pinterest:${pin.id}`,
     externalId: pin.id,
     sourceUrl: pin.imageUrl,
     name: path.basename(filePath),
     path: filePath,
     url: pathToFileURL(filePath).toString(),
-    modifiedAt: new Date().toISOString(),
-    size: bytes.length,
+    modifiedAt: fileStat.mtime.toISOString(),
+    size: fileStat.size,
     mediaType: pin.mediaType ?? "image",
     videoThumbnail: pin.mediaType === "video"
   };
+  return makePinterestImageRenderable(downloadedImage, bytes);
 }
 
 function isAbortError(error: unknown) {

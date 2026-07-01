@@ -662,6 +662,15 @@ export interface LocalImportSummary {
   emptyFolders: string[];
 }
 
+
+export interface SourceImportProgress {
+  stage: "selecting" | "scanning" | "converting" | "complete" | "error";
+  title: string;
+  message?: string;
+  current?: number;
+  total?: number;
+}
+
 export interface FolderResult {
   canceled: boolean;
   path?: string;

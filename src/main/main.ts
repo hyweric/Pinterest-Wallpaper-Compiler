@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, screen, session, shell, systemPreferences, Tray } from "electron";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -18,6 +19,7 @@ import type {
   LocalImageRef,
   PathImportResult,
   PinterestImportProgress,
+  SourceImportProgress,
   PinterestImportRequest,
   WallpaperApplyFilePayload,
   WallpaperSetApplyPayload,
@@ -295,6 +297,10 @@ function updateTrayMenu() {
   );
 }
 
+function pinPaperMainPreloadPath(fileName: string) {
+  return path.join(__dirname, fileName);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(pinPaperTrayImage());
@@ -311,14 +317,20 @@ async function loadPublicPinterestBoard(
     onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ): Promise<PublicPinterestBoardResult> {
+  const scraperSession = session.fromPartition(`pwc-pinterest-import-${crypto.randomUUID()}`);
+  installStrictMediaPermissionPolicy(scraperSession as unknown as import("./media-permissions.js").PermissionPolicySession);
+
   const scraper = new BrowserWindow({
     show: false,
     width: 1280,
     height: 900,
     webPreferences: {
-      contextIsolation: true,
+      session: scraperSession,
+      preload: pinPaperMainPreloadPath("media-deny-preload.js"),
+      contextIsolation: false,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      autoplayPolicy: "document-user-activation-required"
     }
   });
   scraper.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -359,12 +371,16 @@ async function loadPublicPinterestBoard(
           const root = window;
           root.__pwcPins = root.__pwcPins && typeof root.__pwcPins === "object" ? root.__pwcPins : {};
           const chooseSrc = (img) => {
+            const isHeicUrl = (url) => /\.(heic|heif)(?:[?#]|$)/i.test(String(url || "")) || /[?&](fm|format)=hei[cf]\b/i.test(String(url || ""));
             const entries = String(img.getAttribute("srcset") || "").split(",").map((item) => {
               const parts = item.trim().split(/\s+/);
               return { url: parts[0], width: Number((parts[1] || "").replace(/[^0-9.]/g, "")) || 0 };
             }).filter((item) => item.url);
-            entries.sort((a, b) => b.width - a.width);
-            return entries[0]?.url || img.currentSrc || img.src || img.getAttribute("data-src") || "";
+            for (const url of [img.currentSrc, img.src, img.getAttribute("data-src")]) {
+              if (url && !entries.some((entry) => entry.url === url)) entries.push({ url, width: 0 });
+            }
+            entries.sort((a, b) => Number(isHeicUrl(a.url)) - Number(isHeicUrl(b.url)) || b.width - a.width);
+            return entries[0]?.url || "";
           };
           for (const anchor of document.querySelectorAll('a[href*="/pin/"]')) {
             const match = String(anchor.getAttribute("href") || "").match(/\/pin\/(\d+)/);
@@ -533,9 +549,135 @@ function enrichImportedImageDimensions<T extends PathImportResult>(result: T): T
   };
 }
 
+const heicLocalImageExtensions = new Set([".heic", ".heif"]);
+const heicLocalBrands = new Set(["heic", "heix", "hevc", "hevx", "mif1", "msf1"]);
+
+async function isHeicLikeLocalImage(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (heicLocalImageExtensions.has(extension)) return true;
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+    const fileStat = await handle.stat();
+    if (fileStat.size < 12) return false;
+    const head = Buffer.alloc(Math.min(32, fileStat.size));
+    await handle.read(head, 0, head.length, 0);
+    return head.subarray(4, 8).toString("ascii") === "ftyp" && heicLocalBrands.has(head.subarray(8, 12).toString("ascii"));
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function convertedLocalHeicPath(sourcePath: string, fileStat: Awaited<ReturnType<typeof stat>>) {
+  const hash = createHash("sha256")
+    .update(`${path.resolve(sourcePath)}\0${Number(fileStat.size)}\0${Math.round(Number(fileStat.mtimeMs))}`)
+    .digest("hex")
+    .slice(0, 20);
+  const stem = sanitizeCacheFileStem(path.basename(sourcePath, path.extname(sourcePath)) || "heic-image");
+  return path.join(persistentSourceCacheRoot(), "Converted HEIC", `${stem}-${hash}.png`);
+}
+
+async function convertHeicLocalImageToPng(sourcePath: string) {
+  if (process.platform !== "darwin") {
+    throw new Error("HEIC images need conversion before rendering; automatic HEIC conversion is only available on macOS right now.");
+  }
+  const sourceStat = await stat(sourcePath);
+  const outputPath = convertedLocalHeicPath(sourcePath, sourceStat);
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const existing = await stat(outputPath).catch(() => undefined);
+  if (!existing || existing.size < 16) {
+    await new Promise<void>((resolve, reject) => {
+      execFile("sips", ["-s", "format", "png", sourcePath, "--out", outputPath], { timeout: 30_000 }, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+  if (!(await canDecodeImportedImage(outputPath))) {
+    await rm(outputPath, { force: true }).catch(() => undefined);
+    throw new Error("HEIC conversion produced an unreadable PNG.");
+  }
+  return outputPath;
+}
+
+async function makeLocalImageRenderable(image: LocalImageRef): Promise<LocalImageRef> {
+  if (!(await isHeicLikeLocalImage(image.path))) return image;
+  const renderablePath = await convertHeicLocalImageToPng(image.path);
+  const renderedStat = await stat(renderablePath);
+  return enrichLocalImageDimensions({
+    ...image,
+    name: path.basename(renderablePath),
+    path: renderablePath,
+    url: pathToFileURL(renderablePath).toString(),
+    modifiedAt: renderedStat.mtime.toISOString(),
+    size: renderedStat.size,
+    mediaType: "image"
+  });
+}
+
+async function normalizeImportedRenderableImages<T extends PathImportResult>(result: T): Promise<T> {
+  const warnings = [...(result.warnings ?? [])];
+  const convertedByKey = new Map<string, LocalImageRef>();
+  const failedKeys = new Set<string>();
+  const imageKey = (image: LocalImageRef) => `${image.id}\0${image.path}`;
+  const allImages = [
+    ...result.images,
+    ...result.sources.flatMap((source) => source.images ?? [])
+  ];
+  for (const image of allImages) {
+    const key = imageKey(image);
+    if (convertedByKey.has(key) || failedKeys.has(key)) continue;
+    try {
+      convertedByKey.set(key, await makeLocalImageRenderable(image));
+    } catch (error) {
+      failedKeys.add(key);
+      warnings.push(`Skipped ${image.name || path.basename(image.path)}: ${error instanceof Error ? error.message : "image could not be prepared for rendering"}`);
+    }
+  }
+  const convertList = (images: LocalImageRef[]) => images
+    .map((image) => convertedByKey.get(imageKey(image)))
+    .filter((image): image is LocalImageRef => Boolean(image));
+  const images = convertList(result.images);
+  const sources = result.sources
+    .map((source) => {
+      const sourceImages = convertList(source.images ?? []);
+      return {
+        ...source,
+        images: sourceImages,
+        mediaCounts: { total: sourceImages.length, images: sourceImages.length, videos: 0 }
+      };
+    })
+    .filter((source) => source.images.length > 0);
+  const skippedRenderableCount = failedKeys.size;
+  const baseSummary = result.summary ?? {
+    requestedPathCount: 0,
+    importedFolderCount: 0,
+    importedLooseImageCount: 0,
+    discoveredImageCount: allImages.length,
+    skippedUnsupportedCount: 0,
+    skippedUnreadableCount: 0,
+    skippedMissingCount: 0,
+    duplicatePathCount: 0,
+    emptyFolders: []
+  };
+  const summary = skippedRenderableCount > 0
+    ? { ...baseSummary, skippedUnreadableCount: baseSummary.skippedUnreadableCount + skippedRenderableCount }
+    : baseSummary;
+  return enrichImportedImageDimensions({
+    ...result,
+    images,
+    sources,
+    summary,
+    warnings,
+    error: sources.length === 0 ? (warnings[warnings.length - 1] ?? result.error ?? "No supported readable image or folder items were found.") : result.error
+  });
+}
+
 async function importValidatedLocalPaths(paths: unknown) {
   const result = await importLocalPaths(paths, { validateImage: canDecodeImportedImage });
-  return enrichImportedImageDimensions(result);
+  return normalizeImportedRenderableImages(result);
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
@@ -615,7 +757,7 @@ async function cacheWebImage(payload: unknown): Promise<ImageFileResult> {
     }
     const fileStat = await stat(destinationPath);
     const timestamp = new Date().toISOString();
-    const image = enrichLocalImageDimensions({
+    const image = await makeLocalImageRenderable(enrichLocalImageDimensions({
       id: `web-image-${hash.slice(0, 24)}`,
       name: requestedName || path.basename(destinationPath),
       path: destinationPath,
@@ -624,14 +766,14 @@ async function cacheWebImage(payload: unknown): Promise<ImageFileResult> {
       size: fileStat.size,
       sourceUrl,
       mediaType: "image"
-    });
+    }));
     const source = enrichSourceImageDimensions({
       id: `source-web-${hash.slice(0, 18)}`,
       identityKey: `web-image:${hash}`,
       providerId: "local-file" as const,
       type: "local-file" as const,
-      name: requestedName || path.basename(destinationPath),
-      path: destinationPath,
+      name: requestedName || path.basename(image.path),
+      path: image.path,
       cachePath: cacheDir,
       images: [image],
       mediaPolicy: "images-and-video-thumbnails" as const,
@@ -954,6 +1096,15 @@ async function applyWindowsWallpaperSet(payload: WallpaperSetApplyPayload): Prom
   };
 }
 
+
+function sendSourceImportProgress(event: Electron.IpcMainInvokeEvent, progress: SourceImportProgress) {
+  if (!event.sender.isDestroyed()) event.sender.send("source:import-progress", progress);
+}
+
+function sourceImportItemLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 async function applyWallpaperFilePath(
   filePath: string,
   payload: Omit<WallpaperApplyFilePayload, "filePath"> = {}
@@ -1019,14 +1170,20 @@ async function applyWallpaperFilePath(
   };
 }
 
-ipcMain.handle("dialog:choose-folder", async () => {
+ipcMain.handle("dialog:choose-folder", async (event) => {
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory"],
     title: "Choose Image Folder"
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
-  const imported = await importValidatedLocalPaths([result.filePaths[0]]);
+  const folderPath = result.filePaths[0];
+  sendSourceImportProgress(event, {
+    stage: "scanning",
+    title: "Importing folder",
+    message: `Scanning ${path.basename(folderPath)} and converting images if needed…`
+  });
+  const imported = await importValidatedLocalPaths([folderPath]);
   const source = imported.sources.find((item) => item.type === "local-folder");
   return {
     canceled: false,
@@ -1060,7 +1217,7 @@ ipcMain.handle("dialog:choose-image-file", async () => {
   };
 });
 
-ipcMain.handle("dialog:choose-image-files", async () => {
+ipcMain.handle("dialog:choose-image-files", async (event) => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile", "multiSelections"],
     title: "Choose Images",
@@ -1068,6 +1225,12 @@ ipcMain.handle("dialog:choose-image-files", async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return { canceled: true };
 
+  sendSourceImportProgress(event, {
+    stage: "scanning",
+    title: "Importing images",
+    message: `Reading ${sourceImportItemLabel(result.filePaths.length, "image")} and converting HEIC files if needed…`,
+    total: result.filePaths.length
+  });
   const imported = await importValidatedLocalPaths(result.filePaths);
   return {
     canceled: false,
@@ -1080,7 +1243,14 @@ ipcMain.handle("dialog:choose-image-files", async () => {
   };
 });
 
-ipcMain.handle("source:import-paths", async (_event, paths: unknown): Promise<PathImportResult> => {
+ipcMain.handle("source:import-paths", async (event, paths: unknown): Promise<PathImportResult> => {
+  const pathCount = Array.isArray(paths) ? paths.length : 0;
+  sendSourceImportProgress(event, {
+    stage: "scanning",
+    title: "Importing dropped items",
+    message: pathCount > 0 ? `Reading ${sourceImportItemLabel(pathCount, "item")} and converting images if needed…` : "Reading dropped items…",
+    total: pathCount || undefined
+  });
   return importValidatedLocalPaths(paths);
 });
 
@@ -1088,7 +1258,13 @@ ipcMain.handle("source:import-web-image", async (_event, payload: unknown): Prom
   return cacheWebImage(payload);
 });
 
-ipcMain.handle("source:rescan-folder", async (_event, folderPath: unknown) => {
+ipcMain.handle("source:rescan-folder", async (event, folderPath: unknown) => {
+  const folderName = typeof folderPath === "string" ? path.basename(folderPath) : "folder";
+  sendSourceImportProgress(event, {
+    stage: "scanning",
+    title: "Rescanning folder",
+    message: `Scanning ${folderName} and converting images if needed…`
+  });
   const imported = await importValidatedLocalPaths([folderPath]);
   const source = imported.sources.find((item) => item.type === "local-folder");
   if (!source) throw new Error(imported.error ?? "Unable to rescan folder.");
@@ -1380,7 +1556,7 @@ ipcMain.handle("overlay:import", async (): Promise<ImageFileResult> => {
     await copyFile(sourcePath, destinationPath);
     const fileStat = await stat(destinationPath);
     const timestamp = new Date().toISOString();
-    const image = {
+    let image: LocalImageRef = {
       id: `local-image-${id}`,
       name: path.basename(sourcePath),
       path: destinationPath,
@@ -1389,13 +1565,14 @@ ipcMain.handle("overlay:import", async (): Promise<ImageFileResult> => {
       size: fileStat.size,
       mediaType: "image" as const
     };
+    image = await makeLocalImageRenderable(image);
     const source = {
       id: `source-${id}`,
       identityKey: `managed-overlay:${id}`,
       providerId: "local-file" as const,
       type: "local-file" as const,
       name: `Overlay · ${path.basename(sourcePath, path.extname(sourcePath))}`,
-      path: destinationPath,
+      path: image.path,
       images: [image],
       mediaPolicy: "images-and-video-thumbnails" as const,
       mediaCounts: { total: 1, images: 1, videos: 0 },
@@ -1424,13 +1601,14 @@ ipcMain.handle("texture:import", async (): Promise<CustomTextureResult> => {
     const id = `texture-${crypto.randomUUID()}`;
     const destinationPath = path.join(textureDir, `${id}${extension}`);
     await copyFile(sourcePath, destinationPath);
+    const renderablePath = await isHeicLikeLocalImage(destinationPath) ? await convertHeicLocalImageToPng(destinationPath) : destinationPath;
     return {
       canceled: false,
       texture: {
         id,
         name: path.basename(sourcePath, path.extname(sourcePath)),
-        path: destinationPath,
-        url: pathToFileURL(destinationPath).toString(),
+        path: renderablePath,
+        url: pathToFileURL(renderablePath).toString(),
         createdAt: new Date().toISOString()
       }
     };

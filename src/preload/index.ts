@@ -14,6 +14,7 @@ import type {
   OpenProjectResult,
   PathImportResult,
   PinterestImportProgress,
+  SourceImportProgress,
   PinterestImportRequest,
   PinterestImportResult,
   SaveDialogResult,
@@ -54,6 +55,13 @@ const api = {
     ipcRenderer.on("provider:pinterest-progress", listener);
     return () => {
       ipcRenderer.removeListener("provider:pinterest-progress", listener);
+    };
+  },
+  onSourceImportProgress: (callback: (progress: SourceImportProgress) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: SourceImportProgress) => callback(progress);
+    ipcRenderer.on("source:import-progress", listener);
+    return () => {
+      ipcRenderer.removeListener("source:import-progress", listener);
     };
   },
   saveProject: (project: WallpaperProject, filePath?: string): Promise<SaveDialogResult> =>

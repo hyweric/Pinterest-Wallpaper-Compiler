@@ -60,6 +60,7 @@ import type {
   TearEdgeEffect,
   TornPaperEffect,
   PinterestImportProgress,
+  SourceImportProgress,
   PlaceholderLayer,
   WallpaperRuntimeStatus,
   WallpaperTarget,
@@ -441,6 +442,14 @@ type PinterestDialogState = {
   busy: boolean;
   jobId?: string;
   stage?: PinterestImportProgress["stage"];
+  current?: number;
+  total?: number;
+};
+
+type SourceImportDialogState = {
+  open: boolean;
+  title: string;
+  message: string;
   current?: number;
   total?: number;
 };
@@ -1618,6 +1627,12 @@ function App() {
     log: [],
     busy: false
   });
+  const [sourceImportDialog, setSourceImportDialog] = useState<SourceImportDialogState>({
+    open: false,
+    title: "Importing images",
+    message: "Preparing import…"
+  });
+  const sourceImportRunIdRef = useRef(0);
   const [exportSet, setExportSet] = useState<ExportSetState>({
     open: false,
     setName: "Wallpaper Set",
@@ -1692,17 +1707,33 @@ function App() {
   }, [editingTextLayerId]);
 
   useEffect(() => {
-    if (!addObjectMenuOpen && !toolbarMenuOpen) return;
-    function closeFloatingMenus(event: Event) {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      if (target.closest(".add-object-wrap") || target.closest(".overflow-wrap")) return;
-      setAddObjectMenuOpen(false);
-      setToolbarMenuOpen(false);
-    }
-    document.addEventListener("pointerdown", closeFloatingMenus, true);
-    return () => document.removeEventListener("pointerdown", closeFloatingMenus, true);
-  }, [addObjectMenuOpen, toolbarMenuOpen]);
+    const unsubscribe = window.wallpaperApi?.onSourceImportProgress?.((progress: SourceImportProgress) => {
+      setSourceImportDialog({
+        open: true,
+        title: progress.title,
+        message: progress.message ?? "Scanning and preparing images…",
+        current: progress.current,
+        total: progress.total
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  function beginSourceImportDialog(title: string, message: string) {
+    const runId = sourceImportRunIdRef.current + 1;
+    sourceImportRunIdRef.current = runId;
+    setSourceImportDialog({ open: true, title, message });
+    return runId;
+  }
+
+  function finishSourceImportDialog(runId: number) {
+    window.setTimeout(() => {
+      if (sourceImportRunIdRef.current !== runId) return;
+      setSourceImportDialog((current) => ({ ...current, open: false }));
+    }, 140);
+  }
 
 
   function beginWallpaperOperation(kind: "manual" | "scheduled" | "history" | "source-change") {
@@ -2438,10 +2469,33 @@ function App() {
 
   async function addFolderSource() {
     if (window.wallpaperApi?.chooseFolder) {
-      const result = await window.wallpaperApi.chooseFolder();
-      if (result.canceled) return;
-      if (result.error || !result.source) {
-        setMessage(result.error ?? "Unable to add folder.");
+      const importRunId = beginSourceImportDialog("Choose image folder", "Select a folder. Pin Paper will show progress here while it scans and converts images.");
+      try {
+        const result = await window.wallpaperApi.chooseFolder();
+        if (result.canceled) return;
+        if (result.error || !result.source) {
+          setMessage(result.error ?? "Unable to add folder.");
+          return;
+        }
+        const merged = addSourcesToProjectDetailed([result.source], true, false);
+        const resolved = merged.resolved[0];
+        if (resolved) {
+          setSelectedSourceId(resolved.id);
+          setMessage(importResultMessage(result.summary, merged, result.warnings));
+        }
+      } finally {
+        finishSourceImportDialog(importRunId);
+      }
+      return;
+    }
+
+    const files = await browserFileInput(true);
+    if (!files) return;
+    const importRunId = beginSourceImportDialog("Importing folder", "Reading selected images and preparing previews…");
+    try {
+      const result = await browserImageSourceFromFiles(files, "Browser Folder", "top-level-only");
+      if (!result.source) {
+        setMessage(result.warnings[0] ?? "No supported images were selected.");
         return;
       }
       const merged = addSourcesToProjectDetailed([result.source], true, false);
@@ -2450,21 +2504,8 @@ function App() {
         setSelectedSourceId(resolved.id);
         setMessage(importResultMessage(result.summary, merged, result.warnings));
       }
-      return;
-    }
-
-    const files = await browserFileInput(true);
-    if (!files) return;
-    const result = await browserImageSourceFromFiles(files, "Browser Folder", "top-level-only");
-    if (!result.source) {
-      setMessage(result.warnings[0] ?? "No supported images were selected.");
-      return;
-    }
-    const merged = addSourcesToProjectDetailed([result.source], true, false);
-    const resolved = merged.resolved[0];
-    if (resolved) {
-      setSelectedSourceId(resolved.id);
-      setMessage(importResultMessage(result.summary, merged, result.warnings));
+    } finally {
+      finishSourceImportDialog(importRunId);
     }
   }
 
@@ -2695,13 +2736,18 @@ function App() {
       setMessage("No Finder file paths were available for this drop.");
       return;
     }
-    const result = await window.wallpaperApi.importPaths(paths);
-    if (result.error) {
-      setMessage(result.error);
-      return;
+    const importRunId = beginSourceImportDialog("Importing dropped items", "Scanning dropped folders/images and converting files if needed…");
+    try {
+      const result = await window.wallpaperApi.importPaths(paths);
+      if (result.error) {
+        setMessage(result.error);
+        return;
+      }
+      const merged = addSourcesToProjectDetailed(result.sources, true, false);
+      setMessage(importResultMessage(result.summary, merged, result.warnings));
+    } finally {
+      finishSourceImportDialog(importRunId);
     }
-    const merged = addSourcesToProjectDetailed(result.sources, true, false);
-    setMessage(importResultMessage(result.summary, merged, result.warnings));
   }
 
   async function assignDroppedPathsToLayer(paths: string[], layer: PlaceholderLayer) {
@@ -2709,14 +2755,19 @@ function App() {
       setMessage("No Finder file paths were available for this drop.");
       return;
     }
-    const result = await window.wallpaperApi.importPaths(paths);
-    if (result.error) {
-      setMessage(result.error);
-      return;
+    const importRunId = beginSourceImportDialog("Importing dropped items", "Scanning dropped folders/images and converting files if needed…");
+    try {
+      const result = await window.wallpaperApi.importPaths(paths);
+      if (result.error) {
+        setMessage(result.error);
+        return;
+      }
+      const merged = addSourcesToProjectDetailed(result.sources, true, false);
+      if (merged.resolved.length === 0) return;
+      assignSourcesToLayer(merged.resolved, layer, importResultMessage(result.summary, merged, result.warnings, layer));
+    } finally {
+      finishSourceImportDialog(importRunId);
     }
-    const merged = addSourcesToProjectDetailed(result.sources, true, false);
-    if (merged.resolved.length === 0) return;
-    assignSourcesToLayer(merged.resolved, layer, importResultMessage(result.summary, merged, result.warnings, layer));
   }
 
   async function importWebImagesAsSources(candidates: WebImageCandidate[]) {
@@ -2875,10 +2926,33 @@ function App() {
 
   async function addLocalImagesSource() {
     if (window.wallpaperApi?.chooseImageFiles) {
-      const result = await window.wallpaperApi.chooseImageFiles();
-      if (result.canceled) return;
-      if (result.error || !result.source) {
-        setMessage(result.error ?? "No images selected.");
+      const importRunId = beginSourceImportDialog("Choose images", "Select images. Pin Paper will show progress here while it imports and converts files.");
+      try {
+        const result = await window.wallpaperApi.chooseImageFiles();
+        if (result.canceled) return;
+        if (result.error || !result.source) {
+          setMessage(result.error ?? "No images selected.");
+          return;
+        }
+        const merged = addSourcesToProjectDetailed([result.source], true, false);
+        const resolved = merged.resolved[0];
+        if (resolved) {
+          setSelectedSourceId(resolved.id);
+          setMessage(importResultMessage(result.summary, merged, result.warnings));
+        }
+      } finally {
+        finishSourceImportDialog(importRunId);
+      }
+      return;
+    }
+
+    const files = await browserFileInput(false);
+    if (!files) return;
+    const importRunId = beginSourceImportDialog("Importing images", "Reading selected images and preparing previews…");
+    try {
+      const result = await browserImageSourceFromFiles(files, files.length === 1 ? files[0]?.name?.replace(/\.[^.]+$/, "") || "Browser Image" : "Browser Images");
+      if (!result.source) {
+        setMessage(result.warnings[0] ?? "No supported images were selected.");
         return;
       }
       const merged = addSourcesToProjectDetailed([result.source], true, false);
@@ -2887,21 +2961,8 @@ function App() {
         setSelectedSourceId(resolved.id);
         setMessage(importResultMessage(result.summary, merged, result.warnings));
       }
-      return;
-    }
-
-    const files = await browserFileInput(false);
-    if (!files) return;
-    const result = await browserImageSourceFromFiles(files, files.length === 1 ? files[0]?.name?.replace(/\.[^.]+$/, "") || "Browser Image" : "Browser Images");
-    if (!result.source) {
-      setMessage(result.warnings[0] ?? "No supported images were selected.");
-      return;
-    }
-    const merged = addSourcesToProjectDetailed([result.source], true, false);
-    const resolved = merged.resolved[0];
-    if (resolved) {
-      setSelectedSourceId(resolved.id);
-      setMessage(importResultMessage(result.summary, merged, result.warnings));
+    } finally {
+      finishSourceImportDialog(importRunId);
     }
   }
 
@@ -5027,6 +5088,7 @@ function App() {
           onOpenProject={() => void openProject()}
           onSaveProject={() => void saveProject()}
         />
+        <SourceImportDialog state={sourceImportDialog} />
         <RenameDialog state={renameState?.kind === "layer" ? undefined : renameState} onChange={setRenameState} onFinish={finishRename} />
         <ExportSetDialog
           state={exportSet}
@@ -5765,6 +5827,7 @@ function App() {
       </aside>
 
       <SoftNumberNotice />
+      <SourceImportDialog state={sourceImportDialog} />
 
       {pinterestDialog.open && (
         <PinterestDialog
@@ -6612,6 +6675,26 @@ function ExportSetDialog({
             </div>
           </>
         )}
+      </section>
+    </div>
+  );
+}
+
+function SourceImportDialog({ state }: { state: SourceImportDialogState }) {
+  if (!state.open) return null;
+  const hasProgress = typeof state.current === "number" && typeof state.total === "number" && state.total > 0;
+  const progress = hasProgress ? clamp((state.current! / Math.max(1, state.total!)) * 100, 0, 100) : undefined;
+  return (
+    <div className="modal-backdrop source-import-backdrop" role="status" aria-busy="true">
+      <section className="modal source-import-modal">
+        <div className="source-import-spinner" aria-hidden="true" />
+        <div className="modal-title-copy">
+          <h2>{state.title}</h2>
+          <p>{state.message}</p>
+        </div>
+        <div className={`progress-track ${hasProgress ? "" : "indeterminate"}`}><span style={hasProgress ? { width: `${progress}%` } : undefined} /></div>
+        {hasProgress && <div className="import-stats"><span>{state.current} / {state.total}</span></div>}
+        <small>Large folders and HEIC conversion can take a bit. Keep Pin Paper open while this finishes.</small>
       </section>
     </div>
   );
