@@ -8034,3 +8034,49 @@ select,
   0% { transform: translateX(-120%); }
   100% { transform: translateX(260%); }
 }
+
+/* Phase 30.11: allow editor layers, borders, and handles to extend off the canvas.
+   Export rendering still clips to the actual canvas dimensions. */
+.canvas,
+.canvas-zoom-shell,
+.canvas-zoom-shell > .canvas {
+  overflow: visible !important;
+}
+
+.canvas-zoom-shell > .canvas {
+  contain: layout style !important;
+}
+
+/* Phase 30.14: preserve the original canvas/pasteboard look while clipping only artwork that leaves the canvas.
+   Selection controls stay above the per-layer artwork mask so off-canvas layers remain editable. */
+.selection-handles-overlay {
+  z-index: 1400;
+}
+
+.selection-delete-handle {
+  position: absolute;
+  z-index: 3;
+  top: calc(var(--rotate-top, 48px) * -1);
+  right: calc(var(--rotate-offset, 15px) * -1);
+  width: var(--rotate-size, 30px);
+  height: var(--rotate-size, 30px);
+  min-height: var(--rotate-size, 30px);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid rgba(181, 80, 101, 0.32);
+  border-radius: 50%;
+  color: #8b3e4e;
+  background: rgba(252, 237, 241, 0.98);
+  box-shadow: 0 4px 12px rgba(85, 32, 45, 0.2);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.selection-delete-handle:hover,
+.selection-delete-handle:focus-visible {
+  background: #fff3f6;
+  border-color: rgba(181, 80, 101, 0.52);
+  box-shadow: 0 0 0 4px rgba(181, 80, 101, 0.14), 0 4px 12px rgba(85, 32, 45, 0.2);
+  transform: none;
+}

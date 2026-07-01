@@ -325,26 +325,53 @@ function oppositeCornerForResize(bounds: LayerFrameBounds, handle: ResizeHandle)
   };
 }
 
-function resizeBoundsFromOppositeCorner(bounds: LayerFrameBounds, handle: ResizeHandle, dx: number, dy: number, limits: { width: number; height: number; minSize: number }) {
+function resizeBoundsFromOppositeCorner(
+  bounds: LayerFrameBounds,
+  handle: ResizeHandle,
+  dx: number,
+  dy: number,
+  limits: { width: number; height: number; minSize: number; allowOverflow?: boolean; maxOverflowSize?: number }
+) {
   const pivot = oppositeCornerForResize(bounds, handle);
   let left = bounds.x;
   let right = bounds.x + bounds.width;
   let top = bounds.y;
   let bottom = bounds.y + bounds.height;
-  if (handle.includes("w")) left = Math.min(pivot.x - limits.minSize, Math.max(0, bounds.x + dx));
-  if (handle.includes("e")) right = Math.max(pivot.x + limits.minSize, Math.min(limits.width, bounds.x + bounds.width + dx));
-  if (handle.includes("n")) top = Math.min(pivot.y - limits.minSize, Math.max(0, bounds.y + dy));
-  if (handle.includes("s")) bottom = Math.max(pivot.y + limits.minSize, Math.min(limits.height, bounds.y + bounds.height + dy));
-  if (!handle.includes("w") && !handle.includes("e")) {
-    left = Math.max(0, bounds.x);
-    right = Math.min(limits.width, bounds.x + bounds.width);
+  const maxSize = Math.max(limits.minSize, limits.maxOverflowSize ?? Math.max(limits.width, limits.height) * 4);
+
+  if (handle.includes("w")) left = Math.min(pivot.x - limits.minSize, bounds.x + dx);
+  if (handle.includes("e")) right = Math.max(pivot.x + limits.minSize, bounds.x + bounds.width + dx);
+  if (handle.includes("n")) top = Math.min(pivot.y - limits.minSize, bounds.y + dy);
+  if (handle.includes("s")) bottom = Math.max(pivot.y + limits.minSize, bounds.y + bounds.height + dy);
+
+  if (!limits.allowOverflow) {
+    if (handle.includes("w")) left = Math.max(0, left);
+    if (handle.includes("e")) right = Math.min(limits.width, right);
+    if (handle.includes("n")) top = Math.max(0, top);
+    if (handle.includes("s")) bottom = Math.min(limits.height, bottom);
+    if (!handle.includes("w") && !handle.includes("e")) {
+      left = Math.max(0, bounds.x);
+      right = Math.min(limits.width, bounds.x + bounds.width);
+    }
+    if (!handle.includes("n") && !handle.includes("s")) {
+      top = Math.max(0, bounds.y);
+      bottom = Math.min(limits.height, bounds.y + bounds.height);
+    }
   }
-  if (!handle.includes("n") && !handle.includes("s")) {
-    top = Math.max(0, bounds.y);
-    bottom = Math.min(limits.height, bounds.y + bounds.height);
+
+  if (right - left > maxSize) {
+    if (handle.includes("w") && !handle.includes("e")) left = right - maxSize;
+    else right = left + maxSize;
   }
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  if (bottom - top > maxSize) {
+    if (handle.includes("n") && !handle.includes("s")) top = bottom - maxSize;
+    else bottom = top + maxSize;
+  }
+
+  const recoverable = clampRecoverablePosition(left, top, right - left, bottom - top, { width: limits.width, height: limits.height });
+  return { x: recoverable.x, y: recoverable.y, width: right - left, height: bottom - top };
 }
+
 
 function fitLayerIntoResizedSelection(layer: PlaceholderLayer, originalLayer: PlaceholderLayer, groupBefore: LayerFrameBounds, groupAfter: LayerFrameBounds): Partial<PlaceholderLayer> {
   const relativeX = (originalLayer.x - groupBefore.x) / Math.max(1, groupBefore.width);
@@ -500,6 +527,28 @@ type ExportSetState = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+const OFF_CANVAS_RECOVERY_PX = 12;
+
+function offCanvasRecoveryMargin(canvas: { width: number; height: number }) {
+  return Math.round(clamp(Math.min(canvas.width, canvas.height) * 0.008, OFF_CANVAS_RECOVERY_PX, 28));
+}
+
+function clampRecoverablePosition(x: number, y: number, width: number, height: number, canvas: { width: number; height: number }) {
+  const margin = offCanvasRecoveryMargin(canvas);
+  return {
+    x: clamp(x, -Math.max(0, width - margin), Math.max(margin, canvas.width - margin)),
+    y: clamp(y, -Math.max(0, height - margin), Math.max(margin, canvas.height - margin))
+  };
+}
+
+function clampRecoverableLayerPosition(layer: PlaceholderLayer, x: number, y: number, canvas: { width: number; height: number }) {
+  return clampRecoverablePosition(x, y, layer.width, layer.height, canvas);
+}
+
+function maxOverflowLayerSize(canvas: { width: number; height: number }) {
+  return Math.max(canvas.width, canvas.height, 1) * 4;
 }
 
 type AdaptiveControlMetrics = {
@@ -2443,11 +2492,14 @@ function App() {
         height = Math.min(project.canvas.height, layer.height);
         width = height * aspect;
       }
+      const nextWidth = Math.round(Math.max(40, Math.min(maxOverflowLayerSize(project.canvas), width)));
+      const nextHeight = Math.round(Math.max(40, Math.min(maxOverflowLayerSize(project.canvas), height)));
+      const nextPosition = clampRecoverablePosition(centerX - nextWidth / 2, centerY - nextHeight / 2, nextWidth, nextHeight, project.canvas);
       patchLayer(layer.id, {
-        width: Math.round(Math.max(40, Math.min(project.canvas.width, width))),
-        height: Math.round(Math.max(40, Math.min(project.canvas.height, height))),
-        x: Math.round(clamp(centerX - width / 2, 0, Math.max(0, project.canvas.width - width))),
-        y: Math.round(clamp(centerY - height / 2, 0, Math.max(0, project.canvas.height - height))),
+        width: nextWidth,
+        height: nextHeight,
+        x: Math.round(nextPosition.x),
+        y: Math.round(nextPosition.y),
         keepAspectRatio: true
       });
     } catch {
@@ -2459,11 +2511,12 @@ function App() {
     const defaults = createPlaceholder(project.canvas, 0);
     const centerX = layer.x + layer.width / 2;
     const centerY = layer.y + layer.height / 2;
+    const nextPosition = clampRecoverablePosition(centerX - defaults.width / 2, centerY - defaults.height / 2, defaults.width, defaults.height, project.canvas);
     patchLayer(layer.id, {
       width: defaults.width,
       height: defaults.height,
-      x: Math.round(clamp(centerX - defaults.width / 2, 0, Math.max(0, project.canvas.width - defaults.width))),
-      y: Math.round(clamp(centerY - defaults.height / 2, 0, Math.max(0, project.canvas.height - defaults.height)))
+      x: Math.round(nextPosition.x),
+      y: Math.round(nextPosition.y)
     });
   }
 
@@ -4173,8 +4226,17 @@ function App() {
 
     if (drag.mode === "move") {
       const snapped = snapLayer(drag.layer, drag.layer.x + dx, drag.layer.y + dy, drag.groupLayers);
-      const primaryX = Math.round(clamp(snapped.x, drag.layer.x - Math.min(...drag.groupLayers.map((item) => item.x)), project.canvas.width - snapped.width + drag.layer.x - Math.min(...drag.groupLayers.map((item) => item.x))));
-      const primaryY = Math.round(clamp(snapped.y, drag.layer.y - Math.min(...drag.groupLayers.map((item) => item.y)), project.canvas.height - snapped.height + drag.layer.y - Math.min(...drag.groupLayers.map((item) => item.y))));
+      const groupLeftOffset = drag.layer.x - Math.min(...drag.groupLayers.map((item) => item.x));
+      const groupTopOffset = drag.layer.y - Math.min(...drag.groupLayers.map((item) => item.y));
+      const recoverableGroup = clampRecoverablePosition(
+        snapped.x - groupLeftOffset,
+        snapped.y - groupTopOffset,
+        snapped.width,
+        snapped.height,
+        project.canvas
+      );
+      const primaryX = Math.round(recoverableGroup.x + groupLeftOffset);
+      const primaryY = Math.round(recoverableGroup.y + groupTopOffset);
       const appliedDx = primaryX - drag.layer.x;
       const appliedDy = primaryY - drag.layer.y;
       const originals = new Map(drag.groupLayers.map((layer) => [layer.id, layer]));
@@ -4184,10 +4246,11 @@ function App() {
           layers: current.layers.map((layer) => {
             const original = originals.get(layer.id);
             if (!original) return layer;
+            const nextPosition = clampRecoverableLayerPosition(original, original.x + appliedDx, original.y + appliedDy, project.canvas);
             return {
               ...layer,
-              x: Math.round(clamp(original.x + appliedDx, 0, project.canvas.width - original.width)),
-              y: Math.round(clamp(original.y + appliedDy, 0, project.canvas.height - original.height))
+              x: Math.round(nextPosition.x),
+              y: Math.round(nextPosition.y)
             };
           })
         }),
@@ -4250,7 +4313,7 @@ function App() {
         handle,
         dx,
         dy,
-        { width: project.canvas.width, height: project.canvas.height, minSize: minWidth }
+        { width: project.canvas.width, height: project.canvas.height, minSize: minWidth, allowOverflow: true, maxOverflowSize: maxOverflowLayerSize(project.canvas) }
       );
       const widthRatio = resized.width / Math.max(1, drag.layer.width);
       const heightRatio = resized.height / Math.max(1, drag.layer.height);
@@ -4259,9 +4322,10 @@ function App() {
       const height = Math.max(minHeight, Math.round(drag.layer.height * scale));
       const left = handle.includes("w") ? pivot.x - width : pivot.x;
       const top = handle.includes("n") ? pivot.y - height : pivot.y;
+      const nextPosition = clampRecoverablePosition(left, top, width, height, project.canvas);
       patchLayer(drag.id, {
-        x: Math.round(clamp(left, 0, project.canvas.width - width)),
-        y: Math.round(clamp(top, 0, project.canvas.height - height)),
+        x: Math.round(nextPosition.x),
+        y: Math.round(nextPosition.y),
         width,
         height,
         fontSize: Math.max(8, Math.round((drag.layer.fontSize ?? 72) * scale))
@@ -4275,7 +4339,7 @@ function App() {
         handle,
         dx,
         dy,
-        { width: project.canvas.width, height: project.canvas.height, minSize: 48 }
+        { width: project.canvas.width, height: project.canvas.height, minSize: 48, allowOverflow: true, maxOverflowSize: maxOverflowLayerSize(project.canvas) }
       );
       let nextGroup = rawGroup;
       if (handle.includes("e") || handle.includes("w") || handle.includes("n") || handle.includes("s")) {
@@ -4289,11 +4353,12 @@ function App() {
         const scaledHeight = Math.round(drag.groupBounds.height * scale);
         const left = handle.includes("w") ? pivot.x - scaledWidth : handle.includes("e") ? pivot.x : pivot.x - scaledWidth / 2;
         const top = handle.includes("n") ? pivot.y - scaledHeight : handle.includes("s") ? pivot.y : pivot.y - scaledHeight / 2;
+        const nextPosition = clampRecoverablePosition(left, top, scaledWidth, scaledHeight, project.canvas);
         nextGroup = {
-          x: Math.round(clamp(left, 0, project.canvas.width - scaledWidth)),
-          y: Math.round(clamp(top, 0, project.canvas.height - scaledHeight)),
-          width: Math.min(project.canvas.width, scaledWidth),
-          height: Math.min(project.canvas.height, scaledHeight)
+          x: Math.round(nextPosition.x),
+          y: Math.round(nextPosition.y),
+          width: Math.min(maxOverflowLayerSize(project.canvas), scaledWidth),
+          height: Math.min(maxOverflowLayerSize(project.canvas), scaledHeight)
         };
       }
       const originals = new Map(drag.groupLayers.map((layer) => [layer.id, layer]));
@@ -4317,7 +4382,7 @@ function App() {
       dx,
       dy,
       preserveAspect,
-      { width: project.canvas.width, height: project.canvas.height, minSize: 40 }
+      { width: project.canvas.width, height: project.canvas.height, minSize: 40, allowOverflow: true, maxOverflowSize: maxOverflowLayerSize(project.canvas) }
     );
     patchLayer(drag.id, next, false);
   }
@@ -4994,8 +5059,7 @@ function App() {
           ...current,
           layers: current.layers.map((layer) => ids.has(layer.id) ? {
             ...layer,
-            x: clamp(layer.x + dx, 0, current.canvas.width - layer.width),
-            y: clamp(layer.y + dy, 0, current.canvas.height - layer.height)
+            ...clampRecoverableLayerPosition(layer, layer.x + dx, layer.y + dy, current.canvas)
           } : layer)
         }));
       }
@@ -5530,7 +5594,8 @@ function App() {
                         height: layer.height,
                         transform: `rotate(${layer.rotation}deg)`,
                         opacity: layer.opacity,
-                        zIndex: project.layers.findIndex((item) => item.id === layer.id) + 2
+                        zIndex: project.layers.findIndex((item) => item.id === layer.id) + 2,
+                        ...canvasArtworkClipMaskStyle(layer.x, layer.y, layer.width, layer.height, project.canvas)
                       }}
                       onDoubleClick={(event) => {
                         event.stopPropagation();
@@ -5592,7 +5657,7 @@ function App() {
                             ...adaptiveControlStyle(metrics)
                           }}
                         >
-                          <SelectionHandles layer={layer} onBeginDrag={beginDrag} variant="text" iconSize={metrics.iconSize} />
+                          <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} variant="text" iconSize={metrics.iconSize} />
                         </div>
                       );
                     })()}
@@ -5649,6 +5714,7 @@ function App() {
                     ["--layer-border-radius" as string]: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? "0px" : `${roundedRadius}px`,
                     ["--layer-border-color" as string]: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
                     ...frameControlStyle,
+                    ...canvasArtworkClipMaskStyle(frame.x, frame.y, frame.width, frame.height, project.canvas),
                     borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : roundedRadius,
                     overflow: rough || !paperActive ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, frame.width, frame.height) : undefined,
@@ -5676,16 +5742,6 @@ function App() {
                     <div className={`placeholder-drop-label ${dropFeedback.valid ? "valid" : "invalid"}`}>
                       <Upload size={frameControlMetrics.iconSize} />
                       <span>{dropFeedback.label}</span>
-                    </div>
-                  )}
-                  {!cropping && (
-                    <div className={`on-canvas-layer-controls ${selected ? "visible" : ""}`} onPointerDown={(event) => event.stopPropagation()}>
-                      <button
-                        className="tooltip-anchor destructive"
-                        data-tooltip="Delete"
-                        aria-label="Delete"
-                        onClick={(event) => { event.stopPropagation(); deleteLayers([layer.id]); }}
-                      ><Trash2 size={frameControlMetrics.iconSize} /></button>
                     </div>
                   )}
                   {paperActive && <FrameSurfaceTextureOverlay layer={layer} width={frame.width} height={frame.height} textureIntensity={expandedFrameTexture} customTextures={project.customTextures} />}
@@ -5768,7 +5824,7 @@ function App() {
                       ...frameControlStyle
                     }}
                   >
-                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} iconSize={frameControlMetrics.iconSize} />
+                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} iconSize={frameControlMetrics.iconSize} />
                   </div>
                 )}
                 </React.Fragment>
@@ -6326,7 +6382,30 @@ function PolaroidDirectImageEditor({
   );
 }
 
-function SelectionHandles({ layer, onBeginDrag, variant, iconSize = 13 }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; variant?: "text" | "frame"; iconSize?: number }) {
+function canvasArtworkClipMaskStyle(x: number, y: number, width: number, height: number, canvas: CanvasSettings): React.CSSProperties {
+  const left = clamp(-x, 0, width);
+  const top = clamp(-y, 0, height);
+  const right = clamp(x + width - canvas.width, 0, width);
+  const bottom = clamp(y + height - canvas.height, 0, height);
+  if (left <= 0 && top <= 0 && right <= 0 && bottom <= 0) return {};
+
+  const visibleWidth = Math.max(0, width - left - right);
+  const visibleHeight = Math.max(0, height - top - bottom);
+  const maskSize = `${visibleWidth}px ${visibleHeight}px`;
+  const maskPosition = `${left}px ${top}px`;
+  return {
+    WebkitMaskImage: "linear-gradient(#000 0 0)",
+    WebkitMaskRepeat: "no-repeat",
+    WebkitMaskPosition: maskPosition,
+    WebkitMaskSize: maskSize,
+    maskImage: "linear-gradient(#000 0 0)",
+    maskRepeat: "no-repeat",
+    maskPosition,
+    maskSize
+  };
+}
+
+function SelectionHandles({ layer, onBeginDrag, onDelete, variant, iconSize = 13 }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; onDelete?: (event: React.PointerEvent<HTMLButtonElement>) => void; variant?: "text" | "frame"; iconSize?: number }) {
   const textMode = variant === "text" || layer.objectKind === "text";
   const handles: DragMode[] = textMode
     ? ["resize-nw", "resize-ne", "resize-se", "resize-sw", "resize-e", "resize-w"]
@@ -6340,6 +6419,19 @@ function SelectionHandles({ layer, onBeginDrag, variant, iconSize = 13 }: { laye
   return (
     <>
       {!textMode && <button className="rotate-handle" onPointerDown={(event) => startControlDrag(event, "rotate")} aria-label="Rotate"><RotateCw size={iconSize} /></button>}
+      {onDelete && (
+        <button
+          type="button"
+          className="selection-delete-handle"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.nativeEvent.stopImmediatePropagation();
+            onDelete(event);
+          }}
+          aria-label="Delete"
+        ><Trash2 size={iconSize} /></button>
+      )}
       {handles.map((handle) => (
         <button key={handle} className={`resize-handle ${textMode ? "text-resize-handle" : ""} ${handle}`} onPointerDown={(event) => startControlDrag(event, handle)} aria-label={handle} />
       ))}

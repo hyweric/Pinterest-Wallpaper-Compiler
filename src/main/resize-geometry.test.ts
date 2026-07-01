@@ -28,3 +28,20 @@ test("centered resizing remains inside canvas bounds", () => {
   assert.ok(resized.x + resized.width <= 500);
   assert.ok(resized.y + resized.height <= 400);
 });
+
+
+test("overflow resizing can extend beyond the canvas while keeping a sane cap", () => {
+  const nearEdge = { x: 20, y: 20, width: 100, height: 100 };
+  const resized = resizeRectAroundCenter(
+    nearEdge,
+    "resize-nw",
+    -1000,
+    -1000,
+    false,
+    { width: 500, height: 400, allowOverflow: true, maxOverflowSize: 1000 }
+  );
+  assert.ok(resized.x < 0);
+  assert.ok(resized.y < 0);
+  assert.ok(resized.width <= 1000);
+  assert.ok(resized.height <= 1000);
+});

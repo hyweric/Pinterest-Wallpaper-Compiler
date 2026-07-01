@@ -19,6 +19,13 @@ export interface ResizeBounds {
   width: number;
   height: number;
   minSize?: number;
+  /**
+   * Allows editor resizing to extend beyond the visible canvas. Export still
+   * clips to the canvas; this only changes the interactive editing bounds.
+   */
+  allowOverflow?: boolean;
+  /** Safety cap for overflow resizing so accidental drags do not create huge layers. */
+  maxOverflowSize?: number;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -48,8 +55,16 @@ export function resizeRectAroundCenter(
   if (direction.includes("s")) height += dy * 2;
   if (direction.includes("n")) height -= dy * 2;
 
-  const maxWidth = Math.max(minSize, Math.min(bounds.width, centerX * 2, (bounds.width - centerX) * 2));
-  const maxHeight = Math.max(minSize, Math.min(bounds.height, centerY * 2, (bounds.height - centerY) * 2));
+  const overflowLimit = Math.max(
+    minSize,
+    bounds.maxOverflowSize ?? Math.max(bounds.width, bounds.height) * 4
+  );
+  const maxWidth = bounds.allowOverflow
+    ? overflowLimit
+    : Math.max(minSize, Math.min(bounds.width, centerX * 2, (bounds.width - centerX) * 2));
+  const maxHeight = bounds.allowOverflow
+    ? overflowLimit
+    : Math.max(minSize, Math.min(bounds.height, centerY * 2, (bounds.height - centerY) * 2));
 
   if (preserveAspect && (affectsWidth || affectsHeight)) {
     const aspect = rect.width / Math.max(1, rect.height);
