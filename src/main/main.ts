@@ -30,6 +30,7 @@ import type {
   WallpaperGenerateResult,
   WallpaperProject,
   WallpaperTransitionDiagnostic,
+  NativeCommandResult,
   WallpaperTarget,
   WallpaperTargetMode,
   WallpaperTargetResult,
@@ -1004,6 +1005,191 @@ async function windowsWallpaperSetFiles(folderPath: string) {
   return files;
 }
 
+
+function windowsNativeWallpaperPosition(displayMode?: WallpaperSetApplyPayload["displayMode"]) {
+  switch (displayMode) {
+    case "fit": return "Fit";
+    case "stretch": return "Stretch";
+    case "tile": return "Tile";
+    case "center": return "Center";
+    case "span": return "Span";
+    case "fill":
+    default:
+      return "Fill";
+  }
+}
+
+function nativeCommandFromExecError(method: string, command: string, args: string[], error: unknown, stdout?: string, stderr?: string): NativeCommandResult {
+  const anyError = error as { code?: unknown; signal?: unknown; killed?: unknown; message?: unknown } | undefined;
+  return {
+    method,
+    command,
+    args,
+    stdout: String(stdout ?? ""),
+    stderr: String(stderr ?? ""),
+    exitCode: typeof anyError?.code === "number" ? anyError.code : 1,
+    signal: typeof anyError?.signal === "string" ? anyError.signal : undefined,
+    timedOut: Boolean(anyError?.killed),
+    error: anyError?.message ? String(anyError.message) : error instanceof Error ? error.message : String(error)
+  };
+}
+
+function runWindowsPowerShell(method: string, script: string, timeout = 20000): Promise<NativeCommandResult> {
+  const command = "powershell.exe";
+  const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script];
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        resolve(nativeCommandFromExecError(method, command, args, error, stdout, stderr));
+        return;
+      }
+      resolve({ method, command, args, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), exitCode: 0, timedOut: false });
+    });
+  });
+}
+
+export function windowsNativeSlideshowPowerShell(folderPath: string, options: { intervalSeconds: number; displayMode?: WallpaperSetApplyPayload["displayMode"]; shuffle?: boolean }) {
+  const encodedFolder = Buffer.from(folderPath, "utf8").toString("base64");
+  const intervalMs = Math.max(5_000, Math.min(86_400_000, Math.round(options.intervalSeconds * 1000)));
+  const position = windowsNativeWallpaperPosition(options.displayMode);
+  const shuffle = options.shuffle === true ? "$true" : "$false";
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+$folderPath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedFolder}'))
+$intervalMs = [UInt32]${intervalMs}
+$positionName = '${position}'
+$shuffle = ${shuffle}
+if (-not (Test-Path -LiteralPath $folderPath -PathType Container)) { throw "Wallpaper pack folder does not exist: $folderPath" }
+$images = @(Get-ChildItem -LiteralPath $folderPath -File | Where-Object { @('.jpg','.jpeg','.png','.bmp') -contains $_.Extension.ToLowerInvariant() })
+if ($images.Count -lt 1) { throw "Wallpaper pack folder has no Windows slideshow-compatible images." }
+if (-not ('PinPaperWallpaperNative.NativeSlideshow' -as [type])) {
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace PinPaperWallpaperNative {
+  public enum DesktopWallpaperPosition { Center = 0, Tile = 1, Stretch = 2, Fit = 3, Fill = 4, Span = 5 }
+  [Flags] public enum DesktopSlideshowOptions { None = 0, ShuffleImages = 0x1 }
+  public enum DesktopSlideshowDirection { Forward = 0, Backward = 1 }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+
+  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IShellItem {}
+
+  [ComImport, Guid("B63EA76D-1F85-456F-A19C-48159EFA858B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IShellItemArray {}
+
+  [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IDesktopWallpaper {
+    void SetWallpaper([MarshalAs(UnmanagedType.LPWStr)] string monitorID, [MarshalAs(UnmanagedType.LPWStr)] string wallpaper);
+    [return: MarshalAs(UnmanagedType.LPWStr)] string GetWallpaper([MarshalAs(UnmanagedType.LPWStr)] string monitorID);
+    [return: MarshalAs(UnmanagedType.LPWStr)] string GetMonitorDevicePathAt(uint monitorIndex);
+    uint GetMonitorDevicePathCount();
+    void GetMonitorRECT([MarshalAs(UnmanagedType.LPWStr)] string monitorID, out Rect displayRect);
+    void SetBackgroundColor(uint color);
+    uint GetBackgroundColor();
+    void SetPosition(DesktopWallpaperPosition position);
+    DesktopWallpaperPosition GetPosition();
+    void SetSlideshow(IShellItemArray items);
+    IShellItemArray GetSlideshow();
+    void SetSlideshowOptions(DesktopSlideshowOptions options, uint slideshowTick);
+    void GetSlideshowOptions(out DesktopSlideshowOptions options, out uint slideshowTick);
+    void AdvanceSlideshow([MarshalAs(UnmanagedType.LPWStr)] string monitorID, DesktopSlideshowDirection direction);
+    uint GetStatus();
+    bool Enable();
+  }
+
+  [ComImport, Guid("C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD")]
+  public class DesktopWallpaper {}
+
+  public static class NativeSlideshow {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    public static extern void SHCreateItemFromParsingName([MarshalAs(UnmanagedType.LPWStr)] string pszPath, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
+
+    [DllImport("shell32.dll", PreserveSig = false)]
+    public static extern void SHCreateShellItemArrayFromShellItem(IShellItem psi, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemArray ppv);
+  }
+}
+"@
+}
+$folderItem = $null
+[PinPaperWallpaperNative.NativeSlideshow]::SHCreateItemFromParsingName($folderPath, [IntPtr]::Zero, [Guid]'43826D1E-E718-42EE-BC55-A1E261C37BFE', [ref]$folderItem)
+$itemArray = $null
+[PinPaperWallpaperNative.NativeSlideshow]::SHCreateShellItemArrayFromShellItem($folderItem, [Guid]'B63EA76D-1F85-456F-A19C-48159EFA858B', [ref]$itemArray)
+$desktop = [PinPaperWallpaperNative.IDesktopWallpaper](New-Object PinPaperWallpaperNative.DesktopWallpaper)
+$desktop.SetPosition([PinPaperWallpaperNative.DesktopWallpaperPosition]::$positionName)
+$desktop.SetSlideshow($itemArray)
+$slideOptions = [PinPaperWallpaperNative.DesktopSlideshowOptions]::None
+if ($shuffle) { $slideOptions = [PinPaperWallpaperNative.DesktopSlideshowOptions]::ShuffleImages }
+$desktop.SetSlideshowOptions($slideOptions, $intervalMs)
+[void]$desktop.Enable()
+try { $desktop.AdvanceSlideshow($null, [PinPaperWallpaperNative.DesktopSlideshowDirection]::Forward) } catch {}
+$readOptions = [PinPaperWallpaperNative.DesktopSlideshowOptions]::None
+$readTick = [UInt32]0
+$desktop.GetSlideshowOptions([ref]$readOptions, [ref]$readTick)
+$status = $desktop.GetStatus()
+[PSCustomObject]@{
+  ok = $true
+  method = 'IDesktopWallpaper.SetSlideshow'
+  folderPath = $folderPath
+  imageCount = $images.Count
+  intervalMs = $readTick
+  shuffle = (($readOptions -band [PinPaperWallpaperNative.DesktopSlideshowOptions]::ShuffleImages) -ne 0)
+  position = $desktop.GetPosition().ToString()
+  status = $status
+} | ConvertTo-Json -Compress
+`;
+}
+
+function parseWindowsNativeSlideshowOutput(stdout: string) {
+  const trimmed = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "";
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    return JSON.parse(trimmed) as { ok?: boolean; folderPath?: string; imageCount?: number; intervalMs?: number; position?: string; status?: number; method?: string };
+  } catch {
+    return undefined;
+  }
+}
+
+async function applyWindowsNativeWallpaperSlideshow(
+  folderPath: string,
+  files: string[],
+  payload: Pick<WallpaperSetApplyPayload, "displayMode" | "intervalSeconds">
+): Promise<WallpaperApplyResult> {
+  const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
+  const script = windowsNativeSlideshowPowerShell(folderPath, { intervalSeconds, displayMode: payload.displayMode, shuffle: false });
+  const nativeResult = await runWindowsPowerShell("windows-idesktopwallpaper-native-slideshow", script, 30000);
+  const parsed = parseWindowsNativeSlideshowOutput(nativeResult.stdout);
+  const ok = nativeResult.exitCode === 0 && !nativeResult.timedOut && !nativeResult.error && parsed?.ok !== false;
+  const firstFile = await validateRenderedWallpaperImage(files[0]);
+  const diagnostics: WallpaperApplyDiagnostics = {
+    renderedPath: folderPath,
+    fileSize: firstFile.size,
+    validImage: true,
+    nativeResults: [nativeResult],
+    verifiedPaths: parsed?.folderPath ? [parsed.folderPath] : [folderPath],
+    verificationMethod: "windows-idesktopwallpaper-native-slideshow",
+    changed: ok,
+    requestedPath: folderPath,
+    reportedPath: parsed?.folderPath ?? folderPath,
+    verificationResult: ok ? "matched" : "mismatched",
+    lastError: ok ? undefined : nativeResult.error || nativeResult.stderr || "Windows native slideshow did not confirm setup."
+  };
+  if (!ok) {
+    throw Object.assign(new Error(diagnostics.lastError), { diagnostics });
+  }
+  return {
+    ok: true,
+    filePath: folderPath,
+    fileSize: firstFile.size,
+    appliedAt: new Date().toISOString(),
+    platform: process.platform,
+    diagnostics
+  };
+}
+
 async function applyWindowsWallpaperRotationFile(
   filePath: string,
   payload: Pick<WallpaperSetApplyPayload, "displayMode" | "transitionEnabled" | "transitionDurationMs"> = {},
@@ -1056,44 +1242,57 @@ async function applyWindowsWallpaperSet(payload: WallpaperSetApplyPayload): Prom
   const folderPath = payload.folderPath?.trim();
   if (!folderPath) return { ok: false, error: "No wallpaper pack folder was provided.", platform: process.platform };
   const files = await windowsWallpaperSetFiles(folderPath);
-  const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
   stopWindowsWallpaperRotation();
-  const state: WindowsWallpaperRotationState = {
-    folderPath,
-    files,
-    index: 0,
-    intervalMs: intervalSeconds * 1000,
-    displayMode: payload.displayMode,
-    transitionEnabled: payload.transitionEnabled ?? true,
-    transitionDurationMs: payload.transitionDurationMs ?? 700
-  };
-  windowsWallpaperRotationState = state;
 
-  const applyNext = async () => {
-    const currentState = windowsWallpaperRotationState;
-    if (!currentState || currentState.folderPath !== folderPath) return undefined;
-    const filePath = currentState.files[currentState.index % currentState.files.length];
-    currentState.index = (currentState.index + 1) % currentState.files.length;
-    const result = await applyWindowsWallpaperRotationFile(filePath, currentState, currentState.previousFilePath);
-    currentState.previousFilePath = filePath;
-    return result;
-  };
+  try {
+    return await applyWindowsNativeWallpaperSlideshow(folderPath, files, payload);
+  } catch (nativeError) {
+    console.error("Windows native slideshow setup failed; falling back to Pin Paper timer", nativeError);
+    const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
+    const state: WindowsWallpaperRotationState = {
+      folderPath,
+      files,
+      index: 0,
+      intervalMs: intervalSeconds * 1000,
+      displayMode: payload.displayMode,
+      transitionEnabled: false,
+      transitionDurationMs: 0
+    };
+    windowsWallpaperRotationState = state;
 
-  const firstResult = await applyNext();
-  if (files.length > 1) {
-    state.timer = setInterval(() => {
-      void applyNext().catch((error) => {
-        console.error("Windows wallpaper rotation step failed", error);
-      });
-    }, state.intervalMs);
+    const applyNext = async () => {
+      const currentState = windowsWallpaperRotationState;
+      if (!currentState || currentState.folderPath !== folderPath) return undefined;
+      const filePath = currentState.files[currentState.index % currentState.files.length];
+      currentState.index = (currentState.index + 1) % currentState.files.length;
+      const result = await applyWindowsWallpaperRotationFile(filePath, currentState, currentState.previousFilePath);
+      currentState.previousFilePath = filePath;
+      return result;
+    };
+
+    const firstResult = await applyNext();
+    if (files.length > 1) {
+      state.timer = setInterval(() => {
+        void applyNext().catch((error) => {
+          console.error("Windows wallpaper rotation step failed", error);
+        });
+      }, state.intervalMs);
+    }
+    if (firstResult?.diagnostics && diagnosticsFromError(nativeError)) {
+      firstResult.diagnostics.nativeResults = [
+        ...(diagnosticsFromError(nativeError)?.nativeResults ?? []),
+        ...firstResult.diagnostics.nativeResults
+      ];
+      firstResult.diagnostics.limitation = "Windows native slideshow failed, so Pin Paper used a compatibility timer without custom fade overlays.";
+    }
+    return {
+      ...(firstResult ?? { ok: true }),
+      filePath: firstResult?.filePath ?? files[0],
+      appliedAt: firstResult?.appliedAt ?? new Date().toISOString(),
+      platform: process.platform,
+      diagnostics: firstResult?.diagnostics
+    };
   }
-  return {
-    ...(firstResult ?? { ok: true }),
-    filePath: firstResult?.filePath ?? files[0],
-    appliedAt: firstResult?.appliedAt ?? new Date().toISOString(),
-    platform: process.platform,
-    diagnostics: firstResult?.diagnostics
-  };
 }
 
 
