@@ -8056,12 +8056,13 @@ select,
   height: 100%;
   overflow: hidden;
   z-index: 100;
-  pointer-events: auto;
+  pointer-events: none;
   contain: layout style paint;
 }
 
 .canvas-artwork-clip > .placeholder {
   z-index: 2;
+  pointer-events: auto;
 }
 
 .canvas-drop-feedback,

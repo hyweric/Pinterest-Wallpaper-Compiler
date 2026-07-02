@@ -21,3 +21,23 @@ test("Windows fallback rotation disables custom overlay fades after native setup
   assert.match(main, /transitionEnabled:\s*false/);
   assert.match(main, /compatibility timer without custom fade overlays/);
 });
+
+test("Windows wallpaper set UI exposes apply wording, fit mode, and shuffle", async () => {
+  const renderer = await source("src/renderer/main.tsx");
+  const sharedPlatform = await source("src/shared/platform.ts");
+  assert.match(sharedPlatform, /createWallpaperSet:\s*"Apply Wallpaper Set"/);
+  assert.match(renderer, /Wallpaper fit/);
+  assert.match(renderer, /Shuffle images/);
+  assert.match(renderer, /Apply Wallpaper Set/);
+  assert.match(renderer, /windowsDisplayMode/);
+  assert.match(renderer, /windowsShuffle/);
+});
+
+test("Windows native slideshow receives display mode and shuffle preferences", async () => {
+  const main = await source("src/main/main.ts");
+  const types = await source("src/shared/types.ts");
+  assert.match(types, /shuffle\?: boolean/);
+  assert.match(main, /SetPosition\(\[PinPaperWallpaperNative\.DesktopWallpaperPosition\]::\$positionName\)/);
+  assert.match(main, /payload\.shuffle !== false/);
+  assert.match(main, /shuffledWindowsWallpaperFiles/);
+});

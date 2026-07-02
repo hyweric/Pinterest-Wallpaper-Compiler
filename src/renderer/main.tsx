@@ -65,7 +65,8 @@ import type {
   WallpaperRuntimeStatus,
   WallpaperTarget,
   WallpaperTemplate,
-  WallpaperProject
+  WallpaperProject,
+  WallpaperDisplayMode
 } from "../shared/types";
 import {
   activeTemplateSourceIds,
@@ -148,6 +149,15 @@ const currentPlatform = platformProfile(hasDesktopRuntimeApi ? platformKindFromN
 }) : "web");
 const platformCapabilities = currentPlatform.capabilities;
 const platformCopy = currentPlatform.copy;
+
+const windowsWallpaperFitModes: Array<{ value: WallpaperDisplayMode; label: string; helper: string }> = [
+  { value: "fill", label: "Fill", helper: "Crop edges if needed to fill the screen." },
+  { value: "fit", label: "Fit", helper: "Show the whole wallpaper with possible letterboxing." },
+  { value: "stretch", label: "Stretch", helper: "Stretch to the screen size." },
+  { value: "center", label: "Center", helper: "Center at original size." },
+  { value: "tile", label: "Tile", helper: "Repeat the image." },
+  { value: "span", label: "Span", helper: "Span across multiple monitors." }
+];
 // Legacy regression markers for the macOS capability path:
 // isMacOS && wallpaperTargetModeNeedsInactiveSpaces
 const macOSPlatformLabelMarkers = {
@@ -522,6 +532,8 @@ type ExportSetState = {
   finalPath?: string;
   firstFilePath?: string;
   windowsCycleSeconds: number;
+  windowsDisplayMode: WallpaperDisplayMode;
+  windowsShuffle: boolean;
   error?: string;
 };
 
@@ -1696,7 +1708,9 @@ function App() {
     completed: 0,
     skipped: 0,
     failed: 0,
-    windowsCycleSeconds: 60
+    windowsCycleSeconds: 60,
+    windowsDisplayMode: "fill",
+    windowsShuffle: true
   });
   const dragRef = useRef<DragState | undefined>(undefined);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
@@ -3564,7 +3578,8 @@ function App() {
       failed: 0,
       finalPath: undefined,
       firstFilePath: undefined,
-      error: undefined
+      error: undefined,
+      windowsDisplayMode: projectRef.current.wallpaper.displayMode ?? current.windowsDisplayMode ?? "fill"
     }));
     if (!exportSet.destinationPath && window.wallpaperApi?.getDefaultExportSetFolder) {
       void window.wallpaperApi.getDefaultExportSetFolder().then((result) => {
@@ -3634,7 +3649,7 @@ function App() {
     if (!result.ok) setMessage(result.error ?? "Unable to open macOS Wallpaper Settings.");
   }
 
-  async function applyExportedWallpaperPack(targetPath?: string, intervalSeconds?: number) {
+  async function applyExportedWallpaperPack(targetPath?: string, intervalSeconds?: number, displayMode?: WallpaperDisplayMode, shuffle?: boolean) {
     if (!targetPath) {
       setMessage("No exported wallpaper pack is available to set yet.");
       return;
@@ -3656,7 +3671,8 @@ function App() {
         ? await withWallpaperTimeout(window.wallpaperApi.applyWallpaperSet({
             folderPath: targetPath,
             intervalSeconds: cycleSeconds,
-            displayMode: projectRef.current.wallpaper.displayMode,
+            displayMode: displayMode ?? exportSet.windowsDisplayMode ?? projectRef.current.wallpaper.displayMode,
+            shuffle: shuffle ?? exportSet.windowsShuffle,
             transitionEnabled: true,
             transitionDurationMs: Math.max(450, projectRef.current.wallpaper.transitionDurationMs || 700)
           }), timeoutMs, "Starting Windows wallpaper rotation timed out.")
@@ -4117,6 +4133,16 @@ function App() {
   }
 
   function beginCanvasPan(event: PointerEvent<HTMLDivElement>) {
+    if (event.button === 0) {
+      const target = event.target as HTMLElement | null;
+      const clickedPasteboard = target === event.currentTarget || target === canvasZoomShellRef.current;
+      if (clickedPasteboard && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+        clearLayerSelection();
+        setCropModeLayerId(undefined);
+        setEditingTextLayerId(undefined);
+      }
+      return;
+    }
     if (event.button !== 1 && event.button !== 2) return;
     const stage = stageRef.current;
     if (!stage) return;
@@ -5163,7 +5189,7 @@ function App() {
           onCleanup={() => void cleanupWallpaperSets()}
           onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
           onOpenSettings={() => void openMacOSWallpaperSettings()}
-          onApplyPack={(folderPath, intervalSeconds) => void applyExportedWallpaperPack(folderPath, intervalSeconds)}
+          onApplyPack={(folderPath, intervalSeconds, displayMode, shuffle) => void applyExportedWallpaperPack(folderPath, intervalSeconds, displayMode, shuffle)}
           onClose={() => setExportSet((current) => ({ ...current, open: false }))}
         />
         <GlobalTooltip />
@@ -5920,7 +5946,7 @@ function App() {
         onCleanup={() => void cleanupWallpaperSets()}
         onReveal={(folderPath) => void revealWallpaperSet(folderPath)}
         onOpenSettings={() => void openMacOSWallpaperSettings()}
-        onApplyPack={(folderPath, intervalSeconds) => void applyExportedWallpaperPack(folderPath, intervalSeconds)}
+        onApplyPack={(folderPath, intervalSeconds, displayMode, shuffle) => void applyExportedWallpaperPack(folderPath, intervalSeconds, displayMode, shuffle)}
         onClose={() => setExportSet((current) => ({ ...current, open: false }))}
       />
       <GlobalTooltip />
@@ -6650,7 +6676,7 @@ function ExportSetDialog({
   onCleanup: () => void;
   onReveal: (folderPath?: string) => void;
   onOpenSettings: () => void;
-  onApplyPack: (folderPath?: string, intervalSeconds?: number) => void;
+  onApplyPack: (folderPath?: string, intervalSeconds?: number, displayMode?: WallpaperDisplayMode, shuffle?: boolean) => void;
   onClose: () => void;
 }) {
   if (!state.open) return null;
@@ -6699,11 +6725,13 @@ function ExportSetDialog({
                   {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
                     <div className="export-set-grid simplified windows-rotation-options">
                       <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>
+                      <label>Wallpaper fit<select value={state.windowsDisplayMode} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, windowsDisplayMode: event.target.value as WallpaperDisplayMode }))}>{windowsWallpaperFitModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
+                      <button className={`button toggle-pill ${state.windowsShuffle ? "active" : ""}`} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, windowsShuffle: !current.windowsShuffle }))}>Shuffle images: {state.windowsShuffle ? "On" : "Off"}</button>
                     </div>
                   )}
                   <div className="wallpaper-setup-actions">
                     {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
-                      <button className="button primary" onClick={() => onApplyPack(state.finalPath, state.windowsCycleSeconds)}>Start Rotation on All Desktops</button>
+                      <button className="button primary" onClick={() => onApplyPack(state.finalPath, state.windowsCycleSeconds, state.windowsDisplayMode, state.windowsShuffle)}>Apply Wallpaper Set</button>
                     )}
                     <button className={currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper ? "button secondary" : "button primary"} onClick={() => onReveal(state.finalPath)}>{platformCopy.showSetInFileManager}</button>
                   </div>
@@ -6727,7 +6755,11 @@ function ExportSetDialog({
             <div className="export-set-grid simplified">
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
               <label>Image variation count<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /></label>
-              {currentPlatform.kind === "windows" && <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>}
+              {currentPlatform.kind === "windows" && <>
+                <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>
+                <label>Wallpaper fit<select value={state.windowsDisplayMode} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, windowsDisplayMode: event.target.value as WallpaperDisplayMode }))}>{windowsWallpaperFitModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
+                <button className={`button toggle-pill ${state.windowsShuffle ? "active" : ""}`} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, windowsShuffle: !current.windowsShuffle }))}>Shuffle images: {state.windowsShuffle ? "On" : "Off"}</button>
+              </>}
             </div>
 
             <details className="advanced-wallpaper-set-options">

@@ -815,6 +815,7 @@ export interface WallpaperSetApplyPayload {
   displayMode?: WallpaperDisplayMode;
   transitionEnabled?: boolean;
   transitionDurationMs?: number;
+  shuffle?: boolean;
 }
 
 export interface WallpaperTargetApplyItem {

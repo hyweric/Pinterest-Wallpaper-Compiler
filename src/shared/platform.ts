@@ -139,8 +139,8 @@ export function platformCopy(kind: PinPaperPlatformKind): PinPaperPlatformCopy {
   }
   if (kind === "windows") {
     return {
-      createWallpaperSet: "Create Wallpaper Pack",
-      createWallpaperPack: "Create Wallpaper Pack",
+      createWallpaperSet: "Apply Wallpaper Set",
+      createWallpaperPack: "Apply Wallpaper Set",
       previewCurrentDesktop: "Set as Wallpaper Preview",
       applyWallpaper: "Set as Wallpaper",
       wallpaperSetReadyTitle: "Wallpaper Pack Ready",
@@ -149,8 +149,8 @@ export function platformCopy(kind: PinPaperPlatformKind): PinPaperPlatformCopy {
       showSetInFileManager: "Show Pack in Folder",
       cleanupWallpaperSets: "Clean Up Wallpaper Packs…",
       cleanupWallpaperPacks: "Clean Up Wallpaper Packs…",
-      rotationGuideTitle: "Export wallpaper packs for Windows",
-      rotationGuideBody: "Create a Wallpaper Pack, then select images from Windows Background settings or use the desktop app to set one wallpaper directly."
+      rotationGuideTitle: "Apply wallpaper sets on Windows",
+      rotationGuideBody: "Create a Wallpaper Set, then Pin Paper can apply it as a native Windows slideshow with your selected fit mode and timing."
     };
   }
   return {
