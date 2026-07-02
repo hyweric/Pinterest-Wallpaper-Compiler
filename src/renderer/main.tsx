@@ -5577,6 +5577,7 @@ function App() {
                 );
               })}
             {selectionMarquee && <div className="selection-marquee" style={{ left: selectionMarquee.x, top: selectionMarquee.y, width: selectionMarquee.width, height: selectionMarquee.height }} />}
+            <div className="canvas-artwork-clip" aria-hidden={false}>
             {project.layers.map((layer) => {
               const image = getImageForLayer(project, layer);
               if (layer.hidden) return null;
@@ -5594,8 +5595,7 @@ function App() {
                         height: layer.height,
                         transform: `rotate(${layer.rotation}deg)`,
                         opacity: layer.opacity,
-                        zIndex: project.layers.findIndex((item) => item.id === layer.id) + 2,
-                        ...canvasArtworkClipMaskStyle(layer.x, layer.y, layer.width, layer.height, project.canvas)
+                        zIndex: project.layers.findIndex((item) => item.id === layer.id) + 2
                       }}
                       onDoubleClick={(event) => {
                         event.stopPropagation();
@@ -5643,24 +5643,6 @@ function App() {
                         }}
                       >{layer.text ?? "Text"}</div>
                     </div>
-                    {selected && !layer.locked && (() => {
-                      const metrics = adaptiveControlMetrics(layer.width, layer.height, project.canvas);
-                      return (
-                        <div
-                          className="selection-handles-overlay"
-                          style={{
-                            left: layer.x,
-                            top: layer.y,
-                            width: layer.width,
-                            height: layer.height,
-                            transform: `rotate(${layer.rotation}deg)`,
-                            ...adaptiveControlStyle(metrics)
-                          }}
-                        >
-                          <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} variant="text" iconSize={metrics.iconSize} />
-                        </div>
-                      );
-                    })()}
                   </React.Fragment>
                 );
               }
@@ -5714,7 +5696,6 @@ function App() {
                     ["--layer-border-radius" as string]: layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? "0px" : `${roundedRadius}px`,
                     ["--layer-border-color" as string]: paperActive ? "transparent" : hexWithOpacity(layer.borderColor, layer.borderOpacity),
                     ...frameControlStyle,
-                    ...canvasArtworkClipMaskStyle(frame.x, frame.y, frame.width, frame.height, project.canvas),
                     borderRadius: paperActive ? expandedFrameRadius : layer.maskShape === "circle" ? "50%" : layer.maskShape === "rectangle" ? 0 : roundedRadius,
                     overflow: rough || !paperActive ? "visible" : "hidden",
                     clipPath: rough ? paperFrameClipPath(paperFrame, tornPaper, frame.width, frame.height) : undefined,
@@ -5812,22 +5793,57 @@ function App() {
                   )}
                   {cropping && <span className="crop-mode-badge">CROP MODE</span>}
                 </div>
-                {selected && !layer.locked && !cropping && (
+                </React.Fragment>
+              );
+            })}
+            </div>
+            {project.layers.map((layer) => {
+              if (layer.hidden || layer.locked || !selectedLayerIds.includes(layer.id)) return null;
+              if (layer.objectKind === "text") {
+                const metrics = adaptiveControlMetrics(layer.width, layer.height, project.canvas);
+                return (
                   <div
+                    key={`selection-${layer.id}`}
                     className="selection-handles-overlay"
                     style={{
-                      left: frame.x,
-                      top: frame.y,
-                      width: frame.width,
-                      height: frame.height,
-                      transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
-                      ...frameControlStyle
+                      left: layer.x,
+                      top: layer.y,
+                      width: layer.width,
+                      height: layer.height,
+                      transform: `rotate(${layer.rotation}deg)`,
+                      ...adaptiveControlStyle(metrics)
                     }}
                   >
-                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} iconSize={frameControlMetrics.iconSize} />
+                    <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} variant="text" iconSize={metrics.iconSize} />
                   </div>
-                )}
-                </React.Fragment>
+                );
+              }
+              if (cropModeLayerId === layer.id) return null;
+              const image = getImageForLayer(project, layer);
+              const natural = imageNaturalRef.current[layer.id];
+              const frame = measuredLayerFrame(layer, image, natural);
+              const paperFrame = layer.effects.paperFrame ?? createDefaultPaperFrame();
+              const polaroid = normalizePolaroidEffect(layer.effects.polaroid, paperFrame, layer.effects.innerShadow);
+              const tornPaper = normalizeTornPaperEffect(layer.effects.tornPaper, paperFrame, layer.effects.innerShadow);
+              const visualPaperActive = Boolean(image) && paperFrame.type !== "none";
+              const expandedFrameRotation = visualPaperActive ? paperFrameRotation(paperFrame, polaroid) : 0;
+              const frameControlMetrics = adaptiveControlMetrics(frame.width, frame.height, project.canvas);
+              const frameControlStyle = adaptiveControlStyle(frameControlMetrics);
+              return (
+                <div
+                  key={`selection-${layer.id}`}
+                  className="selection-handles-overlay"
+                  style={{
+                    left: frame.x,
+                    top: frame.y,
+                    width: frame.width,
+                    height: frame.height,
+                    transform: `rotate(${layer.rotation + expandedFrameRotation}deg)`,
+                    ...frameControlStyle
+                  }}
+                >
+                  <SelectionHandles layer={layer} onBeginDrag={beginDrag} onDelete={() => deleteLayers([layer.id])} iconSize={frameControlMetrics.iconSize} />
+                </div>
               );
             })}
             {guides.x !== undefined && <div className="guide vertical" style={{ left: guides.x }} />}
@@ -6380,29 +6396,6 @@ function PolaroidDirectImageEditor({
       ><RotateCw size={12} /></button>
     </div>
   );
-}
-
-function canvasArtworkClipMaskStyle(x: number, y: number, width: number, height: number, canvas: CanvasSettings): React.CSSProperties {
-  const left = clamp(-x, 0, width);
-  const top = clamp(-y, 0, height);
-  const right = clamp(x + width - canvas.width, 0, width);
-  const bottom = clamp(y + height - canvas.height, 0, height);
-  if (left <= 0 && top <= 0 && right <= 0 && bottom <= 0) return {};
-
-  const visibleWidth = Math.max(0, width - left - right);
-  const visibleHeight = Math.max(0, height - top - bottom);
-  const maskSize = `${visibleWidth}px ${visibleHeight}px`;
-  const maskPosition = `${left}px ${top}px`;
-  return {
-    WebkitMaskImage: "linear-gradient(#000 0 0)",
-    WebkitMaskRepeat: "no-repeat",
-    WebkitMaskPosition: maskPosition,
-    WebkitMaskSize: maskSize,
-    maskImage: "linear-gradient(#000 0 0)",
-    maskRepeat: "no-repeat",
-    maskPosition,
-    maskSize
-  };
 }
 
 function SelectionHandles({ layer, onBeginDrag, onDelete, variant, iconSize = 13 }: { layer: PlaceholderLayer; onBeginDrag: (event: PointerEvent, layer: PlaceholderLayer, mode: DragMode) => void; onDelete?: (event: React.PointerEvent<HTMLButtonElement>) => void; variant?: "text" | "frame"; iconSize?: number }) {
