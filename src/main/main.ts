@@ -673,13 +673,26 @@ async function normalizeImportedRenderableImages<T extends PathImportResult>(res
     sources,
     summary,
     warnings,
-    error: sources.length === 0 ? (warnings[warnings.length - 1] ?? result.error ?? "No supported readable image or folder items were found.") : result.error
+    error: sources.length === 0 ? (result.error ?? warnings[warnings.length - 1] ?? "No supported readable image or folder items were found.") : result.error
   });
 }
 
 async function importValidatedLocalPaths(paths: unknown) {
   const result = await importLocalPaths(paths, { validateImage: canDecodeImportedImage });
   return normalizeImportedRenderableImages(result);
+}
+
+async function importValidatedLocalPathsSafely(paths: unknown): Promise<PathImportResult> {
+  try {
+    return await importValidatedLocalPaths(paths);
+  } catch (error) {
+    return {
+      sources: [],
+      images: [],
+      warnings: [error instanceof Error ? error.message : "Import failed."],
+      error: error instanceof Error ? error.message : "Import failed."
+    };
+  }
 }
 
 function dataUrlToBuffer(dataUrl: string): Buffer {
@@ -706,6 +719,16 @@ function sanitizeCacheFileStem(value: string) {
   return cleaned || "web-image";
 }
 
+async function fetchWithTimeout(url: string, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { redirect: "follow", signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function cacheWebImage(payload: unknown): Promise<ImageFileResult> {
   try {
     if (!payload || typeof payload !== "object") return { canceled: false, error: "No web image was provided." };
@@ -730,7 +753,7 @@ async function cacheWebImage(payload: unknown): Promise<ImageFileResult> {
       data = dataUrlToBuffer(rawUrl);
       sourceUrl = undefined;
     } else if (/^https?:\/\//i.test(rawUrl)) {
-      const response = await fetch(rawUrl, { redirect: "follow" });
+      const response = await fetchWithTimeout(rawUrl);
       if (!response.ok) return { canceled: false, error: `Web image download failed with HTTP ${response.status}.` };
       mimeType = mimeType || response.headers.get("content-type") || "";
       if (!mimeType.toLowerCase().startsWith("image/")) return { canceled: false, error: "The dropped web item was not an image." };
@@ -1394,7 +1417,7 @@ ipcMain.handle("dialog:choose-folder", async (event) => {
     title: "Importing folder",
     message: `Scanning ${path.basename(folderPath)} and converting images if needed…`
   });
-  const imported = await importValidatedLocalPaths([folderPath]);
+  const imported = await importValidatedLocalPathsSafely([folderPath]);
   const source = imported.sources.find((item) => item.type === "local-folder");
   return {
     canceled: false,
@@ -1416,7 +1439,7 @@ ipcMain.handle("dialog:choose-image-file", async () => {
   });
   if (result.canceled || !result.filePaths[0]) return { canceled: true };
 
-  const imported = await importValidatedLocalPaths(result.filePaths);
+  const imported = await importValidatedLocalPathsSafely(result.filePaths);
   return {
     canceled: false,
     image: imported.images[0],
@@ -1442,7 +1465,7 @@ ipcMain.handle("dialog:choose-image-files", async (event) => {
     message: `Reading ${sourceImportItemLabel(result.filePaths.length, "image")} and converting HEIC files if needed…`,
     total: result.filePaths.length
   });
-  const imported = await importValidatedLocalPaths(result.filePaths);
+  const imported = await importValidatedLocalPathsSafely(result.filePaths);
   return {
     canceled: false,
     image: imported.images[0],
@@ -1462,7 +1485,7 @@ ipcMain.handle("source:import-paths", async (event, paths: unknown): Promise<Pat
     message: pathCount > 0 ? `Reading ${sourceImportItemLabel(pathCount, "item")} and converting images if needed…` : "Reading dropped items…",
     total: pathCount || undefined
   });
-  return importValidatedLocalPaths(paths);
+  return importValidatedLocalPathsSafely(paths); // Safe wrapper around importValidatedLocalPaths(paths).
 });
 
 ipcMain.handle("source:import-web-image", async (_event, payload: unknown): Promise<ImageFileResult> => {
@@ -1476,7 +1499,7 @@ ipcMain.handle("source:rescan-folder", async (event, folderPath: unknown) => {
     title: "Rescanning folder",
     message: `Scanning ${folderName} and converting images if needed…`
   });
-  const imported = await importValidatedLocalPaths([folderPath]);
+  const imported = await importValidatedLocalPathsSafely([folderPath]);
   const source = imported.sources.find((item) => item.type === "local-folder");
   if (!source) throw new Error(imported.error ?? "Unable to rescan folder.");
   return source;

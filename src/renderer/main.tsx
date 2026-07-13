@@ -126,6 +126,7 @@ import { fallbackWallpaperTargetMode, platformKindFromNavigator, platformProfile
 import { selectImagesForGeneration } from "../shared/source-selection";
 import { advancePreviewProjectImages } from "../shared/preview-selection";
 import { placementForCanvasDrop, type CanvasDropPoint } from "../shared/drop-placement";
+import { isSupportedImageFileName, supportedImageAccept, supportedImageExtensionLabel } from "../shared/supported-image-formats";
 import { resizeRectAroundCenter, type ResizeHandle } from "../shared/resize-geometry";
 import { resolveLayerFrameBounds, type LayerFrameBounds } from "../shared/adaptive-frame";
 import { bundledSurfaceChoices, bundledSurfaceUrl } from "./surface-textures";
@@ -749,24 +750,40 @@ function webImagePasteFingerprint(candidates: WebImageCandidate[]) {
     .join("|");
 }
 
-const finderDropImageExtensions = new Set(["jpg", "jpeg", "png", "webp", "gif", "heic", "heif"]);
+function desktopPathForDroppedFile(file: File | null | undefined) {
+  if (!file) return "";
+  try {
+    return window.wallpaperApi.getPathForFile(file);
+  } catch {
+    return "";
+  }
+}
 
-function getDroppedPaths(event: React.DragEvent) {
-  const filePaths = Array.from(event.dataTransfer.files)
-    .map((file) => {
-      try {
-        return window.wallpaperApi.getPathForFile(file);
-      } catch {
-        return "";
-      }
-    })
+function getDroppedPathsFromTransfer(dataTransfer: DataTransfer) {
+  // Desktop drops in Electron are most reliable when we preserve the native
+  // file/folder path and let the main-process importer classify it. Avoid
+  // rejecting path drops in the renderer because folders often look like
+  // extensionless File objects while the drag is still in progress.
+  const filePaths = Array.from(dataTransfer.files ?? [])
+    .map((file) => desktopPathForDroppedFile(file))
     .filter((filePath): filePath is string => Boolean(filePath));
   if (filePaths.length > 0) return [...new Set(filePaths)];
-  const textPaths = event.dataTransfer.getData("text/plain")
+
+  const itemPaths = Array.from(dataTransfer.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => desktopPathForDroppedFile(item.getAsFile()))
+    .filter((filePath): filePath is string => Boolean(filePath));
+  if (itemPaths.length > 0) return [...new Set(itemPaths)];
+
+  const textPaths = dataTransfer.getData("text/plain")
     .split(/\r?\n/)
     .map((value) => value.trim())
     .filter((value) => value.startsWith("/"));
   return [...new Set(textPaths)];
+}
+
+function getDroppedPaths(event: React.DragEvent) {
+  return getDroppedPathsFromTransfer(event.dataTransfer);
 }
 
 type FinderEntryLike = { isDirectory?: boolean; isFile?: boolean };
@@ -781,6 +798,16 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
         : { label: "", valid: true, placementCount: 0 };
   }
 
+  const desktopPaths = getDroppedPathsFromTransfer(dataTransfer);
+  if (desktopPaths.length > 0) {
+    const label = target === "placeholder"
+      ? "Assign dropped files or folder to this frame"
+      : target === "canvas"
+        ? "Release to place dropped files or folder here"
+        : "Add dropped files or folder as source";
+    return { label, valid: true, placementCount: Math.max(1, Math.min(4, desktopPaths.length)) };
+  }
+
   let folders = 0;
   let supportedImages = 0;
   let unsupported = 0;
@@ -792,16 +819,14 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
       continue;
     }
     const file = item.getAsFile();
-    const extension = file?.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
-    if (finderDropImageExtensions.has(extension)) supportedImages += 1;
-    else if (!extension && !file?.type) folders += 1;
+    if (file && isSupportedImageFileName(file.name)) supportedImages += 1;
+    else if (file && !file.name.includes(".") && !file.type) folders += 1;
     else unsupported += 1;
   }
 
   if (folders === 0 && supportedImages === 0 && dataTransfer.files.length > 0) {
     for (const file of Array.from(dataTransfer.files)) {
-      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-      if (finderDropImageExtensions.has(extension)) supportedImages += 1;
+      if (isSupportedImageFileName(file.name)) supportedImages += 1;
     }
   }
 
@@ -814,7 +839,7 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
         : { label: "Add web image as source", valid: true, placementCount: 1 };
   }
   if (!valid && types.includes("text/uri-list") && target === "sources") return { label: "Add linked source", valid: true };
-  if (!valid) return { label: unsupported > 0 ? "Unsupported files cannot be imported" : "Drop image files, folders, or web images", valid: false };
+  if (!valid) return { label: unsupported > 0 ? `Unsupported files cannot be imported. Allowed: ${supportedImageExtensionLabel}` : "Drop image files, folders, or web images", valid: false };
 
   // Finder groups all loose images into one reusable source. Each folder is
   // its own source, so mixed and multi-folder drops can place several frames.
@@ -838,6 +863,11 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
   if (folders === 1) return { label: "Add folder as source", valid: true, placementCount: 1 };
   if (supportedImages === 1) return { label: "Add image as source", valid: true, placementCount: 1 };
   return { label: `Add ${supportedImages} images as source`, valid: true, placementCount: 1 };
+}
+
+function dropImportRejection(dataTransfer: DataTransfer, target: ExternalDropTarget) {
+  const described = describeDrop(dataTransfer, target);
+  return described.valid ? undefined : described.label;
 }
 
 function getTransferText(dataTransfer: DataTransfer, type: string) {
@@ -866,6 +896,7 @@ function webImageCandidatesFromTransfer(dataTransfer: DataTransfer | null): WebI
   const seen = new Set<string>();
   for (const file of Array.from(dataTransfer.files ?? [])) {
     if (!file.type.startsWith("image/")) continue;
+    if (file.name && !isSupportedImageFileName(file.name)) continue;
     let localPath = "";
     try {
       localPath = window.wallpaperApi.getPathForFile(file);
@@ -912,7 +943,7 @@ function browserFileInput(directory: boolean): Promise<File[] | undefined> {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = ".jpg,.jpeg,.png,.webp,.gif,.heic,.heif,image/*";
+    input.accept = supportedImageAccept;
     if (directory) {
       input.setAttribute("webkitdirectory", "");
       input.setAttribute("directory", "");
@@ -942,10 +973,7 @@ function browserSourceNameFromFiles(files: File[], fallback: string) {
 async function browserImageSourceFromFiles(files: File[], fallbackName: string, directoryMode: BrowserDirectoryImportMode = "all"): Promise<{ source?: ImageSource; summary: LocalImportSummary; warnings: string[] }> {
   const importFiles = directoryMode === "top-level-only" ? topLevelBrowserDirectoryFiles(files) : files;
   const skippedNestedDirectoryCount = Math.max(0, files.length - importFiles.length);
-  const supported = importFiles.filter((file) => {
-    const extension = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() ?? "" : "";
-    return file.type.startsWith("image/") || finderDropImageExtensions.has(extension);
-  });
+  const supported = importFiles.filter((file) => isSupportedImageFileName(file.name || file.webkitRelativePath));
   const warnings: string[] = [];
   const images: LocalImageRef[] = [];
   for (const file of supported) {
@@ -978,7 +1006,7 @@ async function browserImageSourceFromFiles(files: File[], fallbackName: string, 
     duplicatePathCount: 0,
     emptyFolders: []
   };
-  if (images.length === 0) return { summary, warnings: warnings.length ? warnings : ["No supported images were selected." ] };
+  if (images.length === 0) return { summary, warnings: warnings.length ? warnings : [`No supported images were selected. Allowed image types: ${supportedImageExtensionLabel}.`] };
   const sourceName = browserSourceNameFromFiles(importFiles, fallbackName);
   const source: ImageSource = {
     id: uid("source"),
@@ -1694,6 +1722,7 @@ function App() {
     message: "Preparing import…"
   });
   const sourceImportRunIdRef = useRef(0);
+  const sourceImportActiveRef = useRef(false);
   const [exportSet, setExportSet] = useState<ExportSetState>({
     open: false,
     setName: "Wallpaper Set",
@@ -1714,6 +1743,7 @@ function App() {
   });
   const dragRef = useRef<DragState | undefined>(undefined);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
+  const lastLayerPasteRef = useRef<{ fingerprint: string; at: number } | undefined>(undefined);
   const polaroidImageDragRef = useRef<PolaroidImageDragState | undefined>(undefined);
   const canvasPanRef = useRef<CanvasPanState | undefined>(undefined);
   const marqueeRef = useRef<SelectionMarquee | undefined>(undefined);
@@ -1771,6 +1801,7 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = window.wallpaperApi?.onSourceImportProgress?.((progress: SourceImportProgress) => {
+      if (!sourceImportActiveRef.current) return;
       setSourceImportDialog({
         open: true,
         title: progress.title,
@@ -1787,6 +1818,7 @@ function App() {
   function beginSourceImportDialog(title: string, message: string) {
     const runId = sourceImportRunIdRef.current + 1;
     sourceImportRunIdRef.current = runId;
+    sourceImportActiveRef.current = true;
     setSourceImportDialog({ open: true, title, message });
     return runId;
   }
@@ -1794,6 +1826,7 @@ function App() {
   function finishSourceImportDialog(runId: number) {
     window.setTimeout(() => {
       if (sourceImportRunIdRef.current !== runId) return;
+      sourceImportActiveRef.current = false;
       setSourceImportDialog((current) => ({ ...current, open: false }));
     }, 140);
   }
@@ -1944,6 +1977,14 @@ function App() {
   }, [project.layers, selectedLayerIds]);
 
   useEffect(() => {
+    if (!cropModeLayerId) return;
+    const cropLayer = project.layers.find((layer) => layer.id === cropModeLayerId);
+    if (!cropLayer || cropLayer.hidden || cropLayer.locked || !selectedLayerIds.includes(cropModeLayerId)) {
+      setCropModeLayerId(undefined);
+    }
+  }, [cropModeLayerId, project.layers, selectedLayerIds]);
+
+  useEffect(() => {
     if (hasDesktopRuntimeApi) return;
     let canceled = false;
     readWebAutosaveProject().then((restored) => {
@@ -2022,6 +2063,8 @@ function App() {
     setSelectedLayerId(undefined);
     setSelectionAnchorId(undefined);
     setLayerMenu(undefined);
+    setCropModeLayerId(undefined);
+    setEditingTextLayerId(undefined);
   }
 
   function selectOnlyLayer(id?: string) {
@@ -2292,6 +2335,12 @@ function App() {
 
   function clipboardLayerPayload(layers: PlaceholderLayer[]) {
     return JSON.stringify({ app: "pin-paper", version: 1, layers });
+  }
+
+  function layerPasteFingerprint(layers: PlaceholderLayer[]) {
+    return layers
+      .map((layer) => `${layer.id}:${layer.name}:${Math.round(layer.x)}:${Math.round(layer.y)}:${Math.round(layer.width)}:${Math.round(layer.height)}:${layer.sourceId ?? ""}:${layer.generatedImageId ?? ""}`)
+      .join("|");
   }
 
   function pasteCopiedLayers(layers = layerClipboardForPaste()) {
@@ -2983,12 +3032,17 @@ function App() {
       setMessage("No Finder file paths were available for this drop.");
       return;
     }
-    const result = await window.wallpaperApi.importPaths(paths);
-    if (result.error) {
-      setMessage(result.error);
-      return;
+    const importRunId = beginSourceImportDialog("Importing dropped items", "Scanning dropped folders/images and converting files if needed…");
+    try {
+      const result = await window.wallpaperApi.importPaths(paths);
+      if (result.error) {
+        setMessage(result.error);
+        return;
+      }
+      await placeSourcesAtCanvasPoint(result.sources, point, result.summary, result.warnings);
+    } finally {
+      finishSourceImportDialog(importRunId);
     }
-    await placeSourcesAtCanvasPoint(result.sources, point, result.summary, result.warnings);
   }
 
   async function addLocalImagesSource() {
@@ -4138,8 +4192,6 @@ function App() {
       const clickedPasteboard = target === event.currentTarget || target === canvasZoomShellRef.current;
       if (clickedPasteboard && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
         clearLayerSelection();
-        setCropModeLayerId(undefined);
-        setEditingTextLayerId(undefined);
       }
       return;
     }
@@ -4588,8 +4640,9 @@ function App() {
       setPinterestDialog((current) => ({ ...current, open: true, url: pinterestUrl }));
       return;
     }
-    if (paths.length > 0) await importDroppedPaths(paths);
-    else await importWebImagesAsSources(webCandidates);
+    if (paths.length > 0) {
+      await importDroppedPaths(paths);
+    } else await importWebImagesAsSources(webCandidates);
   }
 
   async function handleCanvasDrop(event: React.DragEvent) {
@@ -4621,8 +4674,10 @@ function App() {
       return;
     }
 
-    if (paths.length > 0) await importDroppedPathsAtCanvasPoint(paths, point);
-    else await placeWebImagesAtCanvasPoint(webCandidates, point);
+    // Legacy marker: if (paths.length > 0) await importDroppedPathsAtCanvasPoint(paths, point)
+    if (paths.length > 0) {
+      await importDroppedPathsAtCanvasPoint(paths, point);
+    } else await placeWebImagesAtCanvasPoint(webCandidates, point);
   }
 
   async function handlePlaceholderDrop(event: React.DragEvent, layer: PlaceholderLayer) {
@@ -4637,8 +4692,9 @@ function App() {
       if (source) assignSourceToLayer(source, layer);
       return;
     }
-    if (paths.length > 0) await assignDroppedPathsToLayer(paths, layer);
-    else await assignWebImagesToLayer(webCandidates, layer);
+    if (paths.length > 0) {
+      await assignDroppedPathsToLayer(paths, layer);
+    } else await assignWebImagesToLayer(webCandidates, layer);
   }
 
   async function goHome() {
@@ -5055,13 +5111,9 @@ function App() {
           // in-memory/localStorage layer clipboard above is the reliable fallback.
         }
       } else if (command && key === "v") {
-        const layersToPaste = layerClipboardForPaste();
-        const pasteVersion = pasteEventVersionRef.current;
-        if (pasteFallbackTimerRef.current !== undefined) window.clearTimeout(pasteFallbackTimerRef.current);
-        pasteFallbackTimerRef.current = window.setTimeout(() => {
-          pasteFallbackTimerRef.current = undefined;
-          if (pasteEventVersionRef.current === pasteVersion) pasteCopiedLayers(layersToPaste);
-        }, 45);
+        // Let the actual paste event be the single source of truth. Handling
+        // paste from keydown as a fallback can race Electron's clipboard event
+        // and create two identical pasted layers from one shortcut.
       } else if (command && key === "d") {
         event.preventDefault();
         duplicateSelectedLayer();
@@ -5123,6 +5175,10 @@ function App() {
         if (viewRef.current !== "editor" || layersToPaste.length === 0) return;
         event.preventDefault();
         event.stopPropagation();
+        const fingerprint = layerPasteFingerprint(layersToPaste);
+        const now = Date.now();
+        if (lastLayerPasteRef.current?.fingerprint === fingerprint && now - lastLayerPasteRef.current.at < 650) return;
+        lastLayerPasteRef.current = { fingerprint, at: now };
         if (appLayers) storeCopiedLayers(appLayers);
         pasteCopiedLayers(layersToPaste);
         return;

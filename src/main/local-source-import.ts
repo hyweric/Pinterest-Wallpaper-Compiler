@@ -3,8 +3,9 @@ import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ImageSource, LocalImageRef, LocalImportSummary, PathImportResult } from "../shared/types.js";
+import { isSupportedImageFileName, supportedImageExtensionLabel, supportedImageExtensionSet } from "../shared/supported-image-formats.js";
 
-export const finderImageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif"]);
+export const finderImageExtensions = supportedImageExtensionSet;
 
 export type LocalSourceImportOptions = {
   includeSubfolders?: boolean;
@@ -50,8 +51,7 @@ async function readableImage(filePath: string, validateImage?: LocalSourceImport
 }
 
 async function imageFromCanonicalPath(filePath: string, validateImage?: LocalSourceImportOptions["validateImage"]): Promise<LocalImageRef | undefined> {
-  const extension = path.extname(filePath).toLowerCase();
-  if (!finderImageExtensions.has(extension)) return undefined;
+  if (!isSupportedImageFileName(filePath)) return undefined;
   if (!(await readableImage(filePath, validateImage))) return undefined;
   const fileStat = await stat(filePath);
   if (!fileStat.isFile()) return undefined;
@@ -94,8 +94,7 @@ async function scanFolder(
     }
     if (!itemStat.isFile()) continue;
 
-    const extension = path.extname(canonicalPath).toLowerCase();
-    if (!finderImageExtensions.has(extension)) {
+    if (!isSupportedImageFileName(canonicalPath)) {
       state.summary.skippedUnsupportedCount += 1;
       continue;
     }
@@ -213,8 +212,7 @@ export async function importLocalPaths(rawPaths: unknown, options: LocalSourceIm
       summary.skippedUnsupportedCount += 1;
       continue;
     }
-    const extension = path.extname(canonicalPath).toLowerCase();
-    if (!finderImageExtensions.has(extension)) {
+    if (!isSupportedImageFileName(canonicalPath)) {
       summary.skippedUnsupportedCount += 1;
       continue;
     }
@@ -236,9 +234,10 @@ export async function importLocalPaths(rawPaths: unknown, options: LocalSourceIm
 
   if (looseImages.length > 0) sources.push(looseFileSource(looseImages, now, createSourceId));
 
-  const skippedCount = summary.skippedUnsupportedCount + summary.skippedUnreadableCount + summary.skippedMissingCount;
   const warnings: string[] = [];
-  if (skippedCount > 0) warnings.push(`${skippedCount} unsupported, unreadable, or missing item${skippedCount === 1 ? " was" : "s were"} skipped.`);
+  if (summary.skippedUnsupportedCount > 0) warnings.push(`${summary.skippedUnsupportedCount} item${summary.skippedUnsupportedCount === 1 ? " was" : "s were"} rejected. Allowed image types: ${supportedImageExtensionLabel}.`);
+  const unreadableOrMissingCount = summary.skippedUnreadableCount + summary.skippedMissingCount;
+  if (unreadableOrMissingCount > 0) warnings.push(`${unreadableOrMissingCount} supported item${unreadableOrMissingCount === 1 ? " was" : "s were"} unreadable or missing and could not be imported.`);
   if (summary.emptyFolders.length > 0) warnings.push(`${summary.emptyFolders.length} folder${summary.emptyFolders.length === 1 ? "" : "s"} contained no supported readable images.`);
 
   if (sources.length === 0) {
@@ -248,8 +247,8 @@ export async function importLocalPaths(rawPaths: unknown, options: LocalSourceIm
       summary,
       warnings,
       error: summary.emptyFolders.length > 0
-        ? "No supported images were found in the selected folder."
-        : "No supported readable image or folder items were found."
+        ? `No supported images were found. Allowed image types: ${supportedImageExtensionLabel}.`
+        : `No supported image files were selected. Allowed image types: ${supportedImageExtensionLabel}.`
     };
   }
 
