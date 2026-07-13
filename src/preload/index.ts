@@ -31,11 +31,55 @@ import type {
   TrayRuntimeState
 } from "../shared/types.js";
 
+let lastNativeDropPaths: { paths: string[]; updatedAt: number } = { paths: [], updatedAt: 0 };
+
+function nativePathForFile(file: File | null | undefined): string {
+  if (!file) return "";
+  try {
+    return webUtils.getPathForFile(file);
+  } catch {
+    return "";
+  }
+}
+
+function nativePathsFromTransfer(dataTransfer: DataTransfer | null | undefined): string[] {
+  if (!dataTransfer) return [];
+  const paths: string[] = [];
+  for (const file of Array.from(dataTransfer.files ?? [])) {
+    const filePath = nativePathForFile(file);
+    if (filePath) paths.push(filePath);
+  }
+  for (const item of Array.from(dataTransfer.items ?? [])) {
+    if (item.kind !== "file") continue;
+    const filePath = nativePathForFile(item.getAsFile());
+    if (filePath) paths.push(filePath);
+  }
+  return [...new Set(paths)];
+}
+
+function rememberNativeDropPaths(event: DragEvent) {
+  const paths = nativePathsFromTransfer(event.dataTransfer);
+  if (paths.length > 0) lastNativeDropPaths = { paths, updatedAt: Date.now() };
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("dragenter", rememberNativeDropPaths, true);
+  window.addEventListener("dragover", rememberNativeDropPaths, true);
+  window.addEventListener("drop", rememberNativeDropPaths, true);
+}
+
+const recentNativeDropPaths = () => {
+  if (Date.now() - lastNativeDropPaths.updatedAt > 5_000) return [];
+  return [...lastNativeDropPaths.paths];
+};
+
 const api = {
   chooseFolder: (): Promise<FolderResult> => ipcRenderer.invoke("dialog:choose-folder"),
   chooseImageFile: (): Promise<ImageFileResult> => ipcRenderer.invoke("dialog:choose-image-file"),
   chooseImageFiles: (): Promise<ImageFileResult> => ipcRenderer.invoke("dialog:choose-image-files"),
-  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+  getPathForFile: (file: File): string => nativePathForFile(file),
+  getLastDroppedFilePaths: (): string[] => recentNativeDropPaths(),
+  clearLastDroppedFilePaths: (): void => { lastNativeDropPaths = { paths: [], updatedAt: 0 }; },
   importPaths: (paths: string[]): Promise<PathImportResult> => ipcRenderer.invoke("source:import-paths", paths),
   importWebImage: (payload: { url?: string; dataUrl?: string; name?: string; mimeType?: string }): Promise<ImageFileResult> => ipcRenderer.invoke("source:import-web-image", payload),
   rescanFolder: (path: string) => ipcRenderer.invoke("source:rescan-folder", path),

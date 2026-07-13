@@ -14,6 +14,20 @@ test("Finder paths use Electron webUtils instead of deprecated File.path", async
   assert.doesNotMatch(renderer, /File\s*&\s*\{\s*path\?:/);
 });
 
+
+
+test("desktop drag drops use preload-captured native paths before unsupported renderer fallback", async () => {
+  const preload = await source("src/preload/index.ts");
+  const renderer = await source("src/renderer/main.tsx");
+  assert.match(preload, /rememberNativeDropPaths/);
+  assert.match(preload, /window\.addEventListener\("drop", rememberNativeDropPaths, true\)/);
+  assert.match(preload, /getLastDroppedFilePaths/);
+  assert.match(renderer, /getRecentNativeDropPaths/);
+  assert.match(renderer, /hasNativeFileTransfer\(dataTransfer\) \? getRecentNativeDropPaths\(\) : \[\]/);
+  assert.match(renderer, /Release to import files or folder/);
+  assert.match(renderer, /clearLastDroppedFilePaths/);
+});
+
 test("main process validates every picker and Finder import through one service", async () => {
   const main = await source("src/main/main.ts");
   assert.match(main, /importValidatedLocalPaths/);

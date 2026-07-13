@@ -759,11 +759,26 @@ function desktopPathForDroppedFile(file: File | null | undefined) {
   }
 }
 
+function getRecentNativeDropPaths() {
+  try {
+    return window.wallpaperApi.getLastDroppedFilePaths?.() ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function hasNativeFileTransfer(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes("Files") || dataTransfer.files.length > 0 || Array.from(dataTransfer.items ?? []).some((item) => item.kind === "file");
+}
+
 function getDroppedPathsFromTransfer(dataTransfer: DataTransfer) {
   // Desktop drops in Electron are most reliable when we preserve the native
-  // file/folder path and let the main-process importer classify it. Avoid
-  // rejecting path drops in the renderer because folders often look like
-  // extensionless File objects while the drag is still in progress.
+  // file/folder path and let the main-process importer classify it because
+  // folders often look like
+  // extensionless File objects while the drag is still in progress. Some
+  // Electron/macOS builds do not let a File object cross the contextBridge with
+  // enough native metadata for webUtils.getPathForFile(file), so the preload
+  // captures the same drag/drop event in its own world and stores the paths.
   const filePaths = Array.from(dataTransfer.files ?? [])
     .map((file) => desktopPathForDroppedFile(file))
     .filter((filePath): filePath is string => Boolean(filePath));
@@ -774,6 +789,9 @@ function getDroppedPathsFromTransfer(dataTransfer: DataTransfer) {
     .map((item) => desktopPathForDroppedFile(item.getAsFile()))
     .filter((filePath): filePath is string => Boolean(filePath));
   if (itemPaths.length > 0) return [...new Set(itemPaths)];
+
+  const preloadPaths = hasNativeFileTransfer(dataTransfer) ? getRecentNativeDropPaths() : [];
+  if (preloadPaths.length > 0) return [...new Set(preloadPaths)];
 
   const textPaths = dataTransfer.getData("text/plain")
     .split(/\r?\n/)
@@ -839,6 +857,9 @@ function describeDrop(dataTransfer: DataTransfer, target: ExternalDropTarget): P
         : { label: "Add web image as source", valid: true, placementCount: 1 };
   }
   if (!valid && types.includes("text/uri-list") && target === "sources") return { label: "Add linked source", valid: true };
+  if (!valid && hasNativeFileTransfer(dataTransfer)) {
+    return { label: "Release to import files or folder", valid: true, placementCount: 1 };
+  }
   if (!valid) return { label: unsupported > 0 ? `Unsupported files cannot be imported. Allowed: ${supportedImageExtensionLabel}` : "Drop image files, folders, or web images", valid: false };
 
   // Finder groups all loose images into one reusable source. Each folder is
@@ -4630,6 +4651,7 @@ function App() {
     const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
     const paths = getDroppedPaths(event);
     setDropFeedback(undefined);
+    window.wallpaperApi.clearLastDroppedFilePaths?.();
     if (getDroppedSourceId(event)) return;
     const pinterestUrl = getDroppedPinterestUrl(event);
     if (pinterestUrl) {
@@ -4651,6 +4673,7 @@ function App() {
     const paths = getDroppedPaths(event);
     const point = canvasPointFromClient(event.clientX, event.clientY);
     setDropFeedback(undefined);
+    window.wallpaperApi.clearLastDroppedFilePaths?.();
     if (!point) {
       setMessage("Drop the source directly on the canvas to position it.");
       return;
@@ -4686,6 +4709,7 @@ function App() {
     const webCandidates = webImageCandidatesFromTransfer(event.dataTransfer);
     const paths = getDroppedPaths(event);
     setDropFeedback(undefined);
+    window.wallpaperApi.clearLastDroppedFilePaths?.();
     const existingSourceId = getDroppedSourceId(event);
     if (existingSourceId) {
       const source = projectRef.current.sources.find((item) => item.id === existingSourceId);
