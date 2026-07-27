@@ -95,6 +95,7 @@ import {
   workspaceFromTemplate
 } from "./project";
 import { layerSelectionRange, moveLayerBlockToTarget, reorderLayerBlock, type LayerOrderAction } from "../shared/layers";
+import { DEFAULT_PIN_IMPORT_LIMIT, MAX_PIN_IMPORT_LIMIT, MIN_PIN_IMPORT_LIMIT, normalizePinImportLimit } from "../shared/pin-import-limit";
 import { placeTooltip } from "../shared/ui";
 import {
   canvasPointAtClient,
@@ -140,6 +141,7 @@ import "./styles.css";
 
 const autosaveKey = "pwc.autosave.v2";
 const filePathKey = "pwc.filePath.v1";
+const pinterestPinLimitKey = "pwc.pinterestPinLimit.v1";
 const layerClipboardKey = "pwc.layerClipboard.v1";
 const historyLimit = 80;
 const snapDistance = 8;
@@ -482,6 +484,7 @@ type PinterestDialogState = {
   stage?: PinterestImportProgress["stage"];
   current?: number;
   total?: number;
+  limitReached?: boolean;
 };
 
 type SourceImportDialogState = {
@@ -1693,6 +1696,7 @@ function App() {
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | undefined>(project.layers[0]?.id);
   const [selectedSourceId, setSelectedSourceId] = useState<string | undefined>(project.sources[0]?.id);
   const [projectPath, setProjectPath] = useState<string | undefined>(() => localStorage.getItem(filePathKey) ?? undefined);
+  const [pinterestPinLimit, setPinterestPinLimit] = useState(() => normalizePinImportLimit(localStorage.getItem(pinterestPinLimitKey) ?? DEFAULT_PIN_IMPORT_LIMIT));
   const webAutosaveHydratedRef = useRef(hasDesktopRuntimeApi);
   const [message, setMessage] = useState("Ready");
   const [zoom, setZoom] = useState(0.36);
@@ -2047,6 +2051,10 @@ function App() {
       if (autosaveTimerRef.current !== undefined) window.clearTimeout(autosaveTimerRef.current);
     };
   }, [project]);
+
+  useEffect(() => {
+    localStorage.setItem(pinterestPinLimitKey, String(pinterestPinLimit));
+  }, [pinterestPinLimit]);
 
   useEffect(() => {
     if (projectPath) localStorage.setItem(filePathKey, projectPath);
@@ -3127,19 +3135,21 @@ function App() {
       jobId,
       stage: "validating",
       current: 0,
-      total: existing?.expectedItemCount,
+      total: Math.min(existing?.expectedItemCount ?? pinterestPinLimit, pinterestPinLimit),
+      limitReached: false,
       error: undefined,
       log: ["Validating Pinterest URL..."],
       progress: 2,
       imagesFound: 0,
-      imagesCached: existing?.images.length ?? 0
+      imagesCached: Math.min(existing?.images.length ?? 0, pinterestPinLimit)
     }));
     const request = {
       url,
       mode,
       jobId,
       existingSource: existing,
-      resumeBookmark: existing?.importCursor
+      resumeBookmark: existing?.pinImportLimitReached ? undefined : existing?.importCursor,
+      maxPins: pinterestPinLimit
     } as const;
     try {
       const result = await pinterestApi(request);
@@ -3156,17 +3166,28 @@ function App() {
           log: result.log,
           current: result.imagesCached,
           total: completeEnough || !result.partial ? Math.max(result.imagesFound, result.imagesCached) : current.total,
+          limitReached: Boolean(result.pinLimitReached),
           error: softenPinterestPartialError(result.error, completeEnough)
         };
       });
 
       const importCompleteEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, pinterestDialog.total ?? existing?.expectedItemCount, result.imagesFound));
       if (result.source && result.source.images.length > 0) {
-        const sourceForProject = importCompleteEnough ? { ...result.source, importStatus: "ready" as const, expectedItemCount: Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound) } : result.source;
+        const sourceForProject = importCompleteEnough
+          ? {
+              ...result.source,
+              importStatus: "ready" as const,
+              expectedItemCount: result.pinLimitReached
+                ? result.source.expectedItemCount
+                : Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound)
+            }
+          : result.source;
         const [resolved] = addSourcesToProject([sourceForProject], [], true);
         setSelectedSourceId(resolved?.id ?? result.source.id);
       }
-      setMessage(softenPinterestPartialError(result.error, importCompleteEnough) ?? `Pinterest board ready with ${result.imagesCached} cached pins.`);
+      setMessage(softenPinterestPartialError(result.error, importCompleteEnough) ?? (result.pinLimitReached
+        ? `Pinterest board ready with ${result.imagesCached} cached pins (limit reached).`
+        : `Pinterest board ready with ${result.imagesCached} cached pins.`));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Pinterest import failed.";
       setPinterestDialog((current) => ({ ...current, busy: false, stage: "error", error: message, log: [...current.log, message] }));
@@ -4926,11 +4947,12 @@ function App() {
         jobId,
         stage: "discovering",
         current: 0,
-        total: source.expectedItemCount,
+        total: Math.min(source.expectedItemCount ?? pinterestPinLimit, pinterestPinLimit),
+        limitReached: false,
         error: undefined,
         log: ["Refreshing Pinterest board..."],
         progress: 5,
-        imagesCached: source.images.length
+        imagesCached: Math.min(source.images.length, pinterestPinLimit)
       }));
       if (!platformCapabilities.canUsePinterestImport || !window.wallpaperApi?.updatePinterestBoard) {
         const message = "Pinterest refresh is unavailable in the web version. Use the desktop app, or download images and import them as files.";
@@ -4943,7 +4965,8 @@ function App() {
         mode: "update",
         jobId,
         existingSource: source,
-        resumeBookmark: source.importCursor
+        resumeBookmark: source.pinImportLimitReached ? undefined : source.importCursor,
+        maxPins: pinterestPinLimit
       });
       setPinterestDialog((current) => {
         const completeEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, current.total, result.imagesFound));
@@ -4957,17 +4980,28 @@ function App() {
           log: result.log,
           current: result.imagesCached,
           total: completeEnough || !result.partial ? Math.max(result.imagesFound, result.imagesCached) : current.total,
+          limitReached: Boolean(result.pinLimitReached),
           error: softenPinterestPartialError(result.error, completeEnough)
         };
       });
       const refreshCompleteEnough = Boolean(result.partial && pinterestPartialIsCloseEnough(result.imagesCached, source.expectedItemCount, result.imagesFound));
       if (result.source && result.source.images.length > 0) {
-        const sourceForProject = refreshCompleteEnough ? { ...result.source, importStatus: "ready" as const, expectedItemCount: Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound) } : result.source;
+        const sourceForProject = refreshCompleteEnough
+          ? {
+              ...result.source,
+              importStatus: "ready" as const,
+              expectedItemCount: result.pinLimitReached
+                ? result.source.expectedItemCount
+                : Math.max(result.source.expectedItemCount ?? 0, result.imagesCached, result.imagesFound)
+            }
+          : result.source;
         commitProject((current) => ({
           ...current,
           sources: current.sources.map((item) => (item.id === source.id ? { ...sourceForProject, id: source.id, name: source.name } : item))
         }));
-        setMessage(softenPinterestPartialError(result.error, refreshCompleteEnough) ?? `Refreshed ${result.source.images.length} Pinterest pins.`);
+        setMessage(softenPinterestPartialError(result.error, refreshCompleteEnough) ?? (result.pinLimitReached
+          ? `Refreshed ${result.source.images.length} Pinterest pins (limit reached).`
+          : `Refreshed ${result.source.images.length} Pinterest pins.`));
       } else {
         setMessage(result.error ?? "Pinterest import unavailable");
       }
@@ -5352,9 +5386,11 @@ function App() {
               const linked = linkedSourceIds.includes(source.id);
               const assigned = Boolean(selectedLayer && selectedLayer.objectKind !== "text" && (selectedLayer.sourceId === source.id || selectedLayer.sourceState.sourceIds.includes(source.id)));
               const eligibleCount = sourceImagesForPolicy(source).length;
-              const countLabel = source.expectedItemCount && source.expectedItemCount > source.images.length
-                ? `${source.images.length} / ${source.expectedItemCount} cached`
-                : `${eligibleCount} items`;
+              const countLabel = source.type === "pinterest-board" && source.pinImportLimitReached
+                ? `${eligibleCount} pins · limit reached`
+                : source.expectedItemCount && source.expectedItemCount > source.images.length
+                  ? `${source.images.length} / ${source.expectedItemCount} cached`
+                  : `${eligibleCount} items`;
               return (
                 <div
                   className={`source-row ${selectedLayer && assigned ? "assigned" : ""}`}
@@ -5983,6 +6019,8 @@ function App() {
               onRevealTexture={(textureId) => void revealCustomTexture(textureId)}
               onResize={resizeCanvas}
               onPreset={setPreset}
+              pinterestPinLimit={pinterestPinLimit}
+              onPinterestPinLimitChange={(value) => setPinterestPinLimit(normalizePinImportLimit(value))}
             />
           </>
         )}
@@ -6014,6 +6052,7 @@ function App() {
           onImport={() => void runPinterestImport("import")}
           onCancel={() => void cancelPinterestImport()}
           onClose={() => setPinterestDialog((current) => ({ ...current, open: false }))}
+          pinLimit={pinterestPinLimit}
         />
       )}
       <RenameDialog state={renameState?.kind === "layer" ? undefined : renameState} onChange={setRenameState} onFinish={finishRename} />
@@ -6902,13 +6941,15 @@ function PinterestDialog({
   onChange,
   onImport,
   onCancel,
-  onClose
+  onClose,
+  pinLimit
 }: {
   state: PinterestDialogState;
   onChange: React.Dispatch<React.SetStateAction<PinterestDialogState>>;
   onImport: () => void;
   onCancel: () => void;
   onClose: () => void;
+  pinLimit: number;
 }) {
   return (
     <div className="modal-backdrop">
@@ -6916,7 +6957,7 @@ function PinterestDialog({
         <div className="modal-title-row import-title-row">
           <div className="modal-title-copy">
             <h2>Import Pinterest Board</h2>
-            <p>Paste a public board URL. Cached locally for offline rotation.</p>
+            <p>Paste a public board URL. Cached locally for offline rotation. Up to {pinLimit.toLocaleString()} pins will be imported.</p>
           </div>
           <button className="button secondary import-dialog-close-button" onClick={state.busy ? onCancel : onClose}>{state.busy ? "Stop Import" : "Close"}</button>
         </div>
@@ -6933,7 +6974,7 @@ function PinterestDialog({
         {state.stage === "complete" && !state.error && (
           <div className="pinterest-complete-card">
             <strong>Import complete</strong>
-            <p>{state.imagesCached} image{state.imagesCached === 1 ? "" : "s"} cached and ready to use.</p>
+            <p>{state.imagesCached} image{state.imagesCached === 1 ? "" : "s"} cached and ready to use.{state.limitReached ? ` The ${pinLimit.toLocaleString()} pin limit was reached.` : ""}</p>
             <div className="dialog-actions"><button className="pill-button primary" onClick={onClose}>Done</button></div>
           </div>
         )}
@@ -6983,7 +7024,9 @@ function CanvasDesignPanel({
   onRemoveTexture,
   onRevealTexture,
   onResize,
-  onPreset
+  onPreset,
+  pinterestPinLimit,
+  onPinterestPinLimitChange
 }: {
   canvas: CanvasSettings;
   customTextures: WallpaperProject["customTextures"];
@@ -6995,6 +7038,8 @@ function CanvasDesignPanel({
   onRevealTexture: (textureId: string) => void;
   onResize: (width: number, height: number, mode: CanvasResizeMode) => void;
   onPreset: (id: string, mode: CanvasResizeMode) => void;
+  pinterestPinLimit: number;
+  onPinterestPinLimitChange: (value: number) => void;
 }) {
   const [draftWidth, setDraftWidth] = useState(canvas.width);
   const [draftHeight, setDraftHeight] = useState(canvas.height);
@@ -7128,6 +7173,11 @@ function CanvasDesignPanel({
             </div>
           </div>
         )}
+      </details>
+
+      <details>
+        <summary>Imports <ChevronDown size={15} /></summary>
+        <label>Maximum Pinterest pins<SoftNumberInput value={pinterestPinLimit} min={MIN_PIN_IMPORT_LIMIT} max={MAX_PIN_IMPORT_LIMIT} onCommit={onPinterestPinLimitChange} /></label>
       </details>
 
     </section>

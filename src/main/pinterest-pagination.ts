@@ -29,15 +29,17 @@ export async function collectPinterestPages<T extends { id: string }>(
     signal?: AbortSignal;
     onProgress?: (progress: PinterestPaginationProgress) => void;
     maxPages?: number;
+    maxItems?: number;
     maxRetries?: number;
     retryDelayMs?: number;
   } = {}
-): Promise<{ items: T[]; pageCount: number; finalBookmark?: string }> {
+): Promise<{ items: T[]; pageCount: number; finalBookmark?: string; limitReached?: boolean }> {
   const seen = new Map<string, T>();
   const seenBookmarks = new Set<string>();
   let bookmark = options.initialBookmark;
   let page = 0;
   const maxPages = options.maxPages ?? 10_000;
+  const maxItems = Math.max(1, Math.floor(options.maxItems ?? Number.MAX_SAFE_INTEGER));
   const maxRetries = options.maxRetries ?? 2;
   const retryDelayMs = options.retryDelayMs ?? 350;
 
@@ -74,10 +76,20 @@ export async function collectPinterestPages<T extends { id: string }>(
 
     page += 1;
     for (const item of response.items) seen.set(item.id, item);
-    options.onProgress?.({ page, itemCount: seen.size, bookmark: response.bookmark ?? undefined });
-
     const next = response.bookmark ?? undefined;
-    if (!next) return { items: [...seen.values()], pageCount: page };
+    const uniqueItems = [...seen.values()];
+    const limitedItems = uniqueItems.slice(0, maxItems);
+    options.onProgress?.({ page, itemCount: limitedItems.length, bookmark: next });
+
+    if (uniqueItems.length >= maxItems) {
+      return {
+        items: limitedItems,
+        pageCount: page,
+        finalBookmark: next,
+        limitReached: uniqueItems.length > maxItems || Boolean(next)
+      };
+    }
+    if (!next) return { items: uniqueItems, pageCount: page, limitReached: false };
     bookmark = next;
   }
 

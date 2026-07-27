@@ -53,6 +53,7 @@ import {
   wallpaperSetTemporaryPrefix
 } from "./wallpaper-sets.js";
 import { installStrictMediaPermissionPolicy } from "./media-permissions.js";
+import { normalizePinImportLimit } from "../shared/pin-import-limit.js";
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"]);
 const videoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"]);
@@ -316,9 +317,11 @@ async function loadPublicPinterestBoard(
   options: {
     signal?: AbortSignal;
     expectedTotal?: number;
+    maxPins?: number;
     onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ): Promise<PublicPinterestBoardResult> {
+  const pinLimit = normalizePinImportLimit(options.maxPins);
   const scraperSession = session.fromPartition(`pwc-pinterest-import-${crypto.randomUUID()}`);
   installStrictMediaPermissionPolicy(scraperSession as unknown as import("./media-permissions.js").PermissionPolicySession);
 
@@ -440,9 +443,12 @@ async function loadPublicPinterestBoard(
       stableRounds = count === previousCount && height === previousHeight ? stableRounds + 1 : 0;
       previousCount = count;
       previousHeight = height;
-      const page = Math.max(1, Math.ceil(count / 50));
-      options.onProgress?.(count, options.expectedTotal, `Importing page ${page}: ${count}${options.expectedTotal ? ` / ${options.expectedTotal}` : ""} pins found`, page);
+      const cappedCount = Math.min(count, pinLimit);
+      const progressTotal = Math.min(options.expectedTotal ?? pinLimit, pinLimit);
+      const page = Math.max(1, Math.ceil(cappedCount / 50));
+      options.onProgress?.(cappedCount, progressTotal, `Importing page ${page}: ${cappedCount} / ${progressTotal} pins found`, page);
 
+      if (count >= pinLimit) break;
       if (options.expectedTotal && count >= options.expectedTotal) break;
       if (latest.atBottom && stableRounds >= 24) break;
       if (latest.atBottom && stableRounds > 0 && stableRounds % 6 === 0) {
@@ -453,12 +459,15 @@ async function loadPublicPinterestBoard(
 
     const blocked = /log in|sign up|access denied|something went wrong/i.test(latest.bodyText) && latest.pins.length === 0;
     if (blocked) throw new Error("Pinterest did not expose the public board feed in the embedded browser.");
-    const pins = latest.pins.filter((pin) => !pin.promoted);
-    const overflow = options.expectedTotal && pins.length > options.expectedTotal ? pins.length - options.expectedTotal : 0;
+    const discoveredPins = latest.pins.filter((pin) => !pin.promoted);
+    const pins = discoveredPins.slice(0, pinLimit);
+    const overflow = options.expectedTotal && discoveredPins.length > options.expectedTotal ? discoveredPins.length - options.expectedTotal : 0;
+    const limitReached = discoveredPins.length >= pinLimit;
     return {
       pins,
-      total: options.expectedTotal && options.expectedTotal >= pins.length ? options.expectedTotal : pins.length,
-      log: [`Full-board browser loader discovered ${pins.length} valid pin cards${overflow ? ` (${overflow} above Pinterest's reported count)` : ""}.`]
+      total: options.expectedTotal && options.expectedTotal >= discoveredPins.length ? options.expectedTotal : discoveredPins.length,
+      limitReached,
+      log: [`Full-board browser loader discovered ${discoveredPins.length} valid pin cards${overflow ? ` (${overflow} above Pinterest's reported count)` : ""}${limitReached ? ` and stopped at the ${pinLimit} pin limit` : ""}.`]
     };
   } finally {
     closeScraper();

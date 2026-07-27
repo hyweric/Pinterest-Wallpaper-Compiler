@@ -473,6 +473,9 @@ export interface ImageSource {
   importLog?: string[];
   expectedItemCount?: number;
   importedItemCount?: number;
+  pinImportLimit?: number;
+  pinImportLimitReached?: boolean;
+  availableItemCount?: number;
   importCursor?: string;
   lastImportCompletedAt?: string;
   includeSubfolders?: boolean;
@@ -960,6 +963,7 @@ export interface PinterestImportRequest {
   accessToken?: string;
   boardId?: string;
   resumeBookmark?: string;
+  maxPins?: number;
 }
 
 export type PinterestImportStage =
@@ -995,4 +999,7 @@ export interface PinterestImportResult {
   error?: string;
   page?: number;
   bookmark?: string;
+  pinLimit?: number;
+  pinLimitReached?: boolean;
+  availablePins?: number;
 }

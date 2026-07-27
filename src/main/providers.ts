@@ -11,6 +11,7 @@ import type {
   PinterestImportResult
 } from "../shared/types.js";
 import { collectPinterestPages, PinterestPaginationError } from "./pinterest-pagination.js";
+import { normalizePinImportLimit, pinImportTarget, pinLimitReached as didReachPinLimit } from "../shared/pin-import-limit.js";
 
 export interface ImageSourceProvider<TRequest, TResult> {
   id: ImageSource["providerId"];
@@ -29,6 +30,7 @@ export interface PinterestBoardPin {
 export interface PublicPinterestBoardResult {
   pins: PinterestBoardPin[];
   total?: number;
+  limitReached?: boolean;
   log?: string[];
 }
 
@@ -37,6 +39,7 @@ export type PublicPinterestBoardLoader = (
   options: {
     signal?: AbortSignal;
     expectedTotal?: number;
+    maxPins?: number;
     onProgress?: (current: number, total?: number, message?: string, page?: number) => void;
   }
 ) => Promise<PublicPinterestBoardResult>;
@@ -157,6 +160,8 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     onProgress?: (progress: PinterestImportProgress) => void,
     signal?: AbortSignal
   ): Promise<PinterestImportResult> {
+    const pinLimit = normalizePinImportLimit(input.maxPins);
+    const normalizedInput: PinterestImportRequest = { ...input, maxPins: pinLimit };
     const jobId = input.jobId ?? `pinterest-${randomUUID()}`;
     const report = (
       stage: PinterestImportProgress["stage"],
@@ -168,65 +173,74 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       bookmark?: string
     ) => onProgress?.({ jobId, stage, current, total, progress, message, page, bookmark });
 
-    report("validating", 0, undefined, 2, "Validating Pinterest board URL...");
-    const validationError = this.validate(input);
+    report("validating", 0, pinLimit, 2, `Validating Pinterest board URL (limit ${pinLimit.toLocaleString()} pins)...`);
+    const validationError = this.validate(normalizedInput);
     if (validationError) {
-      return failureResult(validationError, [validationError]);
+      return { ...failureResult(validationError, [validationError]), pinLimit };
     }
 
-    const existing = input.existingSource;
+    const existing = normalizedInput.existingSource;
     await mkdir(this.cacheRoot, { recursive: true });
     const sourceId = existing?.id ?? `source-${randomUUID()}`;
     const sourceCachePath = existing?.cachePath ?? path.join(this.cacheRoot, sourceId);
     await mkdir(sourceCachePath, { recursive: true });
 
-    const log = ["Pinterest URL validated."];
+    const log = ["Pinterest URL validated.", `Pin import limit: ${pinLimit.toLocaleString()}.`];
     let pins: PinterestBoardPin[] = [];
     let expectedCount: number | undefined;
     let finalBookmark: string | undefined;
     let pageCount: number | undefined;
     let discoveryError: string | undefined;
+    let loaderLimitReached = false;
 
     try {
-      report("discovering", 0, undefined, 5, "Discovering board pins...");
-      if (input.accessToken && input.boardId) {
-        const official = await this.loadOfficialBoard(input, report, signal);
+      report("discovering", 0, pinLimit, 5, `Discovering up to ${pinLimit.toLocaleString()} board pins...`);
+      if (normalizedInput.accessToken && normalizedInput.boardId) {
+        const official = await this.loadOfficialBoard(normalizedInput, report, signal);
         pins = official.pins;
         finalBookmark = official.bookmark;
         pageCount = official.pageCount;
         discoveryError = official.partialError;
+        loaderLimitReached = official.limitReached;
         log.push(`Official API returned ${pins.length} unique pins across ${pageCount} pages.`);
         if (official.partialError) log.push(official.partialError);
       } else {
-        const publicResult = await this.loadPublicBoard(input.url, report, signal);
+        const publicResult = await this.loadPublicBoard(normalizedInput.url, pinLimit, report, signal);
         pins = publicResult.pins;
         expectedCount = publicResult.total;
+        loaderLimitReached = Boolean(publicResult.limitReached);
         log.push(...(publicResult.log ?? []));
       }
     } catch (error) {
       if (isAbortError(error)) {
+        const preservedImages = (existing?.images ?? []).slice(0, pinLimit);
         const source = await this.buildSource({
           existing,
           sourceId,
           sourceCachePath,
-          input,
-          images: existing?.images ?? [],
-          log: [...log, "Import canceled. Cached images were preserved."],
-          expectedCount,
+          input: normalizedInput,
+          images: preservedImages,
+          log: [...log, "Import canceled. Cached images were preserved up to the current pin limit."],
+          expectedCount: Math.min(expectedCount ?? preservedImages.length, pinLimit),
+          availableCount: existing?.availableItemCount ?? expectedCount,
+          limitReached: Boolean(existing?.pinImportLimitReached || (existing?.images.length ?? 0) > pinLimit),
           importStatus: "canceled",
           bookmark: finalBookmark
         });
-        report("canceled", source.images.length, expectedCount, 100, "Pinterest import canceled.");
+        report("canceled", source.images.length, Math.min(expectedCount ?? pinLimit, pinLimit), 100, "Pinterest import canceled.");
         return {
           canceled: true,
           ok: false,
           source,
-          imagesFound: pins.length,
+          imagesFound: Math.min(pins.length, pinLimit),
           imagesCached: source.images.length,
           progress: 100,
           log: source.importLog ?? [],
           page: pageCount,
           bookmark: finalBookmark,
+          pinLimit,
+          pinLimitReached: source.pinImportLimitReached,
+          availablePins: source.availableItemCount,
           error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
         };
       }
@@ -234,36 +248,46 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       log.push(discoveryError);
     }
 
-    const uniquePins = dedupePins(pins);
-    const effectiveExpectedCount = expectedCount !== undefined && expectedCount >= uniquePins.length ? expectedCount : uniquePins.length;
-    if (expectedCount !== undefined && uniquePins.length > expectedCount) {
-      log.push(`Pinterest reported about ${expectedCount} board pins, but ${uniquePins.length} valid pins were discovered. Using discovered count for progress.`);
+    const allUniquePins = dedupePins(pins);
+    const limitReached = didReachPinLimit(expectedCount, allUniquePins.length, pinLimit, loaderLimitReached);
+    const uniquePins = allUniquePins.slice(0, pinLimit);
+    const availablePins = Math.max(expectedCount ?? 0, allUniquePins.length) || undefined;
+    const effectiveExpectedCount = pinImportTarget(expectedCount, pinLimit, uniquePins.length) || uniquePins.length;
+    if (expectedCount !== undefined && allUniquePins.length > expectedCount) {
+      log.push(`Pinterest reported about ${expectedCount} board pins, but ${allUniquePins.length} valid pins were discovered. Using discovered count for progress within the configured limit.`);
+    }
+    if (limitReached) {
+      log.push(`Stopped at the configured limit of ${pinLimit.toLocaleString()} pins${availablePins && availablePins > pinLimit ? ` out of approximately ${availablePins.toLocaleString()} available` : ""}.`);
     }
     if (pins.some((pin) => pin.promoted)) log.push(`Skipped ${pins.filter((pin) => pin.promoted).length} promoted or non-board pin card${pins.filter((pin) => pin.promoted).length === 1 ? "" : "s"}.`);
     if (uniquePins.length === 0) {
       if (!existing) await rm(sourceCachePath, { recursive: true, force: true });
       const message =
         "Pinterest import unavailable. This public board could not be fully read. Pinterest may be blocking automated access or may require a supported integration.";
-      report("error", 0, expectedCount, 100, message, pageCount, finalBookmark);
+      report("error", 0, effectiveExpectedCount || pinLimit, 100, message, pageCount, finalBookmark);
       return {
         ok: false,
         imagesFound: 0,
-        imagesCached: existing?.images.length ?? 0,
+        imagesCached: Math.min(existing?.images.length ?? 0, pinLimit),
         progress: 100,
         log,
         page: pageCount,
         bookmark: finalBookmark,
+        pinLimit,
+        pinLimitReached: limitReached,
+        availablePins,
         error: message
       };
     }
 
+    const selectedPinIds = new Set(uniquePins.map((pin) => pin.id));
     const existingByPinId = new Map(
       (existing?.images ?? [])
-        .filter((image) => image.externalId)
+        .filter((image) => image.externalId && selectedPinIds.has(image.externalId))
         .map((image) => [image.externalId as string, image])
     );
     const importedImages = new Map<string, LocalImageRef>();
-    for (const image of existing?.images ?? []) {
+    for (const image of existingByPinId.values()) {
       if (!image.externalId) continue;
       try {
         importedImages.set(image.externalId, await makePinterestImageRenderable(image));
@@ -276,38 +300,49 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       const cached = existingByPinId.get(pin.id);
       return !cached || cached.sourceUrl !== pin.imageUrl;
     });
-    log.push(`Discovered ${uniquePins.length} unique pins; ${missingPins.length} need downloading.`);
+    log.push(`Selected ${uniquePins.length} unique pins within the limit; ${missingPins.length} need downloading.`);
+
+    const orderedImportedImages = () => uniquePins
+      .map((pin) => importedImages.get(pin.id))
+      .filter((image): image is LocalImageRef => Boolean(image));
+
+    const canceledResult = async (): Promise<PinterestImportResult> => {
+      const canceledImages = orderedImportedImages();
+      const source = await this.buildSource({
+        existing,
+        sourceId,
+        sourceCachePath,
+        input: normalizedInput,
+        images: canceledImages,
+        log: [...log, "Import canceled during download. Cached pins were preserved."],
+        expectedCount: effectiveExpectedCount,
+        availableCount: availablePins,
+        limitReached,
+        importStatus: "canceled",
+        bookmark: finalBookmark
+      });
+      report("canceled", canceledImages.length, effectiveExpectedCount, 100, "Pinterest import canceled.", pageCount, finalBookmark);
+      return {
+        canceled: true,
+        ok: false,
+        source,
+        imagesFound: uniquePins.length,
+        imagesCached: canceledImages.length,
+        progress: 100,
+        log: source.importLog ?? [],
+        page: pageCount,
+        bookmark: finalBookmark,
+        pinLimit,
+        pinLimitReached: limitReached,
+        availablePins,
+        error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
+      };
+    };
 
     let completed = 0;
     const concurrency = 6;
     for (let offset = 0; offset < missingPins.length; offset += concurrency) {
-      if (signal?.aborted) {
-        const canceledImages = [...importedImages.values()];
-        const source = await this.buildSource({
-          existing,
-          sourceId,
-          sourceCachePath,
-          input,
-          images: canceledImages,
-          log: [...log, "Import canceled during download. Cached pins were preserved."],
-          expectedCount,
-          importStatus: "canceled",
-          bookmark: finalBookmark
-        });
-        report("canceled", canceledImages.length, effectiveExpectedCount, 100, "Pinterest import canceled.", pageCount, finalBookmark);
-        return {
-          canceled: true,
-          ok: false,
-          source,
-          imagesFound: uniquePins.length,
-          imagesCached: canceledImages.length,
-          progress: 100,
-          log: source.importLog ?? [],
-          page: pageCount,
-          bookmark: finalBookmark,
-          error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
-        };
-      }
+      if (signal?.aborted) return canceledResult();
       const batch = missingPins.slice(offset, offset + concurrency);
       const results = await Promise.all(
         batch.map(async (pin) => {
@@ -320,36 +355,10 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
         })
       );
       for (const image of results) {
-        if (image?.externalId) importedImages.set(image.externalId, image);
+        if (image?.externalId && selectedPinIds.has(image.externalId)) importedImages.set(image.externalId, image);
       }
       completed += batch.length;
-      if (signal?.aborted) {
-        const canceledImages = [...importedImages.values()];
-        const source = await this.buildSource({
-          existing,
-          sourceId,
-          sourceCachePath,
-          input,
-          images: canceledImages,
-          log: [...log, "Import canceled during download. Cached pins were preserved."],
-          expectedCount,
-          importStatus: "canceled",
-          bookmark: finalBookmark
-        });
-        report("canceled", canceledImages.length, effectiveExpectedCount, 100, "Pinterest import canceled.", pageCount, finalBookmark);
-        return {
-          canceled: true,
-          ok: false,
-          source,
-          imagesFound: uniquePins.length,
-          imagesCached: canceledImages.length,
-          progress: 100,
-          log: source.importLog ?? [],
-          page: pageCount,
-          bookmark: finalBookmark,
-          error: "Pinterest import canceled. Import this board again to resume; cached pins will not be downloaded again."
-        };
-      }
+      if (signal?.aborted) return canceledResult();
       const total = missingPins.length;
       const overall = total === 0 ? 95 : 40 + Math.round((completed / total) * 55);
       report(
@@ -363,31 +372,25 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       );
     }
 
-    const orderedImages = uniquePins
-      .map((pin) => importedImages.get(pin.id))
-      .filter((image): image is LocalImageRef => Boolean(image));
-    const extras = [...importedImages.entries()]
-      .filter(([pinId]) => !uniquePins.some((pin) => pin.id === pinId))
-      .map(([, image]) => image);
-    const images = [...orderedImages, ...extras];
-
-    const incompleteByCount = expectedCount !== undefined && images.length < expectedCount && uniquePins.length < expectedCount;
+    const images = orderedImportedImages();
+    const incompleteByCount = !limitReached && expectedCount !== undefined && images.length < expectedCount && uniquePins.length < expectedCount;
     const incompleteByDownload = images.length < uniquePins.length;
-    const partial = Boolean(discoveryError || incompleteByCount || incompleteByDownload || finalBookmark);
+    const partial = Boolean(discoveryError || incompleteByCount || incompleteByDownload || (finalBookmark && !limitReached));
     const status: ImageSource["importStatus"] = partial ? "partial" : "ready";
     if (incompleteByCount) log.push(`Partial discovery: found ${uniquePins.length} of approximately ${expectedCount} board pins.`);
-    if (incompleteByDownload) log.push(`Partial cache: cached ${images.length} of ${uniquePins.length} discovered pins.`);
-    if (expectedCount !== undefined && images.length >= expectedCount && uniquePins.length < expectedCount) log.push(`Cached ${images.length} pins, which meets or exceeds Pinterest's approximate ${expectedCount} count; treating import as complete.`);
-    if (finalBookmark) log.push(`Pagination stopped with bookmark ${finalBookmark}.`);
+    if (incompleteByDownload) log.push(`Partial cache: cached ${images.length} of ${uniquePins.length} selected pins.`);
+    if (finalBookmark && !limitReached) log.push(`Pagination stopped with bookmark ${finalBookmark}.`);
 
     const source = await this.buildSource({
       existing,
       sourceId,
       sourceCachePath,
-      input,
+      input: normalizedInput,
       images,
       log,
       expectedCount: effectiveExpectedCount,
+      availableCount: availablePins,
+      limitReached,
       importStatus: status,
       bookmark: finalBookmark
     });
@@ -395,7 +398,10 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     const error = partial
       ? `Partial import: cached ${images.length} pins${incompleteByCount ? ` of approximately ${expectedCount}` : ""}. Import this board again to resume.`
       : undefined;
-    report(partial ? "partial" : "complete", images.length, effectiveExpectedCount, 100, error ?? `Imported all ${images.length} pins.`, pageCount, finalBookmark);
+    const completionMessage = limitReached
+      ? `Imported ${images.length} pins and stopped at the configured limit.`
+      : `Imported all ${images.length} pins.`;
+    report(partial ? "partial" : "complete", images.length, effectiveExpectedCount, 100, error ?? completionMessage, pageCount, finalBookmark);
 
     return {
       partial,
@@ -407,7 +413,10 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       log: source.importLog ?? [],
       error,
       page: pageCount,
-      bookmark: finalBookmark
+      bookmark: finalBookmark,
+      pinLimit,
+      pinLimitReached: limitReached,
+      availablePins
     };
   }
 
@@ -421,6 +430,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
 
   private async loadPublicBoard(
     url: string,
+    pinLimit: number,
     report: (
       stage: PinterestImportProgress["stage"],
       current: number,
@@ -459,28 +469,45 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     }
 
     if (!this.publicBoardLoader) {
-      return { pins: initialPins, total: expectedCount, log };
+      const uniqueInitialPins = dedupePins(initialPins);
+      return {
+        pins: uniqueInitialPins.slice(0, pinLimit),
+        total: expectedCount,
+        limitReached: didReachPinLimit(expectedCount, uniqueInitialPins.length, pinLimit),
+        log
+      };
     }
 
     try {
       const browserResult = await this.publicBoardLoader(url, {
         signal,
         expectedTotal: expectedCount,
-        onProgress: (current, total, message, page) =>
-          report("paginating", current, total ?? expectedCount, 8 + Math.min(30, Math.round((current / Math.max(total ?? expectedCount ?? current, 1)) * 30)), message ?? `Importing page ${page ?? 1}: ${current} pins found`, page)
+        maxPins: pinLimit,
+        onProgress: (current, total, message, page) => {
+          const target = Math.min(total ?? expectedCount ?? pinLimit, pinLimit);
+          report("paginating", Math.min(current, pinLimit), target, 8 + Math.min(30, Math.round((Math.min(current, target) / Math.max(target, 1)) * 30)), message ?? `Importing page ${page ?? 1}: ${Math.min(current, pinLimit)} pins found`, page);
+        }
       });
       const browserPins = dedupePins(browserResult.pins);
-      const mergedPins = scope.kind === "section" && browserPins.length > 0 ? browserPins : dedupePins([...initialPins, ...browserPins]);
-      const reportedTotal = scope.kind === "section" ? browserPins.length || undefined : browserResult.total ?? expectedCount;
+      const allMergedPins = scope.kind === "section" && browserPins.length > 0 ? browserPins : dedupePins([...initialPins, ...browserPins]);
+      const mergedPins = allMergedPins.slice(0, pinLimit);
+      const reportedTotal = scope.kind === "section" ? (browserResult.total ?? (browserPins.length || undefined)) : (browserResult.total ?? expectedCount);
       return {
         pins: mergedPins,
         total: reportedTotal,
-        log: [...log, ...(browserResult.log ?? []), ...(scope.kind === "section" ? [`Section URL detected; using ${mergedPins.length} discovered section pins as the completion target.`] : [])]
+        limitReached: Boolean(browserResult.limitReached || didReachPinLimit(reportedTotal, allMergedPins.length, pinLimit)),
+        log: [...log, ...(browserResult.log ?? []), ...(scope.kind === "section" ? [`Section URL detected; using up to ${mergedPins.length} discovered section pins as the completion target.`] : [])]
       };
     } catch (error) {
       if (isAbortError(error)) throw error;
       log.push(`Full-board loader stopped: ${error instanceof Error ? error.message : "unknown error"}`);
-      return { pins: initialPins, total: expectedCount, log };
+      const uniqueInitialPins = dedupePins(initialPins);
+      return {
+        pins: uniqueInitialPins.slice(0, pinLimit),
+        total: expectedCount,
+        limitReached: didReachPinLimit(expectedCount, uniqueInitialPins.length, pinLimit),
+        log
+      };
     }
   }
 
@@ -499,11 +526,14 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
   ) {
     const token = input.accessToken as string;
     const boardId = input.boardId as string;
+    const pinLimit = normalizePinImportLimit(input.maxPins);
     const headers = { Authorization: `Bearer ${token}` };
     const allPins: OfficialPinterestPin[] = [];
     let finalBookmark: string | undefined;
     let pageCount = 0;
     let partialError: string | undefined;
+    let limitReached = false;
+    const uniqueCount = () => new Set(allPins.map((pin) => pin.id).filter(Boolean)).size;
 
     try {
       const boardPins = await collectPinterestPages(
@@ -516,15 +546,18 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
         {
           initialBookmark: input.resumeBookmark,
           signal,
+          maxItems: pinLimit,
           onProgress: ({ page, itemCount, bookmark }) =>
-            report("paginating", itemCount, undefined, Math.min(35, 8 + page * 3), `Loaded API page ${page}: ${itemCount} pins`, page, bookmark)
+            report("paginating", itemCount, pinLimit, Math.min(35, 8 + page * 3), `Loaded API page ${page}: ${itemCount} / ${pinLimit} pins`, page, bookmark)
         }
       );
       allPins.push(...boardPins.items);
       pageCount += boardPins.pageCount;
+      finalBookmark = boardPins.finalBookmark;
+      limitReached = Boolean(boardPins.limitReached);
     } catch (error) {
       if (error instanceof PinterestPaginationError) {
-        allPins.push(...(error.items as OfficialPinterestPin[]));
+        allPins.push(...(error.items as OfficialPinterestPin[]).slice(0, pinLimit));
         pageCount += error.pageCount;
         finalBookmark = error.bookmark;
         partialError = error.message;
@@ -533,57 +566,80 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       }
     }
 
-    try {
-      const sections = await collectPinterestPages(
-        async (bookmark) => {
-          const url = new URL(`https://api.pinterest.com/v5/boards/${encodeURIComponent(boardId)}/sections`);
-          url.searchParams.set("page_size", "250");
-          if (bookmark) url.searchParams.set("bookmark", bookmark);
-          return fetchOfficialPage<OfficialBoardSection>(url, headers, signal);
-        },
-        { signal }
-      );
+    if (!limitReached && uniqueCount() < pinLimit) {
+      try {
+        const sections = await collectPinterestPages(
+          async (bookmark) => {
+            const url = new URL(`https://api.pinterest.com/v5/boards/${encodeURIComponent(boardId)}/sections`);
+            url.searchParams.set("page_size", "250");
+            if (bookmark) url.searchParams.set("bookmark", bookmark);
+            return fetchOfficialPage<OfficialBoardSection>(url, headers, signal);
+          },
+          { signal }
+        );
 
-      for (const section of sections.items) {
-        try {
-          const sectionPins = await collectPinterestPages(
-            async (bookmark) => {
-              const url = new URL(
-                `https://api.pinterest.com/v5/boards/${encodeURIComponent(boardId)}/sections/${encodeURIComponent(section.id)}/pins`
+        sectionLoop:
+        for (let sectionIndex = 0; sectionIndex < sections.items.length; sectionIndex += 1) {
+          const section = sections.items[sectionIndex];
+          let sectionBookmark: string | undefined;
+          while (uniqueCount() < pinLimit) {
+            const remaining = pinLimit - uniqueCount();
+            try {
+              const sectionPins = await collectPinterestPages(
+                async (bookmark) => {
+                  const url = new URL(
+                    `https://api.pinterest.com/v5/boards/${encodeURIComponent(boardId)}/sections/${encodeURIComponent(section.id)}/pins`
+                  );
+                  url.searchParams.set("page_size", "250");
+                  if (bookmark) url.searchParams.set("bookmark", bookmark);
+                  return fetchOfficialPage<OfficialPinterestPin>(url, headers, signal);
+                },
+                {
+                  signal,
+                  initialBookmark: sectionBookmark,
+                  maxItems: remaining,
+                  onProgress: ({ page, itemCount, bookmark }) =>
+                    report("paginating", Math.min(pinLimit, uniqueCount() + itemCount), pinLimit, Math.min(35, 8 + (pageCount + page) * 3), `Loaded section pins: ${Math.min(pinLimit, uniqueCount() + itemCount)} / ${pinLimit}`, pageCount + page, bookmark)
+                }
               );
-              url.searchParams.set("page_size", "250");
-              if (bookmark) url.searchParams.set("bookmark", bookmark);
-              return fetchOfficialPage<OfficialPinterestPin>(url, headers, signal);
-            },
-            { signal }
-          );
-          allPins.push(...sectionPins.items);
-          pageCount += sectionPins.pageCount;
-        } catch (error) {
-          if (error instanceof PinterestPaginationError) {
-            allPins.push(...(error.items as OfficialPinterestPin[]));
-            pageCount += error.pageCount;
-            finalBookmark = error.bookmark;
-            partialError = partialError ?? `Section ${section.id}: ${error.message}`;
-          } else {
-            throw error;
+              allPins.push(...sectionPins.items);
+              pageCount += sectionPins.pageCount;
+              sectionBookmark = sectionPins.finalBookmark;
+              if (uniqueCount() >= pinLimit) {
+                limitReached = Boolean(sectionPins.limitReached || sectionIndex < sections.items.length - 1);
+                finalBookmark = sectionBookmark;
+                break sectionLoop;
+              }
+              if (!sectionPins.limitReached || !sectionBookmark) break;
+            } catch (error) {
+              if (error instanceof PinterestPaginationError) {
+                allPins.push(...(error.items as OfficialPinterestPin[]));
+                pageCount += error.pageCount;
+                finalBookmark = error.bookmark;
+                partialError = partialError ?? `Section ${section.id}: ${error.message}`;
+                break;
+              }
+              throw error;
+            }
           }
         }
-      }
-    } catch (error) {
-      if (error instanceof PinterestPaginationError) {
-        finalBookmark = error.bookmark;
-        partialError = partialError ?? `Board sections: ${error.message}`;
-      } else {
-        throw error;
+      } catch (error) {
+        if (error instanceof PinterestPaginationError) {
+          finalBookmark = error.bookmark;
+          partialError = partialError ?? `Board sections: ${error.message}`;
+        } else {
+          throw error;
+        }
       }
     }
 
+    const pins = dedupePins(allPins.map(officialPinToBoardPin).filter((pin): pin is PinterestBoardPin => Boolean(pin)));
     return {
-      pins: dedupePins(allPins.map(officialPinToBoardPin).filter((pin): pin is PinterestBoardPin => Boolean(pin))),
+      pins: pins.slice(0, pinLimit),
       bookmark: finalBookmark,
       pageCount,
-      partialError
+      partialError,
+      limitReached: limitReached || pins.length > pinLimit
     };
   }
 
@@ -595,6 +651,8 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     images: LocalImageRef[];
     log: string[];
     expectedCount?: number;
+    availableCount?: number;
+    limitReached?: boolean;
     importStatus: ImageSource["importStatus"];
     bookmark?: string;
   }): Promise<ImageSource> {
@@ -618,7 +676,10 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       importLog: [...input.log, `Cache contains ${input.images.length} unique Pinterest pins.`],
       expectedItemCount: input.expectedCount,
       importedItemCount: input.images.length,
-      importCursor: input.bookmark,
+      pinImportLimit: normalizePinImportLimit(input.input.maxPins),
+      pinImportLimitReached: Boolean(input.limitReached),
+      availableItemCount: input.availableCount,
+      importCursor: input.limitReached ? undefined : input.bookmark,
       lastImportCompletedAt: input.importStatus === "ready" ? now : input.existing?.lastImportCompletedAt,
       updatedAt: now
     };

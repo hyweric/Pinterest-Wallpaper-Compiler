@@ -41,3 +41,20 @@ test("stops on a repeated bookmark instead of looping forever", async () => {
     /repeated bookmark/
   );
 });
+
+test("stops pagination at the configured unique item limit and preserves the next bookmark", async () => {
+  const pins = Array.from({ length: 1_500 }, (_, index) => ({ id: `pin-${index + 1}` }));
+  const calls: Array<string | undefined> = [];
+  const result = await collectPinterestPages(async (bookmark) => {
+    calls.push(bookmark);
+    const start = bookmark ? Number(bookmark) : 0;
+    const next = start + 250 < pins.length ? String(start + 250) : undefined;
+    return { items: pins.slice(start, start + 250), bookmark: next };
+  }, { maxItems: 1_000 });
+
+  assert.equal(result.items.length, 1_000);
+  assert.equal(result.pageCount, 4);
+  assert.equal(result.limitReached, true);
+  assert.equal(result.finalBookmark, "1000");
+  assert.deepEqual(calls, [undefined, "250", "500", "750"]);
+});
