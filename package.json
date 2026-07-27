@@ -1,7 +1,7 @@
 {
   "name": "pin-paper",
   "productName": "Pin Paper",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Local-first desktop wallpaper collection editor and generator.",
   "author": "Pin Paper contributors",
