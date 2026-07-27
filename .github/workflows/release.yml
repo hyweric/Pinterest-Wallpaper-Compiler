@@ -9,41 +9,96 @@ permissions:
   contents: write
 
 jobs:
-  build-mac:
+  build-macos:
     name: Build macOS
-    runs-on: macos-latest
+    runs-on: macos-15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out master
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run app:mac
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build macOS installers
+        run: npm run app:mac -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: softprops/action-gh-release@v2
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v7
         with:
-          generate_release_notes: true
-          files: |
+          name: pin-paper-macos
+          path: |
             release/*.dmg
             release/*-mac.zip
+          if-no-files-found: error
+          retention-days: 1
 
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out master
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run app:win
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Windows installers
+        run: npm run app:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: softprops/action-gh-release@v2
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v7
         with:
-          generate_release_notes: true
-          files: |
-            release/*.exe
+          name: pin-paper-windows
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download completed installers
+        uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lah release
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --latest
+          else
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --title "Pin Paper $GITHUB_REF_NAME" \
+              --generate-notes \
+              --latest
+          fi
