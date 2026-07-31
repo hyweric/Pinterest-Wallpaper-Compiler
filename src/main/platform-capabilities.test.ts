@@ -24,7 +24,7 @@ test("unsupported wallpaper target modes fall back safely by platform", () => {
 });
 
 test("platform copy avoids macOS language outside macOS", () => {
-  assert.equal(platformCapabilities("macos").canPreviewCurrentDesktop, false);
+  assert.equal(platformCapabilities("macos").canPreviewCurrentDesktop, true);
   assert.equal(platformCapabilities("windows").canPreviewCurrentDesktop, true);
   assert.equal(platformCopy("windows").createWallpaperSet, "Apply Wallpaper Set");
   assert.equal(platformCopy("web").applyWallpaper, "Download Wallpaper");

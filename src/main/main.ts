@@ -1083,7 +1083,7 @@ function runWindowsPowerShell(method: string, script: string, timeout = 20000): 
 
 export function windowsNativeSlideshowPowerShell(folderPath: string, options: { intervalSeconds: number; displayMode?: WallpaperSetApplyPayload["displayMode"]; shuffle?: boolean }) {
   const encodedFolder = Buffer.from(folderPath, "utf8").toString("base64");
-  const intervalMs = Math.max(5_000, Math.min(86_400_000, Math.round(options.intervalSeconds * 1000)));
+  const intervalMs = Math.max(1_000, Math.min(86_400_000, Math.round(options.intervalSeconds * 1000)));
   const position = windowsNativeWallpaperPosition(options.displayMode);
   const shuffle = options.shuffle === true ? "$true" : "$false";
   return String.raw`
@@ -1191,7 +1191,7 @@ async function applyWindowsNativeWallpaperSlideshow(
   files: string[],
   payload: Pick<WallpaperSetApplyPayload, "displayMode" | "intervalSeconds" | "shuffle">
 ): Promise<WallpaperApplyResult> {
-  const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
+  const intervalSeconds = Math.max(1, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
   const script = windowsNativeSlideshowPowerShell(folderPath, { intervalSeconds, displayMode: payload.displayMode, shuffle: payload.shuffle !== false });
   const nativeResult = await runWindowsPowerShell("windows-idesktopwallpaper-native-slideshow", script, 30000);
   const parsed = parseWindowsNativeSlideshowOutput(nativeResult.stdout);
@@ -1285,12 +1285,19 @@ async function applyWindowsWallpaperSet(payload: WallpaperSetApplyPayload): Prom
   if (!folderPath) return { ok: false, error: "No wallpaper pack folder was provided.", platform: process.platform };
   const files = await windowsWallpaperSetFiles(folderPath);
   stopWindowsWallpaperRotation();
+  if (files.length === 1) {
+    return applyWindowsWallpaperRotationFile(files[0], {
+      displayMode: payload.displayMode,
+      transitionEnabled: false,
+      transitionDurationMs: 0
+    });
+  }
 
   try {
     return await applyWindowsNativeWallpaperSlideshow(folderPath, files, payload);
   } catch (nativeError) {
     console.error("Windows native slideshow setup failed; falling back to Pin Paper timer", nativeError);
-    const intervalSeconds = Math.max(5, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
+    const intervalSeconds = Math.max(1, Math.min(86_400, Math.round(payload.intervalSeconds || 60)));
     const rotationFiles = payload.shuffle === false ? files : shuffledWindowsWallpaperFiles(files);
     const state: WindowsWallpaperRotationState = {
       folderPath,

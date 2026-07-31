@@ -8,7 +8,8 @@ const source = (relativePath: string) => readFile(path.join(root, relativePath),
 
 test("current desktop preview explicitly advances assigned source pools once before rendering", async () => {
   const renderer = await source("src/renderer/main.tsx");
-  const previewStart = renderer.indexOf("async function previewOnCurrentDesktop()");
+  const previewStart = renderer.search(/async function previewOnCurrentDesktop\([^)]*\)/);
+  assert.notEqual(previewStart, -1, "previewOnCurrentDesktop was not found");
   const historyStart = renderer.indexOf("async function applyHistoryAt", previewStart);
   const preview = renderer.slice(previewStart, historyStart);
 

@@ -3513,12 +3513,12 @@ function App() {
     });
   }
 
-  async function previewOnCurrentDesktop() {
+  async function previewOnCurrentDesktop(projectOverride?: WallpaperProject) {
     if (!platformCapabilities.canPreviewCurrentDesktop) {
       setMessage(`${platformCopy.previewCurrentDesktop} is not available in this version. Use Export PNG instead.`);
       return;
     }
-    const current = normalizeProject(projectRef.current);
+    const current = normalizeProject(projectOverride ?? projectRef.current);
     const previewBase = normalizeProject({
       ...current,
       wallpaper: {
@@ -4742,15 +4742,29 @@ function App() {
     } else await assignWebImagesToLayer(webCandidates, layer);
   }
 
-  async function goHome() {
-    try {
-      const thumbnail = await renderProjectToDataUrl(project, "jpeg");
-      setProject((current) => touchProject(updateActiveTemplateSnapshot(current, thumbnail)));
-    } catch {
-      setProject((current) => touchProject(updateActiveTemplateSnapshot(current)));
-    }
+  function goHome() {
+    const snapshot = normalizeProject(projectRef.current);
+    const activeTemplateId = snapshot.templates.activeTemplateId;
+    const saved = touchProject(updateActiveTemplateSnapshot(snapshot));
+    projectRef.current = saved;
+    setProject(saved);
     setView("home");
     setMessage("Template saved.");
+
+    // The Home button must never wait for a potentially slow canvas thumbnail render.
+    // Save and navigate immediately, then refresh the thumbnail in the background.
+    void renderProjectToDataUrl(snapshot, "jpeg")
+      .then((thumbnail) => {
+        setProject((current) => {
+          if (!activeTemplateId || current.templates.activeTemplateId !== activeTemplateId) return current;
+          const next = touchProject(updateActiveTemplateSnapshot(current, thumbnail));
+          projectRef.current = next;
+          return next;
+        });
+      })
+      .catch(() => {
+        // The editable template was already saved above. Thumbnail rendering is best-effort.
+      });
   }
 
   async function saveAsTemplate() {
@@ -4901,7 +4915,7 @@ function App() {
     }, template));
     projectRef.current = workspace;
     setProject(workspace);
-    setMessage("Template opened.");
+    await previewOnCurrentDesktop(workspace);
   }
 
   function sourceAssignmentCount(sourceId: string) {
@@ -6843,7 +6857,7 @@ function ExportSetDialog({
                 <>
                   {currentPlatform.kind === "windows" && platformCapabilities.canApplyWallpaper && (
                     <div className="export-set-grid simplified windows-rotation-options">
-                      <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>
+                      <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={1} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 1, 86400) }))} /></label>
                       <label>Wallpaper fit<select value={state.windowsDisplayMode} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, windowsDisplayMode: event.target.value as WallpaperDisplayMode }))}>{windowsWallpaperFitModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
                       <button className={`button toggle-pill ${state.windowsShuffle ? "active" : ""}`} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, windowsShuffle: !current.windowsShuffle }))}>Shuffle images: {state.windowsShuffle ? "On" : "Off"}</button>
                     </div>
@@ -6875,7 +6889,7 @@ function ExportSetDialog({
               <label>Set name<input value={state.setName} maxLength={100} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, setName: event.target.value }))} placeholder="My Wallpaper Rotation" /></label>
               <label>Image variation count<SoftNumberInput value={state.count} min={1} max={500} disabled={state.busy} onCommit={(count) => onChange((current) => ({ ...current, count: clamp(Math.round(count), 1, 500) }))} /></label>
               {currentPlatform.kind === "windows" && <>
-                <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={5} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 5, 86400) }))} /></label>
+                <label>Time between images (seconds)<SoftNumberInput value={state.windowsCycleSeconds} min={1} max={86400} disabled={state.busy} onCommit={(seconds) => onChange((current) => ({ ...current, windowsCycleSeconds: clamp(Math.round(seconds), 1, 86400) }))} /></label>
                 <label>Wallpaper fit<select value={state.windowsDisplayMode} disabled={state.busy} onChange={(event) => onChange((current) => ({ ...current, windowsDisplayMode: event.target.value as WallpaperDisplayMode }))}>{windowsWallpaperFitModes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
                 <button className={`button toggle-pill ${state.windowsShuffle ? "active" : ""}`} disabled={state.busy} onClick={() => onChange((current) => ({ ...current, windowsShuffle: !current.windowsShuffle }))}>Shuffle images: {state.windowsShuffle ? "On" : "Off"}</button>
               </>}
