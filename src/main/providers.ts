@@ -1,4 +1,4 @@
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -25,6 +25,31 @@ export interface PinterestBoardPin {
   imageUrl: string;
   mediaType?: "image" | "video";
   promoted?: boolean;
+  metadata?: unknown;
+}
+
+
+export function isLikelyPinterestAd(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  const booleanKeys = ["is_promoted", "promoted", "isPromoted", "is_ad", "isAd"];
+  if (booleanKeys.some((key) => item[key] === true)) return true;
+  const objectKeys = ["promoted_pin", "promotedPin", "ad", "ad_data", "adData"];
+  if (objectKeys.some((key) => item[key] !== undefined && item[key] !== null && item[key] !== false)) return true;
+  const textKeys = ["type", "label", "display_label", "displayLabel", "badge", "context", "description"];
+  return textKeys.some((key) => typeof item[key] === "string" && /\b(promoted|sponsored|advertisement)\b/i.test(item[key] as string));
+}
+
+async function existingLocalImages(images: LocalImageRef[]) {
+  const checks = await Promise.all(images.map(async (image) => {
+    try {
+      await access(image.path);
+      return image;
+    } catch {
+      return undefined;
+    }
+  }));
+  return checks.filter((image): image is LocalImageRef => Boolean(image));
 }
 
 export interface PublicPinterestBoardResult {
@@ -259,7 +284,6 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
     if (limitReached) {
       log.push(`Stopped at the configured limit of ${pinLimit.toLocaleString()} pins${availablePins && availablePins > pinLimit ? ` out of approximately ${availablePins.toLocaleString()} available` : ""}.`);
     }
-    if (pins.some((pin) => pin.promoted)) log.push(`Skipped ${pins.filter((pin) => pin.promoted).length} promoted or non-board pin card${pins.filter((pin) => pin.promoted).length === 1 ? "" : "s"}.`);
     if (uniquePins.length === 0) {
       if (!existing) await rm(sourceCachePath, { recursive: true, force: true });
       const message =
@@ -459,7 +483,7 @@ export class PinterestBoardProvider implements ImageSourceProvider<PinterestImpo
       expectedCount = scope.kind === "section" ? undefined : numberFromUnknown(json.data.board?.pin_count ?? json.data.board?.pins_count);
       for (const pin of json.data.pins) {
         const imageUrl = bestPinterestImageUrl(pin);
-        if (pin.id && imageUrl) initialPins.push({ id: pin.id, imageUrl, mediaType: isPinterestVideoPin(pin) ? "video" : "image" });
+        if (pin.id && imageUrl && !isLikelyPinterestAd(pin)) initialPins.push({ id: pin.id, imageUrl, mediaType: isPinterestVideoPin(pin) ? "video" : "image", metadata: pin });
       }
       log.push(scope.kind === "section"
         ? `Initial public endpoint returned ${initialPins.length} whole-board pins; section progress will use discovered section pins.`
@@ -702,6 +726,18 @@ interface PinterestPidgetResponse {
 
 interface PinterestPidgetPin {
   id: string;
+  is_promoted?: boolean;
+  promoted?: boolean;
+  isPromoted?: boolean;
+  is_ad?: boolean;
+  isAd?: boolean;
+  promoted_pin?: unknown;
+  promotedPin?: unknown;
+  ad?: unknown;
+  ad_data?: unknown;
+  adData?: unknown;
+  label?: string;
+  display_label?: string;
   type?: string;
   media_type?: string;
   videos?: unknown;
@@ -711,6 +747,18 @@ interface PinterestPidgetPin {
 
 interface OfficialPinterestPin {
   id: string;
+  is_promoted?: boolean;
+  promoted?: boolean;
+  isPromoted?: boolean;
+  is_ad?: boolean;
+  isAd?: boolean;
+  promoted_pin?: unknown;
+  promotedPin?: unknown;
+  ad?: unknown;
+  ad_data?: unknown;
+  adData?: unknown;
+  label?: string;
+  display_label?: string;
   media_type?: string;
   media?: {
     media_type?: string;
@@ -726,7 +774,7 @@ function officialPinToBoardPin(pin: OfficialPinterestPin): PinterestBoardPin | u
   const image = Object.values(pin.media?.images ?? {})
     .filter((item) => item.url)
     .sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0];
-  return pin.id && image?.url ? { id: pin.id, imageUrl: image.url, mediaType: /video/i.test(`${pin.media_type ?? ""} ${pin.media?.media_type ?? ""}`) ? "video" : "image" } : undefined;
+  return pin.id && image?.url ? { id: pin.id, imageUrl: image.url, mediaType: /video/i.test(`${pin.media_type ?? ""} ${pin.media?.media_type ?? ""}`) ? "video" : "image", promoted: isLikelyPinterestAd(pin), metadata: pin } : undefined;
 }
 
 async function fetchOfficialPage<T>(url: URL, headers: Record<string, string>, signal?: AbortSignal) {
@@ -744,7 +792,7 @@ function dedupePins(pins: PinterestBoardPin[]) {
   const byId = new Map<string, PinterestBoardPin>();
   const seenUrls = new Set<string>();
   for (const pin of pins) {
-    if (!pin.id || !pin.imageUrl || pin.promoted) continue;
+    if (!pin.id || !pin.imageUrl || pin.promoted || isLikelyPinterestAd(pin.metadata)) continue;
     const canonicalUrl = pin.imageUrl.replace(/([?&])(width|height|quality|crop)=[^&]*/gi, "$1").replace(/[?&]+$/, "");
     if (byId.has(pin.id) || seenUrls.has(canonicalUrl)) continue;
     byId.set(pin.id, pin);

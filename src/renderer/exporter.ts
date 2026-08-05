@@ -4,7 +4,7 @@ import { resolveLayerFrameBounds } from "../shared/adaptive-frame";
 import { isRenderableLocalFileUrl, renderableLocalFileUrl } from "../shared/local-file-url";
 import { paperFrameInsets, paperFrameIsRough, paperFrameRotation } from "../shared/paper";
 import { normalizePolaroidEffect, normalizeTornPaperEffect, paperWarmthOverlay, tornPaperPolygonPoints, tornPaperTextureDataUrl } from "../shared/frame-effects";
-import { getImageForLayer } from "./project";
+import { getImageForLayer, sourceImagesForPolicy } from "./project";
 import { imageBackgroundColor } from "../shared/image-transparency";
 import { drawSurfaceTexture } from "./surface-renderer";
 
@@ -17,6 +17,27 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     if (isRenderableLocalFileUrl(renderSrc)) image.crossOrigin = "anonymous";
     image.src = renderSrc;
   });
+}
+
+async function loadLayerImage(project: WallpaperProject, layer: PlaceholderLayer) {
+  const selected = getImageForLayer(project, layer);
+  const sourceIds = layer.sourceState.sourceIds.length ? layer.sourceState.sourceIds : layer.sourceId ? [layer.sourceId] : [];
+  const candidates = sourceIds.flatMap((sourceId) => {
+    const source = project.sources.find((item) => item.id === sourceId);
+    return source ? sourceImagesForPolicy(source) : [];
+  });
+  const ordered = selected ? [selected, ...candidates.filter((item) => item.id !== selected.id)] : candidates;
+  const attempted = new Set<string>();
+  for (const candidate of ordered) {
+    if (attempted.has(candidate.id)) continue;
+    attempted.add(candidate.id);
+    try {
+      return { imageRef: candidate, image: await loadImage(candidate.url) };
+    } catch {
+      // Deleted or unreadable cache entries are stale and should not abort the export.
+    }
+  }
+  return { imageRef: undefined, image: undefined };
 }
 
 function filterString(layer: PlaceholderLayer) {
@@ -260,8 +281,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.restore();
     return;
   }
-  const imageRef = getImageForLayer(project, layer);
-  const image = imageRef ? await loadImage(imageRef.url) : undefined;
+  const { imageRef, image } = await loadLayerImage(project, layer);
   const frame = resolveLayerFrameBounds(layer, image ?? imageRef);
   const visualLayer = { ...layer, x: frame.x, y: frame.y, width: frame.width, height: frame.height };
   const paperFrame = layer.effects.paperFrame;

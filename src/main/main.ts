@@ -392,10 +392,17 @@ async function loadPublicPinterestBoard(
             if (!match) continue;
             const card = anchor.closest('[data-test-id], [role="listitem"], div');
             const cardText = String(card?.textContent || anchor.textContent || "").slice(0, 500);
-            const promoted = /\b(promoted|sponsored|advertisement|ad)\b/i.test(cardText)
-              || Boolean(anchor.closest('[data-test-id*="promoted"], [data-test-id*="sponsor"], [aria-label*="Promoted"], [aria-label*="Sponsored"]'));
-            if (promoted) continue;
             const img = anchor.querySelector("img");
+            const metadataText = [
+              card?.getAttribute?.("data-test-id"),
+              card?.getAttribute?.("aria-label"),
+              anchor.getAttribute("data-test-id"),
+              anchor.getAttribute("aria-label"),
+              img?.getAttribute?.("alt")
+            ].filter(Boolean).join(" ");
+            const promoted = /\b(promoted|sponsored|advertisement|ad)\b/i.test(String(cardText) + " " + String(metadataText))
+              || Boolean(anchor.closest('[data-test-id*="promoted" i], [data-test-id*="sponsor" i], [data-test-id*="ad-" i], [aria-label*="Promoted" i], [aria-label*="Sponsored" i], [aria-label*="Advertisement" i]'));
+            if (promoted) continue;
             if (!img) continue;
             const imageUrl = chooseSrc(img);
             if (!/^https?:/i.test(imageUrl)) continue;

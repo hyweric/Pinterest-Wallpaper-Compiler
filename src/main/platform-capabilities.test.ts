@@ -1,4 +1,5 @@
 import test from "node:test";
+import { isLikelyPinterestAd } from "./providers.js";
 import assert from "node:assert/strict";
 import {
   fallbackWallpaperTargetMode,
@@ -28,4 +29,12 @@ test("platform copy avoids macOS language outside macOS", () => {
   assert.equal(platformCapabilities("windows").canPreviewCurrentDesktop, true);
   assert.equal(platformCopy("windows").createWallpaperSet, "Apply Wallpaper Set");
   assert.equal(platformCopy("web").applyWallpaper, "Download Wallpaper");
+});
+
+
+test("Pinterest ad metadata is rejected without broad content guessing", () => {
+  assert.equal(isLikelyPinterestAd({ is_promoted: true }), true);
+  assert.equal(isLikelyPinterestAd({ promotedPin: { id: "ad" } }), true);
+  assert.equal(isLikelyPinterestAd({ label: "Sponsored" }), true);
+  assert.equal(isLikelyPinterestAd({ description: "ordinary art reference", type: "pin" }), false);
 });
