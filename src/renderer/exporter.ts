@@ -311,6 +311,17 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
     context.globalAlpha = previousAlpha;
     context.shadowColor = "transparent";
     if (frameTextureIntensity > 0) {
+      context.save();
+      roughPaperPath(
+        context,
+        frame.width,
+        frame.height,
+        paperFrame,
+        tornActive ? tornPaper : undefined,
+        frameRadius
+      );
+      context.clip();
+      context.shadowColor = "transparent";
       await drawSurfaceTexture(context, frame.width, frame.height, {
         ...layer.effects.paper,
         enabled: true,
@@ -319,6 +330,7 @@ async function drawLayer(context: CanvasRenderingContext2D, project: WallpaperPr
         opacity: frameTextureIntensity / 100,
         tone: 0
       }, customTexture(project, layer.effects.paper));
+      context.restore();
     }
     const warmth = polaroidActive ? paperWarmthOverlay(polaroid.warmth) : undefined;
     if (warmth) {
